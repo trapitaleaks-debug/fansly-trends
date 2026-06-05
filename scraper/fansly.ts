@@ -3,7 +3,15 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { generateTOTP, secondsUntilExpiry } from './totp'
 
-const SESSION_FILE = path.join(__dirname, 'session.json')
+export interface AccountConfig {
+  email: string
+  password: string
+  totpKey: string
+}
+
+function sessionFile(email: string) {
+  return path.join(__dirname, `session_${email.replace(/[^a-z0-9]/gi, '_')}.json`)
+}
 
 export interface FanslyPost {
   id: string
@@ -25,20 +33,22 @@ interface SessionData {
   authHeaders: Record<string, string>
 }
 
-async function saveSession(context: BrowserContext, page: Page) {
+async function saveSession(context: BrowserContext, page: Page, email: string) {
+  const sf = sessionFile(email)
   const cookies = await context.cookies()
   const lsRaw = await page.evaluate('JSON.stringify(Object.fromEntries(Object.entries(localStorage)))').catch(() => '{}') as string
   const localStorage = JSON.parse(lsRaw) as Record<string, string>
-  const existing = fs.existsSync(SESSION_FILE)
-    ? JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8')) as SessionData
+  const existing = fs.existsSync(sf)
+    ? JSON.parse(fs.readFileSync(sf, 'utf-8')) as SessionData
     : { cookies: [], localStorage: {}, authHeaders: {} }
-  fs.writeFileSync(SESSION_FILE, JSON.stringify({ ...existing, cookies, localStorage }, null, 2))
+  fs.writeFileSync(sf, JSON.stringify({ ...existing, cookies, localStorage }, null, 2))
 }
 
-async function loadSession(context: BrowserContext): Promise<boolean> {
-  if (!fs.existsSync(SESSION_FILE)) return false
+async function loadSession(context: BrowserContext, email: string): Promise<boolean> {
+  const sf = sessionFile(email)
+  if (!fs.existsSync(sf)) return false
   try {
-    const saved = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8')) as SessionData
+    const saved = JSON.parse(fs.readFileSync(sf, 'utf-8')) as SessionData
     const cookies = Array.isArray(saved) ? saved : saved.cookies
     if (cookies?.length) await context.addCookies(cookies)
     return true
@@ -47,8 +57,8 @@ async function loadSession(context: BrowserContext): Promise<boolean> {
   }
 }
 
-async function login(page: Page) {
-  console.log('🔑 Logging in to Fansly...')
+async function login(page: Page, account: AccountConfig) {
+  console.log(`🔑 Logging in as ${account.email}...`)
   await page.goto('https://fansly.com', { waitUntil: 'networkidle' })
   await page.waitForTimeout(2000)
 
@@ -59,9 +69,9 @@ async function login(page: Page) {
   if (await loginBtn.count() > 0) { await loginBtn.first().click(); await page.waitForTimeout(1000) }
 
   await page.waitForSelector('#fansly_login', { timeout: 10000 })
-  await page.locator('#fansly_login').fill(process.env.FANSLY_EMAIL!)
+  await page.locator('#fansly_login').fill(account.email)
   await page.waitForTimeout(300)
-  await page.locator('#fansly_password').fill(process.env.FANSLY_PASSWORD!)
+  await page.locator('#fansly_password').fill(account.password)
   await page.waitForTimeout(500)
   await page.keyboard.press('Enter')
   await page.waitForTimeout(4000)
@@ -74,7 +84,7 @@ async function login(page: Page) {
       console.log('  ⏳ Waiting for next TOTP window...')
       await page.waitForTimeout((remaining + 2) * 1000)
     }
-    const code = generateTOTP(process.env.FANSLY_TOTP_KEY!)
+    const code = generateTOTP(account.totpKey)
     await has2FA.fill(code)
     await page.keyboard.press('Enter')
     await page.waitForTimeout(5000)
@@ -82,9 +92,9 @@ async function login(page: Page) {
 
   const session = await page.evaluate('localStorage.getItem("session_active_session")').catch(() => null) as string | null
   if (!session || session === 'null') {
-    throw new Error('Login failed — no session token in localStorage after login')
+    throw new Error(`Login failed for ${account.email} — no session token in localStorage after login`)
   }
-  console.log('✅ Logged in')
+  console.log(`✅ Logged in as ${account.email}`)
 }
 
 function parseFanslyApiResponse(json: unknown): FanslyPost[] {
@@ -160,7 +170,12 @@ function parseFanslyApiResponse(json: unknown): FanslyPost[] {
   return posts
 }
 
-export async function scrapeFYP(targetCount = 100): Promise<FanslyPost[]> {
+export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Promise<FanslyPost[]> {
+  const acc: AccountConfig = account ?? {
+    email: process.env.FANSLY_EMAIL!,
+    password: process.env.FANSLY_PASSWORD!,
+    totpKey: process.env.FANSLY_TOTP_KEY!,
+  }
   const browser: Browser = await chromium.launch({ headless: process.env.HEADLESS !== 'false' })
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -194,11 +209,12 @@ export async function scrapeFYP(targetCount = 100): Promise<FanslyPost[]> {
   })
 
   // Try saved session
-  const hadSession = await loadSession(context)
+  const hadSession = await loadSession(context, acc.email)
   let authenticated = false
   if (hadSession) {
     try {
-      const saved = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8')) as SessionData
+      const sf = sessionFile(acc.email)
+      const saved = JSON.parse(fs.readFileSync(sf, 'utf-8')) as SessionData
       if (saved.localStorage) {
         await page.goto('https://fansly.com', { waitUntil: 'domcontentloaded' })
         await page.evaluate('ls => { for (const [k,v] of Object.entries(ls)) localStorage.setItem(k,v) }', saved.localStorage)
@@ -212,11 +228,11 @@ export async function scrapeFYP(targetCount = 100): Promise<FanslyPost[]> {
   }
 
   if (!authenticated) {
-    await login(page)
+    await login(page, acc)
   }
 
   // Save session state
-  await saveSession(context, page)
+  await saveSession(context, page, acc.email)
 
   // Navigate to FYP to trigger the timeline/home API call and capture auth headers
   if (!initialApiData) {
