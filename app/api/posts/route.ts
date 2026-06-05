@@ -10,11 +10,13 @@ export async function GET(request: NextRequest) {
   const type = searchParams.get('type') ?? 'all' // all | explicit | sfw
   const page = parseInt(searchParams.get('page') ?? '0')
   const limit = 30
+  const MAX_PER_CREATOR = 5  // cap so one creator doesn't dominate the feed
 
   let query = supabaseAdmin
     .from('trends_posts')
     .select('*, trends_ideas(id, folder, tags, notes)')
     .is('archived_at', null)
+    .gte('likes_current', 150) // always enforce minimum quality floor
 
   if (days > 0) {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
@@ -29,9 +31,21 @@ export async function GET(request: NextRequest) {
   else if (sort === 'liked') query = query.order('likes_current', { ascending: false })
   else query = query.order('scraped_at', { ascending: false })
 
-  query = query.range(page * limit, (page + 1) * limit - 1)
+  // Fetch enough to fill the page after diversity filter (fetch 5× to account for creator clustering)
+  query = query.range(page * limit * 5, (page * limit * 5) + (limit * 5) - 1)
 
   const { data, error } = await query
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ posts: data })
+
+  // Enforce per-creator cap for feed diversity
+  const perCreator: Record<string, number> = {}
+  const diverse = (data ?? []).filter(p => {
+    const key = p.creator_username?.toLowerCase() ?? ''
+    const count = perCreator[key] ?? 0
+    if (count >= MAX_PER_CREATOR) return false
+    perCreator[key] = count + 1
+    return true
+  }).slice(0, limit)
+
+  return NextResponse.json({ posts: diverse })
 }
