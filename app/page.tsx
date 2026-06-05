@@ -1,65 +1,117 @@
-import Image from "next/image";
+'use client'
+import { useState, useEffect, useCallback } from 'react'
+import BenchmarkBar from '@/components/BenchmarkBar'
+import FilterBar, { type Filters } from '@/components/FilterBar'
+import PostCard, { type Post } from '@/components/PostCard'
+import PostModal from '@/components/PostModal'
+import Link from 'next/link'
 
-export default function Home() {
+const DEFAULT_FILTERS: Filters = {
+  sort: 'trending',
+  days: 7,
+  minLikes: 0,
+  hashtag: '',
+  type: 'all',
+}
+
+export default function FeedPage() {
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
+  const [posts, setPosts] = useState<Post[]>([])
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(0)
+  const [hasMore, setHasMore] = useState(true)
+  const [selectedPostId, setSelectedPostId] = useState<string | null>(null)
+
+  const fetchPosts = useCallback(async (f: Filters, p: number, replace: boolean) => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      sort: f.sort,
+      days: String(f.days),
+      minLikes: String(f.minLikes),
+      hashtag: f.hashtag,
+      type: f.type,
+      page: String(p),
+    })
+    const res = await fetch(`/api/posts?${params}`)
+    const data = await res.json()
+    const newPosts = data.posts ?? []
+    setPosts(prev => replace ? newPosts : [...prev, ...newPosts])
+    setHasMore(newPosts.length === 30)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    setPage(0)
+    fetchPosts(filters, 0, true)
+  }, [filters, fetchPosts])
+
+  function handleLoadMore() {
+    const next = page + 1
+    setPage(next)
+    fetchPosts(filters, next, false)
+  }
+
+  function handleBookmarkChange() {
+    fetchPosts(filters, 0, true)
+    setPage(0)
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="min-h-screen bg-[#0a0a0a] text-white">
+      <nav className="bg-[#0f0f0f] border-b border-[#1e1e1e] px-4 py-3 flex items-center justify-between sticky top-0 z-10">
+        <h1 className="text-sm font-bold text-white">FanslyTrends</h1>
+        <div className="flex gap-4 text-xs text-[#666]">
+          <span className="text-white">Feed</span>
+          <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
+          <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
+        </div>
+      </nav>
+
+      <BenchmarkBar />
+      <FilterBar filters={filters} onChange={setFilters} />
+
+      <div className="p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+        {posts.map(post => (
+          <PostCard
+            key={post.id}
+            post={post}
+            onClick={() => setSelectedPostId(post.id)}
+            onBookmark={() => setSelectedPostId(post.id)}
+          />
+        ))}
+      </div>
+
+      {loading && (
+        <div className="flex justify-center py-12">
+          <div className="w-6 h-6 border-2 border-[#333] border-t-white rounded-full animate-spin" />
+        </div>
+      )}
+
+      {!loading && posts.length === 0 && (
+        <div className="text-center py-20 text-[#444]">
+          <p className="text-lg mb-2">No posts found</p>
+          <p className="text-sm">Try adjusting your filters or run the scraper first</p>
+        </div>
+      )}
+
+      {!loading && hasMore && posts.length > 0 && (
+        <div className="flex justify-center py-8">
+          <button
+            onClick={handleLoadMore}
+            className="bg-[#1a1a1a] border border-[#2a2a2a] text-[#888] hover:text-white hover:border-[#444] px-6 py-2 rounded-lg text-sm transition-colors"
+          >
+            Load more
+          </button>
+        </div>
+      )}
+
+      {selectedPostId && (
+        <PostModal
+          postId={selectedPostId}
+          onClose={() => setSelectedPostId(null)}
+          onBookmarkChange={handleBookmarkChange}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+      )}
     </div>
-  );
+  )
 }

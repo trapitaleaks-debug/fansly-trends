@@ -1,0 +1,39 @@
+name: Daily FYP Scrape
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 2am UTC daily
+  workflow_dispatch:        # allow manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Run scraper
+        run: npx ts-node --project scraper/tsconfig.json scraper/index.ts
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: fansly-trends
+          FANSLY_EMAIL: ${{ secrets.FANSLY_EMAIL }}
+          FANSLY_PASSWORD: ${{ secrets.FANSLY_PASSWORD }}
+          FANSLY_TOTP_KEY: ${{ secrets.FANSLY_TOTP_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_MANAGER_CHAT_ID: ${{ secrets.TELEGRAM_MANAGER_CHAT_ID }}

@@ -5,19 +5,30 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "scrape": "ts-node --project scraper/tsconfig.json scraper/index.ts",
+    "scrape:discover": "DISCOVERY=true ts-node --project scraper/tsconfig.json scraper/index.ts",
+    "scrape:headed": "HEADLESS=false ts-node --project scraper/tsconfig.json scraper/index.ts",
+    "velocity": "ts-node --project scraper/tsconfig.json scraper/velocity.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1062.0",
+    "@aws-sdk/s3-request-presigner": "^3.1062.0",
+    "@supabase/supabase-js": "^2.107.0",
+    "dotenv": "^17.4.2",
     "next": "16.2.7",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^20.19.41",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "otplib": "^13.4.1",
+    "playwright": "^1.60.0",
     "tailwindcss": "^4",
+    "ts-node": "^10.9.2",
     "typescript": "^5"
   }
 }
