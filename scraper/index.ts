@@ -8,7 +8,6 @@ import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
 
 const MIN_LIKES = 150
 const TARGET_COUNT = 100
-const MAX_PER_CREATOR = 5      // cap per creator to ensure feed diversity
 // Collect far more raw posts than needed; most won't hit MIN_LIKES threshold
 const RAW_COLLECT = 4000
 
@@ -24,8 +23,6 @@ async function main() {
     const posts = await scrapeFYP(RAW_COLLECT)
     console.log(`\n📦 Processing ${posts.length} collected posts...`)
 
-    const perCreator: Record<string, number> = {}
-
     for (const post of posts) {
       if (added >= TARGET_COUNT) { skipped++; continue } // stop once we have enough
       // filters
@@ -33,10 +30,6 @@ async function main() {
       if (post.likes < MIN_LIKES) { skipped++; continue }
       if (blacklist.includes(post.creator_username.toLowerCase())) { skipped++; continue }
       if (!post.id) { skipped++; continue }
-      // per-creator cap: keep the best posts per creator, skip the rest
-      const creatorKey = post.creator_username.toLowerCase()
-      if ((perCreator[creatorKey] ?? 0) >= MAX_PER_CREATOR) { skipped++; continue }
-      perCreator[creatorKey] = (perCreator[creatorKey] ?? 0) + 1
 
       try {
         let videoKey = ''
