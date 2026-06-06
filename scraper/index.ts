@@ -9,10 +9,10 @@ import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
 import { generateSuggestions } from '../lib/suggestions'
 
 const MIN_LIKES = 150
-const TARGET_COUNT = 2000
-const RAW_COLLECT_PER_ACCOUNT = 300  // reduced: faster per-account, still diverse
-const HASHTAG_TOP_N = 30             // top 30 trending tags
-const HASHTAG_PAGES_PER_TAG = 5      // 5 pages × 10 items = 50 per tag
+const TARGET_COUNT = 4000
+const RAW_COLLECT_PER_ACCOUNT = 600
+const HASHTAG_TOP_N = 50             // top 50 trending tags
+const HASHTAG_PAGES_PER_TAG = 8      // 8 pages × 10 items = 80 per tag
 
 const BANNED_HASHTAGS = new Set([
   'deepthroat','porn','creampie','hotwife','bigdick','breeding','analcreampie',
