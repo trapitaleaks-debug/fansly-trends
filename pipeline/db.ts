@@ -42,6 +42,21 @@ export type ContentFormat = 'text_overlay' | 'flashing' | 'cta' | 'viral_hook' |
 export type OverlayFormula = 'grammar_bait' | 'celebrity_bait' | 'trolling' | 'controversial_opinion'
 export type CtaType = 'comment' | 'share' | 'follow'
 
+export interface VideoScores {
+  hook_power: number
+  replayability: number
+  retention: number
+  payoff: number
+  video_quality: number
+  content_calibration: number
+  text_captions: number
+  background_props: number
+  ai_quality: number    // < 5 = auto-disqualify (clearly AI)
+  total: number         // sum of all 9 dimensions (max 90)
+  disqualified: boolean
+  notes: string
+}
+
 export interface Brief {
   slot: number
   content_format: ContentFormat
@@ -56,6 +71,7 @@ export interface Brief {
   cta_type?: CtaType            // for cta format
   hashtags: string[]
   caption: string               // with comment trigger or CTA
+  quality_scores?: VideoScores | null  // set after video processing
 }
 
 export async function getActiveModels(): Promise<PipelineModel[]> {

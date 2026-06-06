@@ -43,7 +43,7 @@ const SCORE_DIMS: { key: keyof Suggestion; label: string }[] = [
   { key: 'score_background', label: 'Background' },
 ]
 
-function ScoreBadge({ total, onClick }: { total: number | null; onClick: () => void }) {
+function ScoreBadge({ total, onClick }: { total: number | null; onClick: (e: React.MouseEvent) => void }) {
   if (total === null) return null
   const color = total >= 60 ? 'text-green-400 border-green-500/30 bg-green-500/10'
     : total >= 50 ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10'
