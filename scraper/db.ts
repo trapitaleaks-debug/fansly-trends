@@ -55,6 +55,33 @@ export async function getBlacklist(): Promise<string[]> {
   return (data ?? []).map((r: { username: string }) => r.username.toLowerCase())
 }
 
+export async function getExistingPostIds(fanslyPostIds: string[]): Promise<Set<string>> {
+  if (fanslyPostIds.length === 0) return new Set()
+  const { data } = await getClient()
+    .from('trends_posts')
+    .select('fansly_post_id')
+    .in('fansly_post_id', fanslyPostIds)
+  return new Set((data ?? []).map((r: { fansly_post_id: string }) => r.fansly_post_id))
+}
+
+export async function batchUpdateLikes(updates: { fansly_post_id: string; likes_current: number }[]): Promise<void> {
+  if (updates.length === 0) return
+  const now = new Date().toISOString()
+  // Supabase doesn't support bulk update with per-row values, so we upsert
+  const rows = updates.map(u => ({
+    fansly_post_id: u.fansly_post_id,
+    likes_current: u.likes_current,
+    scraped_at: now,
+  }))
+  // Chunk into batches of 500 to stay within Supabase limits
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500)
+    await getClient()
+      .from('trends_posts')
+      .upsert(chunk, { onConflict: 'fansly_post_id', ignoreDuplicates: false })
+  }
+}
+
 export async function getPostsForVelocityCheck(): Promise<{ id: string; fansly_post_id: string; likes_initial: number }[]> {
   const cutoff = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()
   const { data } = await getClient()

@@ -4,14 +4,14 @@ dotenv.config({ path: path.join(__dirname, '../.env.local') })
 import { scrapeFYP, type AccountConfig, type FanslyPost } from './fansly'
 import { scrapeHashtags } from './hashtag'
 import { uploadBuffer, downloadUrl } from './storage'
-import { upsertPost, getBlacklist } from './db'
+import { upsertPost, getBlacklist, getExistingPostIds, batchUpdateLikes } from './db'
 import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
 
 const MIN_LIKES = 150
 const TARGET_COUNT = 2000
-const RAW_COLLECT_PER_ACCOUNT = 2000
-const HASHTAG_TOP_N = 100
-const HASHTAG_PAGES_PER_TAG = 10 // 10 pages × 10 items = 100 items per hashtag
+const RAW_COLLECT_PER_ACCOUNT = 300  // reduced: faster per-account, still diverse
+const HASHTAG_TOP_N = 30             // top 30 trending tags
+const HASHTAG_PAGES_PER_TAG = 5      // 5 pages × 10 items = 50 per tag
 
 function loadAccounts(): AccountConfig[] {
   if (process.env.FANSLY_ACCOUNTS) {
@@ -30,6 +30,7 @@ function loadAccounts(): AccountConfig[] {
 
 async function main() {
   console.log('🚀 FanslyTrends scraper starting...')
+  const startTime = Date.now()
 
   let added = 0, updated = 0, skipped = 0
 
@@ -68,7 +69,7 @@ async function main() {
 
     // Phase 2: Hashtag scraping using first account's captured headers
     if (Object.keys(firstAccountHeaders).length > 0) {
-      console.log('\n--- Phase 2: Hashtag scraping (top 100 tags) ---')
+      console.log(`\n--- Phase 2: Hashtag scraping (top ${HASHTAG_TOP_N} tags) ---`)
       try {
         const hashtagPosts = await scrapeHashtags(firstAccountHeaders, HASHTAG_TOP_N, HASHTAG_PAGES_PER_TAG)
         let hashtagFresh = 0
@@ -89,28 +90,40 @@ async function main() {
     }
 
     // Phase 3: Process and save qualifying posts
-    const allPosts = Array.from(postMap.values()).sort((a, b) => b.likes - a.likes)
-    console.log(`\n--- Phase 3: Processing ${allPosts.length} unique posts (sorted by likes) ---`)
+    const allPosts = Array.from(postMap.values())
+      .filter(p => p.id && p.is_video && p.likes >= MIN_LIKES && !blacklist.includes(p.creator_username.toLowerCase()))
+      .sort((a, b) => b.likes - a.likes)
 
-    for (const post of allPosts) {
+    console.log(`\n--- Phase 3: Processing ${allPosts.length} qualifying posts (≥${MIN_LIKES} likes, videos only) ---`)
+
+    // Load all existing post IDs in one DB call — skip re-downloads for them
+    const allPostIds = allPosts.map(p => p.id)
+    const existingIds = await getExistingPostIds(allPostIds)
+    console.log(`  📦 ${existingIds.size} already in DB, ${allPosts.length - existingIds.size} new`)
+
+    // Batch-update likes for existing posts (one DB call, no downloads)
+    const existingPosts = allPosts.filter(p => existingIds.has(p.id))
+    if (existingPosts.length > 0) {
+      await batchUpdateLikes(existingPosts.map(p => ({ fansly_post_id: p.id, likes_current: p.likes })))
+      updated = existingPosts.length
+      console.log(`  🔄 Batch-updated likes for ${updated} existing posts`)
+    }
+
+    // Download + upload + insert only for genuinely new posts
+    const newPosts = allPosts.filter(p => !existingIds.has(p.id))
+    console.log(`\n  ✨ Downloading and saving ${newPosts.length} new posts...`)
+
+    for (const post of newPosts) {
       if (added >= TARGET_COUNT) { skipped++; continue }
-      if (!post.is_video) { skipped++; continue }
-      if (post.likes < MIN_LIKES) { skipped++; continue }
-      if (blacklist.includes(post.creator_username.toLowerCase())) { skipped++; continue }
-      if (!post.id) { skipped++; continue }
 
       try {
         let videoKey = ''
         let thumbnailKey = ''
 
-        if (post.video_url) {
-          if (!post.video_url.startsWith('http')) {
-            console.warn(`  ⚠️  Relative video URL for ${post.id}, skipping upload`)
-          } else {
-            videoKey = `videos/${post.id}.mp4`
-            const videoBuffer = await downloadUrl(post.video_url)
-            await uploadBuffer(videoKey, videoBuffer, 'video/mp4')
-          }
+        if (post.video_url && post.video_url.startsWith('http')) {
+          videoKey = `videos/${post.id}.mp4`
+          const videoBuffer = await downloadUrl(post.video_url)
+          await uploadBuffer(videoKey, videoBuffer, 'video/mp4')
         }
 
         if (post.thumbnail_url && post.thumbnail_url.startsWith('http')) {
@@ -119,7 +132,7 @@ async function main() {
           await uploadBuffer(thumbnailKey, thumbBuffer, 'image/jpeg')
         }
 
-        const result = await upsertPost({
+        await upsertPost({
           fansly_post_id: post.id,
           creator_username: post.creator_username,
           creator_fansly_url: `https://fansly.com/${post.creator_username}`,
@@ -134,19 +147,18 @@ async function main() {
           post_date: post.post_date,
         })
 
-        if (result === 'inserted') added++
-        else updated++
-
-        console.log(`  ${result === 'inserted' ? '✨' : '🔄'} ${result}: @${post.creator_username} (${post.likes} likes)`)
+        added++
+        console.log(`  ✨ inserted: @${post.creator_username} (${post.likes} likes)`)
       } catch (err) {
         console.error(`  ❌ Failed to process post ${post.id}:`, err)
         skipped++
       }
     }
 
-    console.log(`\n✅ Done — added: ${added}, updated: ${updated}, skipped: ${skipped}`)
+    const elapsed = Math.round((Date.now() - startTime) / 1000)
+    console.log(`\n✅ Done in ${elapsed}s — added: ${added}, updated: ${updated}, skipped: ${skipped}`)
     await sendTelegram(scraperSuccess(added, updated, skipped))
-    process.exit(0) // force exit — Supabase/Playwright leave open handles otherwise
+    process.exit(0)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('💥 Scraper crashed:', msg)

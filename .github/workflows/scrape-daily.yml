@@ -1,15 +1,18 @@
-name: Daily FYP Scrape
+name: Hourly FYP Scrape
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # 3am UTC (less congested than 2am)
-    - cron: '0 15 * * *'  # 3pm UTC — second run to catch fresh content
+    - cron: '0 * * * *'   # every hour
   workflow_dispatch:        # allow manual trigger
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false  # don't cancel a running scrape if a new one queues
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
