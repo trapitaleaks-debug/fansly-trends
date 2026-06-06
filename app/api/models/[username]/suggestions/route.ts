@@ -22,7 +22,7 @@ export async function GET(request: NextRequest, { params }: Params) {
     .from('trends_suggestions')
     .select(`
       id, reasoning, branding_section, what_to_change, status, notes, generated_at,
-      trends_posts(id, creator_username, creator_fansly_url, likes_current, thumbnail_r2_key, caption, hashtags)
+      trends_posts(id, fansly_post_id, creator_username, creator_fansly_url, likes_current, thumbnail_r2_key, caption, hashtags)
     `)
     .eq('model_id', model.id)
     .eq('status', status)

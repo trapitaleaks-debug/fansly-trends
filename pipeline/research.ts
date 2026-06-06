@@ -172,6 +172,7 @@ export async function generateBriefs(model: PipelineModel): Promise<Brief[]> {
   ])
 
   console.log(`  Trending posts found: ${trendingPosts.length}`)
+  console.log(`  Branding file: ${model.branding_file_text ? `${model.branding_file_text.length} chars` : 'MISSING — briefs will be generic'}`)
 
   const hashtagPool = buildHashtagSet(tags, model.signature_tag, model.niche_tags)
   console.log(`  Hashtag pool (${hashtagPool.length}): ${hashtagPool.join(', ')}`)
@@ -205,12 +206,17 @@ Return ONLY a JSON array, no other text:
   }
 ]`
 
+  // Inject branding file into system prompt if available
+  const brandingSection = model.branding_file_text
+    ? `\n\n---\n\n## THIS MODEL'S BRANDING FILE\n\nUse this to make every brief specific to her — personality, tone, visual style, content themes.\n\n${model.branding_file_text}`
+    : ''
+
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 3000,
     messages: [{
       role: 'user',
-      content: [{ type: 'text', text: SYSTEM_PROMPT + '\n\n---\n\n' + userPrompt }],
+      content: [{ type: 'text', text: SYSTEM_PROMPT + brandingSection + '\n\n---\n\n' + userPrompt }],
     }],
   })
 

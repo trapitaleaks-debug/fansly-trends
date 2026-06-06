@@ -48,6 +48,9 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   // Delete
   const [confirmDelete, setConfirmDelete] = useState(false)
 
+  // Dismiss all
+  const [dismissingAll, setDismissingAll] = useState(false)
+
   useEffect(() => {
     fetchModel()
   }, [username])
@@ -135,6 +138,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   function handleAddSuggestedHashtag(tag: string) {
     if (!hashtags.includes(tag) && hashtags.length < 50) {
       setHashtags(prev => [...prev, tag])
+      setEditingHashtags(true) // show Save button automatically
     }
     setSuggestedHashtags(prev => prev.filter(t => t !== tag))
   }
@@ -177,6 +181,14 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   async function handleDelete() {
     await fetch(`/api/models/${username}`, { method: 'DELETE' })
     router.push('/models')
+  }
+
+  async function handleDismissAll() {
+    setDismissingAll(true)
+    await fetch(`/api/models/${username}/suggestions/dismiss-all`, { method: 'POST' })
+    setSuggestions([])
+    setDismissingAll(false)
+    fetchModel()
   }
 
   function handleLoadMore() {
@@ -401,20 +413,31 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 bg-[#111] border border-[#1e1e1e] rounded-xl p-1">
-            {(['pending', 'done', 'dismissed'] as const).map(tab => (
+          <div className="flex items-center gap-2">
+            <div className="flex flex-1 gap-1 bg-[#111] border border-[#1e1e1e] rounded-xl p-1">
+              {(['pending', 'done', 'dismissed'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`flex-1 text-xs py-2 rounded-lg capitalize transition-colors ${
+                    activeTab === tab
+                      ? 'bg-white text-black font-medium'
+                      : 'text-[#666] hover:text-[#999]'
+                  }`}
+                >
+                  {tab} {tabCount(tab) > 0 && `(${tabCount(tab)})`}
+                </button>
+              ))}
+            </div>
+            {activeTab === 'pending' && tabCount('pending') > 0 && (
               <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`flex-1 text-xs py-2 rounded-lg capitalize transition-colors ${
-                  activeTab === tab
-                    ? 'bg-white text-black font-medium'
-                    : 'text-[#666] hover:text-[#999]'
-                }`}
+                onClick={handleDismissAll}
+                disabled={dismissingAll}
+                className="text-xs text-[#444] hover:text-red-400 border border-[#1e1e1e] hover:border-red-400/30 px-3 py-2 rounded-xl transition-colors disabled:opacity-50 whitespace-nowrap"
               >
-                {tab} {tabCount(tab) > 0 && `(${tabCount(tab)})`}
+                {dismissingAll ? 'Dismissing...' : 'Dismiss all'}
               </button>
-            ))}
+            )}
           </div>
 
           {/* Suggestions list */}

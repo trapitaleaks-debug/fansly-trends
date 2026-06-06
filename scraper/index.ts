@@ -4,8 +4,9 @@ dotenv.config({ path: path.join(__dirname, '../.env.local') })
 import { scrapeFYP, type AccountConfig, type FanslyPost } from './fansly'
 import { scrapeHashtags } from './hashtag'
 import { uploadBuffer, downloadUrl } from './storage'
-import { upsertPost, getBlacklist, getExistingPostIds, batchUpdateLikes } from './db'
+import { upsertPost, getBlacklist, getExistingPostIds, batchUpdateLikes, getClient } from './db'
 import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
+import { generateSuggestions } from '../lib/suggestions'
 
 const MIN_LIKES = 150
 const TARGET_COUNT = 2000
@@ -170,6 +171,26 @@ async function main() {
     const elapsed = Math.round((Date.now() - startTime) / 1000)
     console.log(`\n✅ Done in ${elapsed}s — added: ${added}, updated: ${updated}, skipped: ${skipped}`)
     await sendTelegram(scraperSuccess(added, updated, skipped))
+
+    // Auto-generate suggestions for all models with a branding file
+    if (process.env.ANTHROPIC_API_KEY) {
+      console.log('\n--- Phase 4: Auto-generating suggestions ---')
+      const { data: models } = await getClient()
+        .from('trends_models')
+        .select('id, fansly_username, branding_file_md')
+        .not('branding_file_md', 'is', null)
+        .neq('branding_file_md', '')
+
+      for (const model of (models ?? [])) {
+        try {
+          const n = await generateSuggestions(model.id, model.branding_file_md)
+          console.log(`  ✅ @${model.fansly_username}: ${n} new suggestions`)
+        } catch (err) {
+          console.error(`  ❌ @${model.fansly_username} suggestions failed:`, err instanceof Error ? err.message : err)
+        }
+      }
+    }
+
     process.exit(0)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

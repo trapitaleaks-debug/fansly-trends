@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 interface Post {
   id: string
+  fansly_post_id: string
   creator_username: string
   creator_fansly_url: string | null
   likes_current: number
@@ -137,7 +138,7 @@ export default function SuggestionCard({ suggestion, onStatusChange, onNotesChan
               </a>
               <span className="text-xs text-[#555]">❤️ {fmt(post.likes_current)}</span>
               <a
-                href={`https://fansly.com/${post.creator_username}`}
+                href={`https://fansly.com/post/${post.fansly_post_id}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-xs text-blue-500/70 hover:text-blue-400 transition-colors"
