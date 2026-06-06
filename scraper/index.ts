@@ -91,7 +91,7 @@ async function main() {
 
     // Phase 3: Process and save qualifying posts
     const allPosts = Array.from(postMap.values())
-      .filter(p => p.id && p.is_video && p.likes >= MIN_LIKES && !blacklist.includes(p.creator_username.toLowerCase()))
+      .filter(p => p.id && p.is_video && p.video_url && p.likes >= MIN_LIKES && !blacklist.includes(p.creator_username.toLowerCase()))
       .sort((a, b) => b.likes - a.likes)
 
     console.log(`\n--- Phase 3: Processing ${allPosts.length} qualifying posts (≥${MIN_LIKES} likes, videos only) ---`)

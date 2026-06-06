@@ -16,6 +16,8 @@ export async function GET(request: NextRequest) {
     .select('*, trends_ideas(id, folder, tags, notes)')
     .is('archived_at', null)
     .gte('likes_current', 150) // always enforce minimum quality floor
+    .not('video_r2_key', 'is', null)
+    .neq('video_r2_key', '')
 
   if (days > 0) {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
@@ -26,7 +28,7 @@ export async function GET(request: NextRequest) {
   if (type === 'explicit') query = query.eq('is_explicit', true)
   if (type === 'sfw') query = query.eq('is_explicit', false)
 
-  if (sort === 'trending') query = query.order('growth_24h_pct', { ascending: false, nullsFirst: false })
+  if (sort === 'trending') query = query.order('likes_current', { ascending: false })
   else if (sort === 'liked') query = query.order('likes_current', { ascending: false })
   else query = query.order('scraped_at', { ascending: false })
 
