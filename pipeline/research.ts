@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Brief, ContentFormat, OverlayFormula, PipelineModel } from './db'
 import { getTrendingPosts } from './db'
+import { supabaseAdmin } from '../lib/supabase'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -31,58 +32,87 @@ const BLOCKED_GENERAL_TAGS = new Set([
   'pumpkin', 'dashaangel', // specific creator tags that leak into trending pools
 ])
 
+interface HashtagPools {
+  fixed: string[]   // evergreen (3) + signature (1) — same for all slots
+  impact: string[]  // 9-tag pool — rotated per slot
+  rising: string[]  // 9-tag pool — rotated per slot
+  lowSat: string[]  // fallback padding pool
+}
+
 /**
- * Builds hashtag set per SOP formula: 3+3+3+1 = exactly 10
- *
- * Evergreen (3)   — model.niche_tags: always-reliable high-volume tags for this model's niche
- * Highest Impact (3) — from fansly-tags API, filtered
- * Fastest Rising (3) — from fansly-tags API, filtered
- * Signature (1)   — model.signature_tag: unique brand tag
+ * Builds larger hashtag pools so each slot gets a different 3+3 selection
+ * from the Impact + Rising buckets. Per SOP: vary 3-4 tags between consecutive posts.
  */
-function buildHashtagSet(tags: TagsResponse, signatureTag: string | null, nicheTags: string[]): string[] {
+function buildHashtagPools(tags: TagsResponse, signatureTag: string | null, nicheTags: string[]): HashtagPools {
+  const nicheSet = new Set(nicheTags.map(t => t.toLowerCase()))
   const filterTag = (tag: string) =>
-    !BLOCKED_GENERAL_TAGS.has(tag.toLowerCase()) &&
-    !nicheTags.map(t => t.toLowerCase()).includes(tag.toLowerCase())
+    !BLOCKED_GENERAL_TAGS.has(tag.toLowerCase()) && !nicheSet.has(tag.toLowerCase())
 
-  // Evergreen (3): model's own niche tags
   const evergreen = nicheTags.slice(0, 3).map(t => `#${t.toLowerCase().replace(/\s+/g, '')}`)
-
-  // Highest Impact (3): growing but not overcrowded
-  const impact = tags.highestImpact
-    .filter(t => filterTag(t.tag))
-    .slice(0, 3)
-    .map(t => `#${t.tag}`)
-
-  // Fastest Rising (3): trending hard right now
-  const rising = tags.fastestRising
-    .filter(t => filterTag(t.tag))
-    .slice(0, 3)
-    .map(t => `#${t.tag}`)
-
-  // Signature (1): unique brand tag
   const sig = signatureTag
     ? [`#${signatureTag.replace(/^#/, '').toLowerCase().replace(/\s+/g, '')}`]
     : []
 
+  return {
+    fixed: [...new Set([...evergreen, ...sig])].slice(0, 4),
+    impact: tags.highestImpact.filter(t => filterTag(t.tag)).slice(0, 9).map(t => `#${t.tag}`),
+    rising: tags.fastestRising.filter(t => filterTag(t.tag)).slice(0, 9).map(t => `#${t.tag}`),
+    lowSat: tags.lowestSaturation.filter(t => filterTag(t.tag)).slice(0, 6).map(t => `#${t.tag}`),
+  }
+}
+
+/**
+ * Picks a different Impact+Rising window per slot.
+ * Shift by 2 each slot → 4 rotating tags differ between consecutive posts.
+ * SOP rule: "vary at least 3-4 tags between consecutive posts"
+ */
+function buildSlotHashtags(pools: HashtagPools, slotIndex: number): string[] {
+  const pickRotated = (arr: string[], start: number, count: number): string[] => {
+    if (arr.length === 0) return []
+    const result: string[] = []
+    for (let i = 0; i < arr.length && result.length < count; i++) {
+      result.push(arr[(start + i) % arr.length])
+    }
+    return result
+  }
+
+  const shift = slotIndex * 2
+  const selectedImpact = pickRotated(pools.impact, shift, 3)
+  const selectedRising = pickRotated(pools.rising, shift + 1, 3)  // +1 offset from impact for more variety
+
   const seen = new Set<string>()
-  const result = [...evergreen, ...impact, ...rising, ...sig].filter(t => {
+  const tags = [...pools.fixed, ...selectedImpact, ...selectedRising].filter(t => {
     if (seen.has(t)) return false
     seen.add(t)
     return true
   })
 
-  // Pad to 10 with lowestSaturation if we're short
-  if (result.length < 10) {
-    const pad = tags.lowestSaturation
-      .filter(t => filterTag(t.tag))
-      .map(t => `#${t.tag}`)
-    for (const t of pad) {
-      if (result.length >= 10) break
-      if (!seen.has(t)) { seen.add(t); result.push(t) }
-    }
+  for (const t of pools.lowSat) {
+    if (tags.length >= 10) break
+    if (!seen.has(t)) { seen.add(t); tags.push(t) }
   }
 
-  return result.slice(0, 10)
+  return tags.slice(0, 10)
+}
+
+/**
+ * Gets the content formats used in the last successful run for this model.
+ * Used to avoid repeating the same format sequence across cycles.
+ */
+async function getLastCycleFormats(modelId: string): Promise<string[]> {
+  const { data } = await supabaseAdmin
+    .from('pipeline_runs')
+    .select('briefs')
+    .eq('model_id', modelId)
+    .not('status', 'eq', 'failed')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single()
+
+  if (!data?.briefs) return []
+  return (data.briefs as Brief[])
+    .map(b => b.content_format)
+    .filter((f): f is ContentFormat => Boolean(f))
 }
 
 const SYSTEM_PROMPT = `You are a short-form video content strategist for a creator platform similar to TikTok.
@@ -166,16 +196,18 @@ A reaction clip of the model (shocked, laughing, blushing, eye roll) is overlaid
 export async function generateBriefs(model: PipelineModel): Promise<Brief[]> {
   console.log(`[research] Generating briefs for @${model.handle}`)
 
-  const [trendingPosts, tags] = await Promise.all([
+  const [trendingPosts, tags, lastFormats] = await Promise.all([
     getTrendingPosts(model.niche_tags, 10),
     fetchHashtags(),
+    getLastCycleFormats(model.id),
   ])
 
   console.log(`  Trending posts found: ${trendingPosts.length}`)
   console.log(`  Branding file: ${model.branding_file_text ? `${model.branding_file_text.length} chars` : 'MISSING — briefs will be generic'}`)
+  if (lastFormats.length > 0) console.log(`  Last cycle formats: ${lastFormats.join(', ')}`)
 
-  const hashtagPool = buildHashtagSet(tags, model.signature_tag, model.niche_tags)
-  console.log(`  Hashtag pool (${hashtagPool.length}): ${hashtagPool.join(', ')}`)
+  const hashtagPools = buildHashtagPools(tags, model.signature_tag, model.niche_tags)
+  console.log(`  Hashtag pools — impact: ${hashtagPools.impact.length} tags, rising: ${hashtagPools.rising.length} tags`)
 
   // Trending context — performance stats only, NO captions (captions are explicit)
   const trendContext = trendingPosts.length > 0
@@ -184,7 +216,11 @@ export async function generateBriefs(model: PipelineModel): Promise<Brief[]> {
       ).join('\n')
     : Array.from({ length: 6 }, (_, i) => `${i + 1}. @sample | ID: mock_post_${i + 1}`).join('\n')
 
-  const userPrompt = `Write 6 content briefs for 7–15 second reels. Vary the content_format across all 6 slots — do not repeat the same format more than twice. Use different overlay formulas within text_overlay slots.
+  const formatDiversityNote = lastFormats.length > 0
+    ? `\nLast cycle format sequence was: ${lastFormats.join(', ')}. Use a DIFFERENT sequence this cycle — don't repeat the same order.`
+    : ''
+
+  const userPrompt = `Write 6 content briefs for 7–15 second reels. Vary the content_format across all 6 slots — do not repeat the same format more than twice. Use different overlay formulas within text_overlay slots.${formatDiversityNote}
 
 Source the audio from these trending videos (use their IDs as source_post_id):
 ${trendContext}
@@ -241,8 +277,8 @@ Return ONLY a JSON array, no other text:
     overlay_text: b.overlay_text ?? '',
     overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
     cta_type: b.cta_type ?? undefined,
-    // Hashtags always injected programmatically — never from Claude
-    hashtags: hashtagPool,
+    // Hashtags injected programmatically with per-slot rotation — never from Claude
+    hashtags: buildSlotHashtags(hashtagPools, i),
     caption: b.caption ?? '',
   }))
 }
