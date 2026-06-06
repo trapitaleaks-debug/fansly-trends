@@ -2,17 +2,19 @@ import * as dotenv from 'dotenv'
 import * as path from 'path'
 dotenv.config({ path: path.join(__dirname, '../.env.local') })
 import { scrapeFYP, type AccountConfig, type FanslyPost } from './fansly'
-import { scrapeHashtags } from './hashtag'
+import { fetchTopHashtags, scrapeHashtagList } from './hashtag'
 import { uploadBuffer, downloadUrl } from './storage'
-import { upsertPost, getBlacklist, getExistingPostIds, batchUpdateLikes, getClient } from './db'
+import { upsertPost, getBlacklist, getExistingPostIds, batchUpdateLikes, getClient, enforceCreatorCap } from './db'
 import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
 import { generateSuggestions } from '../lib/suggestions'
 
 const MIN_LIKES = 150
 const TARGET_COUNT = 4000
-const RAW_COLLECT_PER_ACCOUNT = 600
-const HASHTAG_TOP_N = 50             // top 50 trending tags
-const HASHTAG_PAGES_PER_TAG = 8      // 8 pages × 10 items = 80 per tag
+const RAW_COLLECT_PER_ACCOUNT = 300
+const HASHTAG_TOP_N = 150
+const HASHTAG_PAGES_PER_TAG = 12
+const MIN_POSTS_PER_ACCOUNT = 500   // each account targets this many raw posts from its hashtags
+const MAX_POSTS_PER_CREATOR = 20    // max posts per creator in DB at any time
 
 const BANNED_HASHTAGS = new Set([
   'deepthroat','porn','creampie','hotwife','bigdick','breeding','analcreampie',
@@ -50,16 +52,18 @@ async function main() {
     console.log(`👥 Accounts: ${accounts.length}`)
 
     const postMap = new Map<string, FanslyPost>()
-    let firstAccountHeaders: Record<string, string> = {}
+    const accountHeaders: Array<{ email: string; headers: Record<string, string> }> = []
 
-    // Phase 1: FYP scraping across all accounts
+    // Phase 1: FYP scraping across all accounts — capture auth headers per account
     console.log('\n--- Phase 1: FYP scraping ---')
     for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i]
       console.log(`\n📡 Account ${i + 1}/${accounts.length}: ${acc.email}`)
       try {
         const { posts, headers } = await scrapeFYP(RAW_COLLECT_PER_ACCOUNT, acc)
-        if (i === 0 && Object.keys(headers).length > 0) firstAccountHeaders = headers
+        if (Object.keys(headers).length > 0) {
+          accountHeaders.push({ email: acc.email, headers })
+        }
         let fresh = 0
         for (const p of posts) {
           if (!p.id) continue
@@ -69,29 +73,42 @@ async function main() {
             if (!existing) fresh++
           }
         }
+        console.log(`  ✅ Scrape complete: ${posts.length} posts collected`)
         console.log(`  +${fresh} unique posts (${postMap.size} total so far)`)
       } catch (err) {
         console.error(`  ❌ Account ${acc.email} failed:`, err instanceof Error ? err.message : err)
       }
     }
 
-    // Phase 2: Hashtag scraping using first account's captured headers
-    if (Object.keys(firstAccountHeaders).length > 0) {
-      console.log(`\n--- Phase 2: Hashtag scraping (top ${HASHTAG_TOP_N} tags) ---`)
-      try {
-        const hashtagPosts = await scrapeHashtags(firstAccountHeaders, HASHTAG_TOP_N, HASHTAG_PAGES_PER_TAG)
-        let hashtagFresh = 0
-        for (const p of hashtagPosts) {
-          if (!p.id) continue
-          const existing = postMap.get(p.id)
-          if (!existing || p.likes > existing.likes) {
-            postMap.set(p.id, p)
-            if (!existing) hashtagFresh++
+    // Phase 2: Hashtag scraping — top 150 tags distributed across all accounts
+    if (accountHeaders.length > 0) {
+      console.log(`\n--- Phase 2: Hashtag scraping (top ${HASHTAG_TOP_N} tags, ${accountHeaders.length} accounts) ---`)
+
+      const allTags = await fetchTopHashtags(HASHTAG_TOP_N)
+      console.log(`  ✅ ${allTags.length} hashtags fetched`)
+
+      const chunkSize = Math.ceil(allTags.length / accountHeaders.length)
+
+      for (let i = 0; i < accountHeaders.length; i++) {
+        const { email, headers } = accountHeaders[i]
+        const tagSlice = allTags.slice(i * chunkSize, (i + 1) * chunkSize)
+        console.log(`\n  📡 Account ${i + 1}/${accountHeaders.length} (${email}): ${tagSlice.length} tags → target ${MIN_POSTS_PER_ACCOUNT} posts`)
+
+        try {
+          const posts = await scrapeHashtagList(headers, tagSlice, HASHTAG_PAGES_PER_TAG, MIN_POSTS_PER_ACCOUNT)
+          let fresh = 0
+          for (const p of posts) {
+            if (!p.id) continue
+            const existing = postMap.get(p.id)
+            if (!existing || p.likes > existing.likes) {
+              postMap.set(p.id, p)
+              if (!existing) fresh++
+            }
           }
+          console.log(`  ✅ +${fresh} fresh posts (${posts.length} collected, postMap: ${postMap.size})`)
+        } catch (err) {
+          console.error(`  ❌ Hashtag scraping failed for ${email}:`, err instanceof Error ? err.message : err)
         }
-        console.log(`\n🏷️  Hashtag scrape added ${hashtagFresh} new unique posts (total: ${postMap.size})`)
-      } catch (err) {
-        console.error('  ❌ Hashtag scraping failed:', err instanceof Error ? err.message : err)
       }
     } else {
       console.log('\n⚠️  No auth headers captured — skipping hashtag scraping')
@@ -109,12 +126,10 @@ async function main() {
 
     console.log(`\n--- Phase 3: Processing ${allPosts.length} qualifying posts (≥${MIN_LIKES} likes, videos only) ---`)
 
-    // Load all existing post IDs in one DB call — skip re-downloads for them
     const allPostIds = allPosts.map(p => p.id)
     const existingIds = await getExistingPostIds(allPostIds)
     console.log(`  📦 ${existingIds.size} already in DB, ${allPosts.length - existingIds.size} new`)
 
-    // Batch-update likes for existing posts (one DB call, no downloads)
     const existingPosts = allPosts.filter(p => existingIds.has(p.id))
     if (existingPosts.length > 0) {
       await batchUpdateLikes(existingPosts.map(p => ({ fansly_post_id: p.id, likes_current: p.likes })))
@@ -122,7 +137,6 @@ async function main() {
       console.log(`  🔄 Batch-updated likes for ${updated} existing posts`)
     }
 
-    // Download + upload + insert only for genuinely new posts
     const newPosts = allPosts.filter(p => !existingIds.has(p.id))
     console.log(`\n  ✨ Downloading and saving ${newPosts.length} new posts...`)
 
@@ -168,11 +182,17 @@ async function main() {
       }
     }
 
+    // Enforce per-creator cap: keep only top MAX_POSTS_PER_CREATOR by likes per creator
+    const archived = await enforceCreatorCap(MAX_POSTS_PER_CREATOR)
+    if (archived > 0) {
+      console.log(`  🧹 Archived ${archived} posts (creator cap: ${MAX_POSTS_PER_CREATOR}/creator)`)
+    }
+
     const elapsed = Math.round((Date.now() - startTime) / 1000)
     console.log(`\n✅ Done in ${elapsed}s — added: ${added}, updated: ${updated}, skipped: ${skipped}`)
     await sendTelegram(scraperSuccess(added, updated, skipped))
 
-    // Auto-generate suggestions for all models with a branding file
+    // Phase 4: Auto-generate suggestions for all models with a branding file
     if (process.env.ANTHROPIC_API_KEY) {
       console.log('\n--- Phase 4: Auto-generating suggestions ---')
       const { data: models } = await getClient()

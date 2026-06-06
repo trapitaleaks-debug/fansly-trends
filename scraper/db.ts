@@ -88,6 +88,42 @@ export async function getPostsForVelocityCheck(): Promise<{ id: string; fansly_p
   return data ?? []
 }
 
+export async function enforceCreatorCap(maxPosts: number): Promise<number> {
+  const { data: posts } = await getClient()
+    .from('trends_posts')
+    .select('id, creator_username, likes_current')
+    .is('archived_at', null)
+
+  if (!posts || posts.length === 0) return 0
+
+  const byCreator = new Map<string, Array<{ id: string; likes: number }>>()
+  for (const p of posts) {
+    const list = byCreator.get(p.creator_username) ?? []
+    list.push({ id: p.id, likes: p.likes_current })
+    byCreator.set(p.creator_username, list)
+  }
+
+  const toArchive: string[] = []
+  for (const [, creatorPosts] of byCreator) {
+    if (creatorPosts.length <= maxPosts) continue
+    creatorPosts.sort((a, b) => b.likes - a.likes)
+    toArchive.push(...creatorPosts.slice(maxPosts).map(p => p.id))
+  }
+
+  if (toArchive.length === 0) return 0
+
+  const now = new Date().toISOString()
+  for (let i = 0; i < toArchive.length; i += 100) {
+    const chunk = toArchive.slice(i, i + 100)
+    await getClient()
+      .from('trends_posts')
+      .update({ archived_at: now })
+      .in('id', chunk)
+  }
+
+  return toArchive.length
+}
+
 export async function updateVelocity(id: string, likesCurrent: number, likesInitial: number) {
   const growth = likesInitial > 0
     ? parseFloat((((likesCurrent - likesInitial) / likesInitial) * 100).toFixed(2))

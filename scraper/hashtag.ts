@@ -1,7 +1,5 @@
 import { type FanslyPost } from './fansly'
 
-interface TagInfo { id: string; tag: string }
-
 async function getTagId(tag: string, headers: Record<string, string>): Promise<string | null> {
   try {
     const res = await fetch(`https://apiv3.fansly.com/api/v1/contentdiscovery/media/tag?tag=${encodeURIComponent(tag)}&ngsw-bypass=true`, {
@@ -101,40 +99,36 @@ function parseSuggestions(json: Record<string, unknown>): FanslyPost[] {
   return posts
 }
 
-export async function scrapeHashtags(
+export async function fetchTopHashtags(n: number): Promise<string[]> {
+  const res = await fetch(`https://fansly-tags.vercel.app/api/tags?sort=views&limit=${n}`)
+  if (!res.ok) throw new Error(`Failed to fetch hashtags: ${res.status}`)
+  const json = await res.json() as Record<string, unknown>
+  const raw = (json?.mostViewed ?? json?.tags ?? []) as Record<string, unknown>[]
+  return raw.slice(0, n).map(t => String(t.tag ?? '')).filter(Boolean)
+}
+
+// Scrape a pre-assigned slice of hashtags using one account's auth headers.
+// Stops early once targetRaw qualifying posts (video with URL) are collected.
+export async function scrapeHashtagList(
   headers: Record<string, string>,
-  topN = 100,
-  pagesPerTag = 10,
+  tags: string[],
+  pagesPerTag: number,
+  targetRaw: number,
 ): Promise<FanslyPost[]> {
-  // 1. Fetch top N hashtags from fansly-tags API
-  console.log(`  📥 Fetching top ${topN} hashtags from fansly-tags...`)
-  let tags: TagInfo[] = []
-  try {
-    const res = await fetch(`https://fansly-tags.vercel.app/api/tags?sort=views&limit=${topN}`)
-    const json = await res.json() as Record<string, unknown>
-    const raw = (json?.mostViewed ?? json?.tags ?? []) as Record<string, unknown>[]
-    tags = raw.slice(0, topN).map(t => ({ id: '', tag: String(t.tag ?? '') })).filter(t => t.tag)
-    console.log(`  ✅ Got ${tags.length} hashtags`)
-  } catch (err) {
-    console.error('  ❌ Failed to fetch hashtags:', err)
-    return []
-  }
-
   const allPosts = new Map<string, FanslyPost>()
-  let tagsDone = 0
 
-  for (const tagInfo of tags) {
-    // 2. Look up tag ID
-    const tagId = await getTagId(tagInfo.tag, headers)
+  for (const tag of tags) {
+    if (allPosts.size >= targetRaw) break
+
+    const tagId = await getTagId(tag, headers)
     if (!tagId) {
-      console.log(`  ⚠️  No ID for #${tagInfo.tag}`)
       await new Promise(r => setTimeout(r, 500))
       continue
     }
 
-    let tagPosts = 0
-    // 3. Paginate suggestions for this tag
     for (let page = 0; page < pagesPerTag; page++) {
+      if (allPosts.size >= targetRaw) break
+
       const offset = page * 10
       try {
         const res = await fetch(
@@ -142,38 +136,32 @@ export async function scrapeHashtags(
           { headers: buildHeaders(headers) }
         )
         if (res.status === 429) {
-          console.log(`  ⏳ Rate limited on #${tagInfo.tag} — waiting 60s...`)
+          console.log(`  ⏳ Rate limited on #${tag} — waiting 60s...`)
           await new Promise(r => setTimeout(r, 60000))
-          page-- // retry this page
+          page--
           continue
         }
         if (!res.ok) break
 
         const json = await res.json() as Record<string, unknown>
         const pagePosts = parseSuggestions(json)
-        if (pagePosts.length === 0) break // no more results
+        if (pagePosts.length === 0) break
 
         for (const p of pagePosts) {
-          if (!p.id) continue
+          if (!p.id || !p.video_url) continue
           const existing = allPosts.get(p.id)
           if (!existing || p.likes > existing.likes) allPosts.set(p.id, p)
-          tagPosts++
         }
 
         await new Promise(r => setTimeout(r, 800))
       } catch (err) {
-        console.error(`  ❌ Error on #${tagInfo.tag} page ${page}:`, err)
+        console.error(`  ❌ Error on #${tag} page ${page}:`, err)
         break
       }
     }
 
-    tagsDone++
-    if (tagsDone % 10 === 0) {
-      console.log(`  🏷️  ${tagsDone}/${tags.length} hashtags done | ${allPosts.size} unique posts so far`)
-    }
     await new Promise(r => setTimeout(r, 500))
   }
 
-  console.log(`  ✅ Hashtag scrape done: ${allPosts.size} unique posts from ${tagsDone} hashtags`)
   return Array.from(allPosts.values())
 }
