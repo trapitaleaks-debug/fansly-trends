@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     .gte('likes_current', 150) // always enforce minimum quality floor
     .not('video_r2_key', 'is', null)
     .neq('video_r2_key', '')
-    .not('hashtags', 'ov', '{deepthroat,porn,creampie,hotwife,bigdick,breeding,analcreampie,sex,bbc,bwc,bigcock,hugecock,hugedick,swingers,couple,couples,wifesharing,wifeswap,blacked,monstercock,gangbang}')
+    .not('hashtags', 'ov', '{deepthroat,porn,creampie,hotwife,bigdick,breeding,analcreampie,sex,bbc,bwc,bigcock,hugecock,hugedick,swingers,couple,couples,wifesharing,wifeswap,blacked,monstercock,gangbang,cumslut,analsex,cumeating,fuck,bg,sextape,standingfuck}')
 
   if (days > 0) {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()

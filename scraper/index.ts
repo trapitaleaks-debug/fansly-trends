@@ -17,6 +17,7 @@ const BANNED_HASHTAGS = new Set([
   'deepthroat','porn','creampie','hotwife','bigdick','breeding','analcreampie',
   'sex','bbc','bwc','bigcock','hugecock','hugedick','swingers','couple','couples',
   'wifesharing','wifeswap','blacked','monstercock','gangbang',
+  'cumslut','analsex','cumeating','fuck','bg','sextape','standingfuck',
 ])
 
 function loadAccounts(): AccountConfig[] {
