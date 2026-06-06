@@ -13,6 +13,12 @@ const RAW_COLLECT_PER_ACCOUNT = 300  // reduced: faster per-account, still diver
 const HASHTAG_TOP_N = 30             // top 30 trending tags
 const HASHTAG_PAGES_PER_TAG = 5      // 5 pages × 10 items = 50 per tag
 
+const BANNED_HASHTAGS = new Set([
+  'deepthroat','porn','creampie','hotwife','bigdick','breeding','analcreampie',
+  'sex','bbc','bwc','bigcock','hugecock','hugedick','swingers','couple','couples',
+  'wifesharing','wifeswap','blacked','monstercock','gangbang',
+])
+
 function loadAccounts(): AccountConfig[] {
   if (process.env.FANSLY_ACCOUNTS) {
     try {
@@ -91,7 +97,12 @@ async function main() {
 
     // Phase 3: Process and save qualifying posts
     const allPosts = Array.from(postMap.values())
-      .filter(p => p.id && p.is_video && p.video_url && p.likes >= MIN_LIKES && !blacklist.includes(p.creator_username.toLowerCase()))
+      .filter(p => {
+        if (!p.id || !p.is_video || !p.video_url || p.likes < MIN_LIKES) return false
+        if (blacklist.includes(p.creator_username.toLowerCase())) return false
+        if (p.hashtags.some(h => BANNED_HASHTAGS.has(h.toLowerCase()))) return false
+        return true
+      })
       .sort((a, b) => b.likes - a.likes)
 
     console.log(`\n--- Phase 3: Processing ${allPosts.length} qualifying posts (≥${MIN_LIKES} likes, videos only) ---`)
