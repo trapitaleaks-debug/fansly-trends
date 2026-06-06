@@ -63,6 +63,7 @@ export default function FeedPage() {
         <div className="flex gap-4 text-xs text-[#666]">
           <span className="text-white">Feed</span>
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
+          <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
         </div>
       </nav>

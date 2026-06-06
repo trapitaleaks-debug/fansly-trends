@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "../.pipeline-dist",
+    "rootDir": "..",
+    "resolveJsonModule": true,
+    "baseUrl": ".."
+  },
+  "include": ["./**/*.ts", "../lib/**/*.ts", "../scraper/storage.ts", "../scraper/totp.ts"],
+  "exclude": ["node_modules"]
+}

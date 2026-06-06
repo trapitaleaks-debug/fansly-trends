@@ -57,6 +57,7 @@ export default function IdeasPage() {
         <div className="flex gap-4 text-xs text-[#666]">
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <span className="text-white">Ideas</span>
+          <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
         </div>
       </nav>

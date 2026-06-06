@@ -43,6 +43,7 @@ export default function SettingsPage() {
         <div className="flex gap-4 text-xs text-[#666]">
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
+          <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           <span className="text-white">Settings</span>
         </div>
       </nav>
