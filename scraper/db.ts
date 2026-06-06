@@ -66,19 +66,15 @@ export async function getExistingPostIds(fanslyPostIds: string[]): Promise<Set<s
 
 export async function batchUpdateLikes(updates: { fansly_post_id: string; likes_current: number }[]): Promise<void> {
   if (updates.length === 0) return
-  const now = new Date().toISOString()
-  // Supabase doesn't support bulk update with per-row values, so we upsert
-  const rows = updates.map(u => ({
-    fansly_post_id: u.fansly_post_id,
-    likes_current: u.likes_current,
-    scraped_at: now,
-  }))
-  // Chunk into batches of 500 to stay within Supabase limits
-  for (let i = 0; i < rows.length; i += 500) {
-    const chunk = rows.slice(i, i + 500)
-    await getClient()
-      .from('trends_posts')
-      .upsert(chunk, { onConflict: 'fansly_post_id', ignoreDuplicates: false })
+  // Parallel batches of 50 — only update likes_current, never scraped_at
+  for (let i = 0; i < updates.length; i += 50) {
+    const chunk = updates.slice(i, i + 50)
+    await Promise.all(chunk.map(u =>
+      getClient()
+        .from('trends_posts')
+        .update({ likes_current: u.likes_current })
+        .eq('fansly_post_id', u.fansly_post_id)
+    ))
   }
 }
 
