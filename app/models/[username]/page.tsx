@@ -28,6 +28,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [suggestionsLoading, setSuggestionsLoading] = useState(false)
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
+  const [sortBy, setSortBy] = useState<'score' | 'latest'>('score')
 
   // Branding file
   const [brandingFileName, setBrandingFileName] = useState<string | null>(null)
@@ -66,9 +67,10 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     setLoading(false)
   }
 
-  const fetchSuggestions = useCallback(async (status: SuggestionStatus, p: number, replace: boolean) => {
+  const fetchSuggestions = useCallback(async (status: SuggestionStatus, p: number, replace: boolean, sort?: string) => {
     setSuggestionsLoading(true)
-    const res = await fetch(`/api/models/${username}/suggestions?status=${status}&page=${p}`)
+    const s = sort ?? sortBy
+    const res = await fetch(`/api/models/${username}/suggestions?status=${status}&page=${p}&sort=${s}`)
     const data = await res.json()
     const items = data.suggestions ?? []
     setSuggestions(prev => replace ? items : [...prev, ...items])
@@ -79,8 +81,8 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   useEffect(() => {
     setPage(0)
     setSuggestions([])
-    fetchSuggestions(activeTab, 0, true)
-  }, [activeTab, fetchSuggestions])
+    fetchSuggestions(activeTab, 0, true, sortBy)
+  }, [activeTab, sortBy, fetchSuggestions])
 
   async function handleBrandingUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -401,6 +403,20 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                   {generateMsg}
                 </span>
               )}
+              <div className="flex text-xs border border-[#2a2a2a] rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setSortBy('score')}
+                  className={`px-3 py-1.5 transition-colors ${sortBy === 'score' ? 'bg-[#1e1e1e] text-white' : 'text-[#555] hover:text-[#888]'}`}
+                >
+                  By score
+                </button>
+                <button
+                  onClick={() => setSortBy('latest')}
+                  className={`px-3 py-1.5 transition-colors ${sortBy === 'latest' ? 'bg-[#1e1e1e] text-white' : 'text-[#555] hover:text-[#888]'}`}
+                >
+                  Latest
+                </button>
+              </div>
               <button
                 onClick={handleGenerate}
                 disabled={generating || !model.branding_file_md}

@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 
 interface Post {
   id: string
@@ -20,7 +20,57 @@ export interface Suggestion {
   status: 'pending' | 'done' | 'dismissed'
   notes: string | null
   generated_at: string
+  score_hook: number | null
+  score_replayability: number | null
+  score_retention: number | null
+  score_payoff: number | null
+  score_video_quality: number | null
+  score_sexuality: number | null
+  score_text_captions: number | null
+  score_background: number | null
+  score_total: number | null
   trends_posts: Post
+}
+
+const SCORE_DIMS: { key: keyof Suggestion; label: string }[] = [
+  { key: 'score_hook', label: 'Hook' },
+  { key: 'score_replayability', label: 'Replayability' },
+  { key: 'score_retention', label: 'Retention' },
+  { key: 'score_payoff', label: 'Payoff' },
+  { key: 'score_video_quality', label: 'Video Quality' },
+  { key: 'score_sexuality', label: 'Sexuality Cal.' },
+  { key: 'score_text_captions', label: 'Text/Caption' },
+  { key: 'score_background', label: 'Background' },
+]
+
+function ScoreBadge({ total, onClick }: { total: number | null; onClick: () => void }) {
+  if (total === null) return null
+  const color = total >= 60 ? 'text-green-400 border-green-500/30 bg-green-500/10'
+    : total >= 50 ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10'
+    : 'text-red-400 border-red-500/30 bg-red-500/10'
+  return (
+    <button
+      onClick={onClick}
+      className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${color} transition-opacity hover:opacity-80`}
+      title="Click to see score breakdown"
+    >
+      {total}/80
+    </button>
+  )
+}
+
+function ScoreBar({ value }: { value: number | null }) {
+  if (value === null) return <span className="text-[#444] text-xs">—</span>
+  const pct = (value / 10) * 100
+  const color = value >= 7 ? 'bg-green-500' : value >= 5 ? 'bg-yellow-500' : 'bg-red-500'
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-1 bg-[#222] rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs text-[#666] w-4 text-right">{value}</span>
+    </div>
+  )
 }
 
 interface Props {
@@ -40,7 +90,13 @@ export default function SuggestionCard({ suggestion, onStatusChange, onNotesChan
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [videoLoading, setVideoLoading] = useState(false)
   const [showVideo, setShowVideo] = useState(false)
+  const [showScores, setShowScores] = useState(false)
   const post = suggestion.trends_posts
+
+  const toggleScores = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    setShowScores(v => !v)
+  }, [])
 
   async function loadVideo() {
     if (videoUrl) { setShowVideo(true); return }
@@ -137,6 +193,7 @@ export default function SuggestionCard({ suggestion, onStatusChange, onNotesChan
                 @{post.creator_username}
               </a>
               <span className="text-xs text-[#555]">❤️ {fmt(post.likes_current)}</span>
+              <ScoreBadge total={suggestion.score_total} onClick={toggleScores} />
               <a
                 href={`https://fansly.com/post/${post.fansly_post_id}`}
                 target="_blank"
@@ -193,6 +250,28 @@ export default function SuggestionCard({ suggestion, onStatusChange, onNotesChan
               <span className="text-[#555]">Change: </span>{suggestion.what_to_change}
             </p>
           </div>
+
+          {/* Score breakdown */}
+          {showScores && suggestion.score_total !== null && (
+            <div className="border border-[#1e1e1e] rounded-lg p-3 bg-[#0a0a0a]">
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                {SCORE_DIMS.map(({ key, label }) => (
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="text-xs text-[#555] w-24 shrink-0">{label}</span>
+                    <ScoreBar value={suggestion[key] as number | null} />
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 pt-2 border-t border-[#1e1e1e] flex items-center justify-between">
+                <span className="text-xs text-[#555]">Total</span>
+                <span className={`text-xs font-semibold ${
+                  suggestion.score_total >= 60 ? 'text-green-400'
+                  : suggestion.score_total >= 50 ? 'text-yellow-400'
+                  : 'text-red-400'
+                }`}>{suggestion.score_total}/80</span>
+              </div>
+            </div>
+          )}
 
           {/* Notes */}
           {editingNotes ? (

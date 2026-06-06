@@ -3,11 +3,23 @@ import { supabaseAdmin } from './supabase'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+interface ScoreInput {
+  hook: number
+  replayability: number
+  retention: number
+  payoff: number
+  video_quality: number
+  sexuality: number
+  text_captions: number
+  background: number
+}
+
 interface SuggestionInput {
   post_id: string
   reasoning: string
   branding_section: string
   what_to_change: string
+  scores?: ScoreInput
 }
 
 export async function generateSuggestions(modelId: string, brandingFileMd: string): Promise<number> {
@@ -61,6 +73,15 @@ Return a JSON array of up to 20 suggestions, ranked most relevant first. Each it
 - "reasoning": 1-2 sentences on why this video fits her brand
 - "branding_section": exact section header from her branding file (e.g. "§2B Brand Archetype — The Lover")
 - "what_to_change": 1-2 concrete sentences on how she should adapt it with her personal twist
+- "scores": object with 8 keys scored 0-10 each based on available text signals:
+  - "hook": stop-scroll power — use likes as proxy (1000+ → 9, 500+ → 7-8, 200+ → 6, 150 → 5)
+  - "replayability": rewatch likelihood — flash/loop mechanics in caption boost this
+  - "retention": mid-video hold — higher likes = proven retention; short punchy captions suggest good pacing
+  - "payoff": ending strength — infer from content type (flash content → 9, tease with reveal → 8, unclear → 5)
+  - "video_quality": estimate from niche professionalism norms (professional niches → 7, unknown → 5)
+  - "sexuality": FYP calibration — 8=perfect balance (teasing not explicit), 5=too tame, 10=likely suppressed; use hashtags
+  - "text_captions": caption quality — strong hook text or CTA → 8-9, empty/generic → 3-4, no caption → 2
+  - "background": setting quality — interesting location/props in caption → 7-8, bedroom only → 5, unknown → 5
 
 Return only the JSON array.`,
       },
@@ -86,14 +107,30 @@ Return only the JSON array.`,
 
   if (valid.length === 0) return 0
 
-  const rows = valid.map(s => ({
-    model_id: modelId,
-    post_id: s.post_id,
-    reasoning: s.reasoning,
-    branding_section: s.branding_section,
-    what_to_change: s.what_to_change,
-    status: 'pending',
-  }))
+  const rows = valid.map(s => {
+    const sc = s.scores
+    const score_total = sc
+      ? sc.hook + sc.replayability + sc.retention + sc.payoff +
+        sc.video_quality + sc.sexuality + sc.text_captions + sc.background
+      : null
+    return {
+      model_id: modelId,
+      post_id: s.post_id,
+      reasoning: s.reasoning,
+      branding_section: s.branding_section,
+      what_to_change: s.what_to_change,
+      status: 'pending',
+      score_hook: sc?.hook ?? null,
+      score_replayability: sc?.replayability ?? null,
+      score_retention: sc?.retention ?? null,
+      score_payoff: sc?.payoff ?? null,
+      score_video_quality: sc?.video_quality ?? null,
+      score_sexuality: sc?.sexuality ?? null,
+      score_text_captions: sc?.text_captions ?? null,
+      score_background: sc?.background ?? null,
+      score_total,
+    }
+  })
 
   const { error: insertError } = await supabaseAdmin
     .from('trends_suggestions')

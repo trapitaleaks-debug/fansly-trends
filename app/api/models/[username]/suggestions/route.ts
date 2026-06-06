@@ -7,6 +7,7 @@ export async function GET(request: NextRequest, { params }: Params) {
   const { username } = await params
   const { searchParams } = new URL(request.url)
   const status = searchParams.get('status') ?? 'pending'
+  const sort = searchParams.get('sort') ?? 'score'
   const page = parseInt(searchParams.get('page') ?? '0')
   const limit = 30
 
@@ -26,7 +27,7 @@ export async function GET(request: NextRequest, { params }: Params) {
     `)
     .eq('model_id', model.id)
     .eq('status', status)
-    .order('generated_at', { ascending: false })
+    .order(sort === 'score' ? 'score_total' : 'generated_at', { ascending: false, nullsFirst: false })
     .range(page * limit, (page + 1) * limit - 1)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
