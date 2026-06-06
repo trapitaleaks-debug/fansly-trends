@@ -2,16 +2,18 @@ import * as dotenv from 'dotenv'
 import * as path from 'path'
 dotenv.config({ path: path.join(__dirname, '../.env.local') })
 import { scrapeFYP, type AccountConfig, type FanslyPost } from './fansly'
+import { scrapeHashtags } from './hashtag'
 import { uploadBuffer, downloadUrl } from './storage'
 import { upsertPost, getBlacklist } from './db'
 import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
 
 const MIN_LIKES = 150
-const TARGET_COUNT = 500
+const TARGET_COUNT = 2000
 const RAW_COLLECT_PER_ACCOUNT = 2000
+const HASHTAG_TOP_N = 100
+const HASHTAG_PAGES_PER_TAG = 10 // 10 pages × 10 items = 100 items per hashtag
 
 function loadAccounts(): AccountConfig[] {
-  // Prefer FANSLY_ACCOUNTS JSON array; fall back to single-account env vars
   if (process.env.FANSLY_ACCOUNTS) {
     try {
       return JSON.parse(process.env.FANSLY_ACCOUNTS) as AccountConfig[]
@@ -38,14 +40,17 @@ async function main() {
     const accounts = loadAccounts()
     console.log(`👥 Accounts: ${accounts.length}`)
 
-    // Collect from all accounts, dedup by fansly_post_id (keep max likes)
     const postMap = new Map<string, FanslyPost>()
+    let firstAccountHeaders: Record<string, string> = {}
 
+    // Phase 1: FYP scraping across all accounts
+    console.log('\n--- Phase 1: FYP scraping ---')
     for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i]
       console.log(`\n📡 Account ${i + 1}/${accounts.length}: ${acc.email}`)
       try {
-        const posts = await scrapeFYP(RAW_COLLECT_PER_ACCOUNT, acc)
+        const { posts, headers } = await scrapeFYP(RAW_COLLECT_PER_ACCOUNT, acc)
+        if (i === 0 && Object.keys(headers).length > 0) firstAccountHeaders = headers
         let fresh = 0
         for (const p of posts) {
           if (!p.id) continue
@@ -61,8 +66,31 @@ async function main() {
       }
     }
 
+    // Phase 2: Hashtag scraping using first account's captured headers
+    if (Object.keys(firstAccountHeaders).length > 0) {
+      console.log('\n--- Phase 2: Hashtag scraping (top 100 tags) ---')
+      try {
+        const hashtagPosts = await scrapeHashtags(firstAccountHeaders, HASHTAG_TOP_N, HASHTAG_PAGES_PER_TAG)
+        let hashtagFresh = 0
+        for (const p of hashtagPosts) {
+          if (!p.id) continue
+          const existing = postMap.get(p.id)
+          if (!existing || p.likes > existing.likes) {
+            postMap.set(p.id, p)
+            if (!existing) hashtagFresh++
+          }
+        }
+        console.log(`\n🏷️  Hashtag scrape added ${hashtagFresh} new unique posts (total: ${postMap.size})`)
+      } catch (err) {
+        console.error('  ❌ Hashtag scraping failed:', err instanceof Error ? err.message : err)
+      }
+    } else {
+      console.log('\n⚠️  No auth headers captured — skipping hashtag scraping')
+    }
+
+    // Phase 3: Process and save qualifying posts
     const allPosts = Array.from(postMap.values()).sort((a, b) => b.likes - a.likes)
-    console.log(`\n📦 Processing ${allPosts.length} unique posts (sorted by likes)...`)
+    console.log(`\n--- Phase 3: Processing ${allPosts.length} unique posts (sorted by likes) ---`)
 
     for (const post of allPosts) {
       if (added >= TARGET_COUNT) { skipped++; continue }
@@ -85,12 +113,10 @@ async function main() {
           }
         }
 
-        if (post.thumbnail_url) {
-          if (post.thumbnail_url.startsWith('http')) {
-            thumbnailKey = `thumbs/${post.id}.jpg`
-            const thumbBuffer = await downloadUrl(post.thumbnail_url)
-            await uploadBuffer(thumbnailKey, thumbBuffer, 'image/jpeg')
-          }
+        if (post.thumbnail_url && post.thumbnail_url.startsWith('http')) {
+          thumbnailKey = `thumbs/${post.id}.jpg`
+          const thumbBuffer = await downloadUrl(post.thumbnail_url)
+          await uploadBuffer(thumbnailKey, thumbBuffer, 'image/jpeg')
         }
 
         const result = await upsertPost({

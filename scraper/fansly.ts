@@ -170,7 +170,9 @@ function parseFanslyApiResponse(json: unknown): FanslyPost[] {
   return posts
 }
 
-export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Promise<FanslyPost[]> {
+export interface ScrapeFYPResult { posts: FanslyPost[]; headers: Record<string, string> }
+
+export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Promise<ScrapeFYPResult> {
   const acc: AccountConfig = account ?? {
     email: process.env.FANSLY_EMAIL!,
     password: process.env.FANSLY_PASSWORD!,
@@ -276,7 +278,7 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
     const reqHeaders = {
       'Authorization': capturedHeaders['authorization'],
       'fansly-client-id': capturedHeaders['fansly-client-id'],
-      'fansly-client-ts': Date.now().toString(),
+      'fansly-client-ts': capturedHeaders['fansly-client-ts'],
       'fansly-client-check': capturedHeaders['fansly-client-check'],
       'fansly-session-id': capturedHeaders['fansly-session-id'],
       'Accept': 'application/json, text/plain, */*',
@@ -338,5 +340,5 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
   }
 
   console.log(`✅ Scrape complete: ${collected.length} posts collected (${batchCount} batches)`)
-  return collected
+  return { posts: collected, headers: capturedHeaders }
 }
