@@ -2,13 +2,14 @@ name: Daily FYP Scrape
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # 2am UTC daily
+    - cron: '0 3 * * *'   # 3am UTC (less congested than 2am)
+    - cron: '0 15 * * *'  # 3pm UTC — second run to catch fresh content
   workflow_dispatch:        # allow manual trigger
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 

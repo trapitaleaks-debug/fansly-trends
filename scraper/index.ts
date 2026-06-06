@@ -146,6 +146,7 @@ async function main() {
 
     console.log(`\n✅ Done — added: ${added}, updated: ${updated}, skipped: ${skipped}`)
     await sendTelegram(scraperSuccess(added, updated, skipped))
+    process.exit(0) // force exit — Supabase/Playwright leave open handles otherwise
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('💥 Scraper crashed:', msg)
