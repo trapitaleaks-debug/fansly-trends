@@ -57,8 +57,8 @@ export async function generateSuggestions(modelId: string, brandingFileMd: strin
 
   const message = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
-    system: 'You are a Fansly content strategy advisor. Given a model\'s Personal Branding File and a list of trending Fansly posts, identify which posts she should copy with her personal twist. Return a JSON array only — no markdown, no explanation, just the raw JSON array.',
+    max_tokens: 8192,
+    system: 'You are a Fansly content strategy advisor. Given a model\'s Personal Branding File and a list of trending Fansly posts, identify which posts she should copy with her personal twist. Return a JSON array only — no markdown fences, no explanation, just the raw JSON array starting with [.',
     messages: [
       {
         role: 'user',
@@ -92,8 +92,8 @@ Return only the JSON array.`,
 
   let parsed: SuggestionInput[] = []
   try {
-    // Strip any accidental markdown fences
-    const clean = raw.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim()
+    // Strip any accidental markdown fences (```json ... ``` or ``` ... ```)
+    const clean = raw.replace(/^```[a-z]*\s*/i, '').replace(/\s*```\s*$/, '').trim()
     parsed = JSON.parse(clean)
     if (!Array.isArray(parsed)) parsed = []
   } catch {
