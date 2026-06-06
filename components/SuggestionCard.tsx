@@ -52,9 +52,9 @@ function ScoreBadge({ total, onClick }: { total: number | null; onClick: (e: Rea
     <button
       onClick={onClick}
       className={`text-xs font-mono font-semibold px-2 py-0.5 rounded border ${color} transition-opacity hover:opacity-80`}
-      title="Click to see score breakdown"
+      title="Toggle score breakdown"
     >
-      {total}/80
+      {total}/80 ▾
     </button>
   )
 }
@@ -90,7 +90,7 @@ export default function SuggestionCard({ suggestion, onStatusChange, onNotesChan
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [videoLoading, setVideoLoading] = useState(false)
   const [showVideo, setShowVideo] = useState(false)
-  const [showScores, setShowScores] = useState(false)
+  const [showScores, setShowScores] = useState(true)
   const post = suggestion.trends_posts
 
   const toggleScores = useCallback((e: React.MouseEvent) => {
