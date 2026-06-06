@@ -177,13 +177,13 @@ async function main() {
       console.log('\n--- Phase 4: Auto-generating suggestions ---')
       const { data: models } = await getClient()
         .from('trends_models')
-        .select('id, fansly_username, branding_file_md')
+        .select('id, fansly_username, branding_file_md, notes_for_ai')
         .not('branding_file_md', 'is', null)
         .neq('branding_file_md', '')
 
       for (const model of (models ?? [])) {
         try {
-          const n = await generateSuggestions(model.id, model.branding_file_md)
+          const n = await generateSuggestions(model.id, model.branding_file_md, model.notes_for_ai)
           console.log(`  ✅ @${model.fansly_username}: ${n} new suggestions`)
         } catch (err) {
           console.error(`  ❌ @${model.fansly_username} suggestions failed:`, err instanceof Error ? err.message : err)

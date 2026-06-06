@@ -10,6 +10,7 @@ import { execSync } from 'child_process'
 import { uploadToR2, r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { getRunVideos, updateVideo, type PipelineVideo } from './db'
+import { scoreVideo } from './score-video'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
@@ -73,6 +74,77 @@ function buildDrawtextFilter(overlayText: string): string {
   return `${filter1},${filter2}`
 }
 
+// Maps hook descriptions to R2 clip keys — user uploads clips under hooks/ prefix
+const HOOK_R2_KEYS: Record<string, string> = {
+  sports: 'hooks/sports.mp4',
+  baseball: 'hooks/sports.mp4',
+  ball: 'hooks/sports.mp4',
+  explosion: 'hooks/explosion.mp4',
+  fire: 'hooks/explosion.mp4',
+  jumpscare: 'hooks/jumpscare.mp4',
+  'jump scare': 'hooks/jumpscare.mp4',
+  scare: 'hooks/jumpscare.mp4',
+  animal: 'hooks/animal.mp4',
+  dog: 'hooks/animal.mp4',
+  cat: 'hooks/animal.mp4',
+  pet: 'hooks/animal.mp4',
+}
+
+function matchHookKey(hookDescription: string): string {
+  const desc = hookDescription.toLowerCase()
+  for (const [kw, key] of Object.entries(HOOK_R2_KEYS)) {
+    if (desc.includes(kw)) return key
+  }
+  return 'hooks/general.mp4'
+}
+
+/** For flashing format: extract near-end frame, boost it, append 5 frames at end */
+async function addFlashFrame(finalPath: string, duration: number, tmpDir: string, slot: number): Promise<void> {
+  const flashTime = Math.max(0, duration - 1.2)
+  const flashJpeg = path.join(tmpDir, `s${slot}_flash.jpg`)
+  const flashMp4 = path.join(tmpDir, `s${slot}_flash.mp4`)
+  const withFlash = path.join(tmpDir, `s${slot}_with_flash.mp4`)
+  const concatTxt = path.join(tmpDir, `s${slot}_concat.txt`)
+
+  run(`${ffmpegBin()} -i "${finalPath}" -ss ${flashTime.toFixed(2)} -vframes 1 -vf "eq=brightness=0.18:contrast=1.35:saturation=1.2" -y "${flashJpeg}"`)
+  run(`${ffmpegBin()} -loop 1 -i "${flashJpeg}" -t 0.17 -r 30 -c:v libx264 -pix_fmt yuv420p -y "${flashMp4}"`)
+
+  fs.writeFileSync(concatTxt, `file '${finalPath}'\nfile '${flashMp4}'\n`)
+  run(`${ffmpegBin()} -f concat -safe 0 -i "${concatTxt}" -c:v libx264 -c:a aac -y "${withFlash}"`)
+  fs.renameSync(withFlash, finalPath)
+}
+
+/** For viral_hook format: download hook clip from R2 and prepend to video */
+async function prependHookClip(hookDescription: string, finalPath: string, tmpDir: string, slot: number): Promise<void> {
+  const hookKey = matchHookKey(hookDescription)
+  const hookRaw = path.join(tmpDir, `s${slot}_hook_raw.mp4`)
+  const hookNorm = path.join(tmpDir, `s${slot}_hook_norm.mp4`)
+  const withHook = path.join(tmpDir, `s${slot}_with_hook.mp4`)
+
+  try {
+    await downloadFromR2(hookKey, hookRaw)
+  } catch {
+    console.log(`  ℹ Hook clip not found in R2 (${hookKey}) — upload clips to R2 hooks/ prefix to enable this`)
+    return
+  }
+
+  // Normalize hook to 720p 9:16, max 3s, no audio
+  run(
+    `${ffmpegBin()} -i "${hookRaw}" -t 3 ` +
+    `-vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" ` +
+    `-c:v libx264 -an -y "${hookNorm}"`
+  )
+
+  // Concat: hook (video only) + main (video + audio)
+  run(
+    `${ffmpegBin()} -i "${hookNorm}" -i "${finalPath}" ` +
+    `-filter_complex "[0:v][1:v]concat=n=2:v=1:a=0[v]" ` +
+    `-map "[v]" -map "1:a?" -c:v libx264 -c:a aac -y "${withHook}"`
+  )
+  fs.renameSync(withHook, finalPath)
+  console.log(`  🎬 Hook clip prepended from R2 (${hookKey})`)
+}
+
 async function processVideo(video: PipelineVideo, tmpDir: string, handle: string): Promise<void> {
   if (!video.final_r2_key || !video.brief) {
     throw new Error(`Video ${video.id} missing r2 key or brief`)
@@ -124,8 +196,29 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
   console.log(`  Burning overlay: "${overlayText}"`)
   run(ffmpegCmd)
 
+  // Format-specific post-processing
+  const contentFormat = video.brief?.content_format
+  if (contentFormat === 'flashing') {
+    console.log('  Adding flash frame (flashing format)...')
+    await addFlashFrame(finalPath, duration, tmpDir, video.slot)
+  } else if (contentFormat === 'viral_hook' && video.brief?.hook_description) {
+    await prependHookClip(video.brief.hook_description, finalPath, tmpDir, video.slot)
+  }
+
   // Generate thumbnail at 1s
   run(`${ffmpegBin()} -i "${finalPath}" -ss 00:00:01 -vframes 1 -y "${thumbPath}"`)
+
+  // Score video quality — auto-disqualify if AI artifacts clearly visible
+  console.log('  Scoring video quality...')
+  const scores = await scoreVideo(thumbPath, overlayText, contentFormat ?? 'text_overlay')
+  console.log(`  Quality: AI ${scores.ai_quality}/10 · Total ${scores.total}/90${scores.disqualified ? ' ⛔ DISQUALIFIED' : ''}`)
+  if (scores.notes) console.log(`  Notes: ${scores.notes}`)
+
+  if (scores.disqualified) {
+    console.error(`  ✗ Slot ${video.slot} disqualified — AI quality score ${scores.ai_quality}/10 (minimum 5)`)
+    await updateVideo(video.id, { status: 'rejected' })
+    return
+  }
 
   // Upload final video + thumbnail to R2
   const runId = video.run_id
@@ -135,10 +228,18 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
   await uploadToR2(finalKey, fs.readFileSync(finalPath), 'video/mp4')
   await uploadToR2(thumbKey, fs.readFileSync(thumbPath), 'image/jpeg')
 
+  // Store quality scores in brief JSONB (no migration needed)
+  const updatedBrief = video.brief ? { ...video.brief, quality_scores: scores } : video.brief
+
   // Retry up to 3 times for transient network errors
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      await updateVideo(video.id, { final_r2_key: finalKey, thumbnail_r2_key: thumbKey, status: 'pending' })
+      await updateVideo(video.id, {
+        final_r2_key: finalKey,
+        thumbnail_r2_key: thumbKey,
+        status: 'pending',
+        brief: updatedBrief,
+      })
       break
     } catch (e) {
       if (attempt === 3) throw e

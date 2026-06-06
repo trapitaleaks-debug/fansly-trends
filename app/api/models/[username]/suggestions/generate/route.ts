@@ -9,7 +9,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
 
   const { data: model } = await supabaseAdmin
     .from('trends_models')
-    .select('id, branding_file_md')
+    .select('id, branding_file_md, notes_for_ai')
     .eq('fansly_username', username.toLowerCase())
     .single()
 
@@ -19,7 +19,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
   }
 
   try {
-    const generated = await generateSuggestions(model.id, model.branding_file_md)
+    const generated = await generateSuggestions(model.id, model.branding_file_md, model.notes_for_ai)
     return NextResponse.json({ generated })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

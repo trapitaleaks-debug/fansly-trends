@@ -61,13 +61,20 @@ export async function sendApprovalBatch(run: PipelineRun, handle: string): Promi
         ? brief.content_format.replace('_', ' ').toUpperCase()
         : brief?.overlay_formula?.replace('_', ' ').toUpperCase() ?? '?'
 
+      const scores = brief?.quality_scores
+      const scoreBar = scores
+        ? `📊 AI ${scores.ai_quality}/10 · Total ${scores.total}/90` +
+          (scores.notes ? ` · ${scores.notes}` : '')
+        : ''
+
       const caption = [
         `<b>Slot ${video.slot}</b> — ${formatLabel}`,
         `🎯 <b>${brief?.overlay_text}</b>`,
         brief?.hook_description ? `🪝 ${brief.hook_description}` : '',
-        brief?.payoff_description ? `💥 Payoff: ${brief.payoff_description}` : '',
+        brief?.payoff_description ? `💥 ${brief.payoff_description}` : '',
         `📝 ${brief?.caption}`,
         `🏷 ${brief?.hashtags?.slice(0, 4).join(' ')}...`,
+        scoreBar,
         finalUrl ? `\n🎬 <a href="${finalUrl}">Watch video</a>` : '',
       ].filter(Boolean).join('\n')
 

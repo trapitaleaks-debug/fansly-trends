@@ -22,7 +22,7 @@ interface SuggestionInput {
   scores?: ScoreInput
 }
 
-export async function generateSuggestions(modelId: string, brandingFileMd: string): Promise<number> {
+export async function generateSuggestions(modelId: string, brandingFileMd: string, notesForAi?: string | null): Promise<number> {
   // Load posts not already suggested for this model, sorted by likes desc
   const { data: existingSuggestions } = await supabaseAdmin
     .from('trends_suggestions')
@@ -67,7 +67,7 @@ ${brandingFileMd}
 
 ## Trending Posts
 ${JSON.stringify(postsJson, null, 0)}
-
+${notesForAi ? `\n## Important constraints — you MUST follow these when selecting and adapting suggestions\n${notesForAi}\n` : ''}
 Return a JSON array of up to 20 suggestions, ranked most relevant first. Each item must have exactly these keys:
 - "post_id": the UUID from the trending posts list
 - "reasoning": 1-2 sentences on why this video fits her brand

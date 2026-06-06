@@ -153,7 +153,8 @@ export async function postBatch(runId: string, model: PipelineModel): Promise<vo
       await captionField.fill(caption)
 
       // Set scheduled time
-      const scheduledFor = getScheduledTime(video.slot, model.best_post_times)
+      const bestTimes = model.best_post_times ?? { morning: '10:00', evening: '18:00' }
+      const scheduledFor = getScheduledTime(video.slot, bestTimes)
       video.scheduled_for = scheduledFor.toISOString()
 
       // Try to set scheduled date if the UI has a date/time picker

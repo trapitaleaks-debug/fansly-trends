@@ -104,7 +104,24 @@ async function refreshKieRefs(model: PipelineModel): Promise<string[]> {
 
 function buildImagePrompt(brief: Brief, model: PipelineModel): string {
   const niche = model.niche_tags.slice(0, 3).join(', ')
-  return `Ultra-realistic photograph. ${niche} woman. Sensual, confident pose. Natural lighting, sharp focus. Professional photo quality. 9:16 vertical portrait. Context: ${brief.concept}. No watermarks, no text overlays.`
+
+  // SOP: close-ups outperform wide shots; face must be clearly visible
+  const framings = [
+    'close-up portrait, face centered, filling upper two-thirds of frame',
+    'half-body shot, face clearly visible in upper half of frame',
+    'tight close-up, eyes and expression dominant in frame',
+  ]
+  const framing = framings[(brief.slot - 1) % framings.length]
+
+  // SOP: pink and orange are the two least-used colors in advertising — use them
+  const colorHints = [
+    'warm pink ambient lighting',
+    'orange-tinted golden lighting',
+    'peachy warm backlight',
+  ]
+  const colorHint = colorHints[(brief.slot - 1) % colorHints.length]
+
+  return `Ultra-realistic photograph. ${niche} woman. ${framing}. Face clearly visible, natural expression, eyes open and expressive. ${colorHint}. Confident, sensual energy. Sharp focus on face. 9:16 vertical portrait. ${brief.concept}. No text overlays, no watermarks.`
 }
 
 async function generateImageVariants(

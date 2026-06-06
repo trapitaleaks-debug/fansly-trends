@@ -11,7 +11,7 @@ export interface PipelineModel {
   reference_image_r2_key: string | null
   kie_ref_urls: string[]
   kie_ref_uploaded_at: string | null
-  best_post_times: { morning: string; evening: string }
+  best_post_times: { morning: string; evening: string } | null
   branding_file_text: string | null  // personal branding file from FanslyTrends model profile
   active: boolean
 }

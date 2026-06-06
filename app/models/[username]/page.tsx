@@ -10,6 +10,7 @@ interface Model {
   fansly_url: string | null
   branding_file_md: string | null
   hashtags: string[]
+  notes_for_ai: string | null
   suggestion_counts: { pending: number; done: number; dismissed: number }
   last_generated_at: string | null
   updated_at: string
@@ -42,6 +43,11 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [suggestedHashtags, setSuggestedHashtags] = useState<string[]>([])
   const [hashtagError, setHashtagError] = useState<string | null>(null)
 
+  // Notes for AI
+  const [notesForAi, setNotesForAi] = useState('')
+  const [savingNotes, setSavingNotes] = useState(false)
+  const [notesSaved, setNotesSaved] = useState(false)
+
   // Generating
   const [generating, setGenerating] = useState(false)
   const [generateMsg, setGenerateMsg] = useState<string | null>(null)
@@ -63,6 +69,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     const data = await res.json()
     setModel(data.model)
     setHashtags(data.model.hashtags ?? [])
+    setNotesForAi(data.model.notes_for_ai ?? '')
     if (data.model.branding_file_md) setBrandingFileName('branding-file.md')
     setLoading(false)
   }
@@ -143,6 +150,18 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
       setEditingHashtags(true) // show Save button automatically
     }
     setSuggestedHashtags(prev => prev.filter(t => t !== tag))
+  }
+
+  async function handleSaveNotes() {
+    setSavingNotes(true)
+    await fetch(`/api/models/${username}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes_for_ai: notesForAi }),
+    })
+    setSavingNotes(false)
+    setNotesSaved(true)
+    setTimeout(() => setNotesSaved(false), 2000)
   }
 
   async function handleGenerate() {
@@ -391,6 +410,30 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
               )}
             </div>
           )}
+        </div>
+
+        {/* Notes for AI */}
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-xl p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-medium">Notes for AI</h3>
+              <p className="text-xs text-[#444] mt-0.5">Constraints and context passed to Claude when generating suggestions</p>
+            </div>
+            <button
+              onClick={handleSaveNotes}
+              disabled={savingNotes}
+              className="text-xs bg-white text-black px-3 py-1.5 rounded-lg hover:bg-[#e5e5e5] disabled:opacity-50 transition-colors"
+            >
+              {notesSaved ? 'Saved ✓' : savingNotes ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          <textarea
+            value={notesForAi}
+            onChange={e => setNotesForAi(e.target.value)}
+            placeholder={"Examples:\n- Only uses AI-generated content, never real video\n- Cannot film outside the house\n- Prefers simple setups (bedroom only)\n- Always wears lingerie, never fully nude on FYP"}
+            rows={5}
+            className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-sm text-white placeholder-[#333] focus:outline-none focus:border-[#444] resize-none font-mono leading-relaxed"
+          />
         </div>
 
         {/* AI Suggestions */}
