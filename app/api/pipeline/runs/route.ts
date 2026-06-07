@@ -9,30 +9,44 @@ export async function GET(request: NextRequest) {
     const handle = searchParams.get('handle')
     const limit = parseInt(searchParams.get('limit') ?? '20')
 
-    if (!handle) return NextResponse.json({ error: 'handle required' }, { status: 400 })
+    if (handle) {
+      const { data: model, error: modelError } = await supabaseAdmin
+        .from('pipeline_models')
+        .select('id, handle')
+        .eq('handle', handle)
+        .single()
 
-    const { data: model, error: modelError } = await supabaseAdmin
-      .from('pipeline_models')
-      .select('id, handle')
-      .eq('handle', handle)
-      .single()
+      if (modelError) {
+        if (modelError.code === 'PGRST116') return NextResponse.json({ error: 'Model not found' }, { status: 404 })
+        return NextResponse.json({ error: modelError.message }, { status: 500 })
+      }
 
-    if (modelError) {
-      if (modelError.code === 'PGRST116') return NextResponse.json({ error: 'Model not found' }, { status: 404 })
-      return NextResponse.json({ error: modelError.message }, { status: 500 })
+      const { data: runs, error: runsError } = await supabaseAdmin
+        .from('pipeline_runs')
+        .select('*')
+        .eq('model_id', model.id)
+        .order('created_at', { ascending: false })
+        .limit(limit)
+
+      if (runsError) return NextResponse.json({ error: runsError.message }, { status: 500 })
+
+      return NextResponse.json({ runs: (runs ?? []).map(r => ({ ...r, handle: model.handle })) })
     }
 
+    // No handle — return all recent runs across all models
     const { data: runs, error: runsError } = await supabaseAdmin
       .from('pipeline_runs')
-      .select('*')
-      .eq('model_id', model.id)
+      .select('*, pipeline_models!inner(handle)')
       .order('created_at', { ascending: false })
       .limit(limit)
 
     if (runsError) return NextResponse.json({ error: runsError.message }, { status: 500 })
 
-    const runsWithModel = (runs ?? []).map(r => ({ ...r, model }))
-    return NextResponse.json({ runs: runsWithModel })
+    const flat = (runs ?? []).map(r => {
+      const { pipeline_models, ...rest } = r as typeof r & { pipeline_models: { handle: string } }
+      return { ...rest, handle: pipeline_models.handle }
+    })
+    return NextResponse.json({ runs: flat })
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

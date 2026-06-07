@@ -9,7 +9,8 @@ export async function GET() {
       .order('handle')
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    return NextResponse.json({ models: data ?? [] })
+    const models = (data ?? []).map(m => ({ ...m, status: m.active ? 'active' : 'inactive' }))
+    return NextResponse.json({ models })
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
