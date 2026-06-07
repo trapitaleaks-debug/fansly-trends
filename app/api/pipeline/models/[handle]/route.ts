@@ -28,7 +28,16 @@ export async function GET(
 
     if (runsError) return NextResponse.json({ error: runsError.message }, { status: 500 })
 
-    return NextResponse.json({ model, recentRuns: recentRuns ?? [] })
+    const { data: contentBank } = await supabaseAdmin
+      .from('pipeline_content_bank')
+      .select('id, type, r2_key, label, created_at')
+      .eq('model_id', model.id)
+      .order('created_at', { ascending: false })
+
+    return NextResponse.json({
+      model: { ...model, status: model.active ? 'active' : 'inactive', content_bank: contentBank ?? [] },
+      recentRuns: recentRuns ?? [],
+    })
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

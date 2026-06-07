@@ -203,7 +203,7 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
     const res = await fetch(`/api/pipeline/models/${handle}`)
     if (res.ok) {
       const data = await res.json()
-      const m: PipelineModelDetail = data.model
+      const m: PipelineModelDetail = { ...data.model, content_bank: data.model.content_bank ?? [] }
       setModel(m)
       setVideosPerCycle(m.videos_per_cycle)
       setFlashFrameEnabled(m.flash_frame_enabled)
