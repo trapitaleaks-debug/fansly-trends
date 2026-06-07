@@ -6,7 +6,8 @@
 import dotenv from 'dotenv'
 dotenv.config({ path: '.env.local' })
 
-import { getActiveModels, getModel, createRun, updateRunStatus } from './db'
+import { getActiveModels, getModel, createRun, updateRunStatus, getAllModels } from './db'
+import { supabaseAdmin } from '../lib/supabase'
 import { generateBriefs } from './research'
 import { generateVideos } from './generate'
 import { processRun } from './process'
@@ -52,18 +53,43 @@ export async function runPipelineForModel(handle: string): Promise<void> {
   }
 }
 
-// Run standalone: npm run pipeline:run -- --handle liisaofficial
+/** Pick up all runs with status='queued' and process them sequentially. */
+export async function processQueuedRuns(): Promise<void> {
+  const { data: queued } = await supabaseAdmin
+    .from('pipeline_runs')
+    .select('id, model_id, pipeline_models!inner(handle)')
+    .eq('status', 'queued')
+    .order('created_at', { ascending: true })
+
+  if (!queued || queued.length === 0) {
+    console.log('No queued runs.')
+    return
+  }
+
+  console.log(`${queued.length} queued run(s) found.`)
+  for (const run of queued) {
+    const models = (run as unknown as { pipeline_models: { handle: string }[] }).pipeline_models
+    const handle = Array.isArray(models) ? models[0].handle : (models as unknown as { handle: string }).handle
+    await updateRunStatus(run.id, 'generating')
+    await runPipelineForModel(handle).catch(e => {
+      console.error(`Failed for @${handle}:`, e.message)
+    })
+  }
+}
+
+// Run standalone:
+//   npm run pipeline:run -- --handle liisaofficial   (specific model)
+//   npm run pipeline:run                              (process all queued runs from web UI)
 if (require.main === module) {
   const args = process.argv.slice(2)
   const handleIdx = args.indexOf('--handle')
   const handle = handleIdx !== -1 ? args[handleIdx + 1] : undefined
 
-  if (!handle) {
-    console.error('Usage: npm run pipeline:run -- --handle <handle>')
-    process.exit(1)
-  }
+  const task = handle
+    ? runPipelineForModel(handle)
+    : processQueuedRuns()
 
-  runPipelineForModel(handle).catch(e => {
+  task.catch(e => {
     console.error(e)
     process.exit(1)
   })

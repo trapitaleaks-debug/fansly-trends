@@ -63,12 +63,11 @@ export async function POST(request: NextRequest) {
 
     if (runError) return NextResponse.json({ error: runError.message }, { status: 500 })
 
-    fetch(`${PIPELINE_SERVICE_URL}/trigger/${handle}`, { method: 'POST' }).catch(async () => {
-      await supabaseAdmin
-        .from('pipeline_runs')
-        .update({ status: 'failed' })
-        .eq('id', run.id)
-    })
+    if (process.env.PIPELINE_SERVICE_URL) {
+      fetch(`${PIPELINE_SERVICE_URL}/trigger/${handle}`, { method: 'POST' }).catch(() => {
+        // Railway unreachable — run stays 'queued', trigger manually with: npm run pipeline:run
+      })
+    }
 
     return NextResponse.json({ runId: run.id }, { status: 201 })
   } catch {
