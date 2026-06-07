@@ -9,6 +9,7 @@ export async function GET() {
     .select('likes_current')
     .gte('scraped_at', cutoff)
     .is('archived_at', null)
+    .limit(50000)
 
   if (!data || data.length === 0) {
     return NextResponse.json({ avgLikes: 0, topLikes: 0, totalPosts: 0 })
