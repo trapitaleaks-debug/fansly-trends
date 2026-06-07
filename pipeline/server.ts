@@ -1,6 +1,6 @@
 /**
  * Phase 8 — Railway always-on service
- * Express server + node-cron + Telegram webhook
+ * Express server + node-cron
  */
 
 import dotenv from 'dotenv'
@@ -8,10 +8,10 @@ dotenv.config({ path: '.env.local' })
 
 import express from 'express'
 import cron from 'node-cron'
-import { runPipelineForModel, processApprovedRuns } from './index'
-import { checkAutoApprove } from './telegram-bot'
-import { handleTelegramCommand } from './telegram-bot'
-import { getActiveModels } from './db'
+import { runPipelineForModel } from './index'
+import { getActiveModels, getModel } from './db'
+import { processRun } from './process'
+import { supabaseAdmin } from '../lib/supabase'
 
 const app = express()
 app.use(express.json())
@@ -25,95 +25,91 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime() })
 })
 
-// ─── Telegram webhook ─────────────────────────────────────────────────────────
+// ─── Trigger endpoint: fire pipeline for a specific model ─────────────────────
 
-app.post('/webhook/telegram', async (req, res) => {
-  res.sendStatus(200) // Respond immediately
+app.post('/trigger/:handle', async (req, res) => {
+  const { handle } = req.params
+  res.status(202).json({ message: 'Pipeline started', handle })
 
-  try {
-    const update = req.body
-    const message = update?.message ?? update?.channel_post
-    if (!message?.text) return
+  // Fire and forget
+  runPipelineForModel(handle).catch(e =>
+    console.error(`[trigger] Failed for @${handle}:`, e.message)
+  )
+})
 
-    const chatId = String(message.chat?.id)
-    const managerChatId = process.env.TELEGRAM_MANAGER_CHAT_ID
-    if (managerChatId && chatId !== managerChatId) return // Ignore other chats
+// ─── Reprocess endpoint: re-run ffmpeg for a specific video ──────────────────
 
-    console.log(`[webhook] Received: "${message.text}"`)
-    await handleTelegramCommand(message.text)
+app.post('/reprocess/:videoId', async (req, res) => {
+  const { videoId } = req.params
+  const { overlay_text } = req.body ?? {}
+  res.status(202).json({ message: 'Reprocess started', videoId })
 
-    // After approve command, check if any runs are now approved and post them
-    if (message.text.trim().toLowerCase() === 'approve') {
-      setTimeout(() => processApprovedRuns().catch(console.error), 1000)
+  // Background
+  ;(async () => {
+    try {
+      const { data: video } = await supabaseAdmin
+        .from('pipeline_videos')
+        .select('*, pipeline_runs!inner(model_id, pipeline_models!inner(handle))')
+        .eq('id', videoId)
+        .single()
+
+      if (!video) throw new Error('Video not found')
+
+      if (overlay_text) {
+        const updatedBrief = { ...video.brief, overlay_text }
+        await supabaseAdmin
+          .from('pipeline_videos')
+          .update({ brief: updatedBrief })
+          .eq('id', videoId)
+        video.brief = updatedBrief
+      }
+
+      const handle = video.pipeline_runs.pipeline_models.handle
+      const model = await getModel(handle)
+      if (!model) throw new Error('Model not found')
+
+      // Reset status to pending so processRun picks this video up
+      await supabaseAdmin
+        .from('pipeline_videos')
+        .update({ status: 'pending' })
+        .eq('id', videoId)
+
+      await processRun(video.run_id, handle, model)
+    } catch (e) {
+      console.error(`[reprocess] Failed for ${videoId}:`, (e as Error).message)
     }
-  } catch (e) {
-    console.error('[webhook] Error:', (e as Error).message)
-  }
+  })()
 })
 
 // ─── Crons ────────────────────────────────────────────────────────────────────
 
-// Hourly: check auto-approve + process approved runs
-cron.schedule('0 * * * *', async () => {
-  console.log('[cron] Hourly check...')
-  try {
-    await checkAutoApprove()
-    await processApprovedRuns()
-  } catch (e) {
-    console.error('[cron] Hourly error:', (e as Error).message)
-  }
-})
-
-// Every 3 days at 3am UTC: trigger pipeline for each active model
+// Every N days at 3am UTC: trigger pipeline for all active models in parallel
 const cycleHour = 3
 const cycleCron = `0 ${cycleHour} */${CYCLE_DAYS} * *`
 cron.schedule(cycleCron, async () => {
   console.log(`[cron] Pipeline cycle starting...`)
   try {
     const models = await getActiveModels()
-    console.log(`[cron] ${models.length} active models`)
-    for (const model of models) {
-      try {
-        await runPipelineForModel(model.handle)
-      } catch (e) {
-        console.error(`[cron] Pipeline failed for @${model.handle}:`, (e as Error).message)
-      }
-    }
+    console.log(`[cron] ${models.length} active models — running in parallel`)
+    await Promise.all(
+      models.map(m =>
+        runPipelineForModel(m.handle).catch(e =>
+          console.error(`[cron] Pipeline failed for @${m.handle}:`, e.message)
+        )
+      )
+    )
+    console.log(`[cron] Pipeline cycle complete`)
   } catch (e) {
     console.error('[cron] Cycle error:', (e as Error).message)
   }
 })
 
-// ─── Register Telegram webhook on startup ─────────────────────────────────────
-
-async function registerWebhook() {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  const serviceUrl = process.env.RAILWAY_STATIC_URL ?? process.env.SERVICE_URL
-  if (!token || !serviceUrl) {
-    console.log('[webhook] TELEGRAM_BOT_TOKEN or SERVICE_URL not set, skipping webhook registration')
-    return
-  }
-  const webhookUrl = `${serviceUrl}/webhook/telegram`
-  const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: webhookUrl }),
-  })
-  const json = await res.json() as { ok: boolean; description?: string }
-  if (json.ok) {
-    console.log(`[webhook] Registered: ${webhookUrl}`)
-  } else {
-    console.error('[webhook] Registration failed:', json.description)
-  }
-}
-
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, async () => {
-  console.log(`\n🚀 Pipeline server running on port ${PORT}`)
+app.listen(PORT, () => {
+  console.log(`\nPipeline server running on port ${PORT}`)
   console.log(`   Cycle: every ${CYCLE_DAYS} days at ${cycleHour}:00 UTC`)
   console.log(`   Cron: ${cycleCron}`)
-  await registerWebhook()
 })
 
 export default app

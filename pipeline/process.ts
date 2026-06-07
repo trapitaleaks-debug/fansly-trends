@@ -9,8 +9,9 @@ import os from 'os'
 import { execSync } from 'child_process'
 import { uploadToR2, r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
-import { getRunVideos, updateVideo, type PipelineVideo } from './db'
+import { getRunVideos, updateVideo, type PipelineModel, type PipelineVideo } from './db'
 import { scoreVideo } from './score-video'
+import { supabaseAdmin } from '../lib/supabase'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
@@ -98,6 +99,31 @@ function matchHookKey(hookDescription: string): string {
   return 'hooks/general.mp4'
 }
 
+/**
+ * Returns the R2 key for a hook clip.
+ * Checks model's content bank (type='hook_clip') first; falls back to global HOOK_R2_KEYS.
+ */
+async function getModelHookKey(model: PipelineModel, hookDescription: string): Promise<string> {
+  try {
+    const { data } = await supabaseAdmin
+      .from('pipeline_content_bank')
+      .select('r2_key')
+      .eq('model_id', model.id)
+      .eq('type', 'hook_clip')
+      .limit(1)
+      .single()
+
+    if (data?.r2_key) {
+      console.log(`  Using model-specific hook clip: ${data.r2_key}`)
+      return data.r2_key
+    }
+  } catch {
+    // No model-specific hook clip found — fall through to global
+  }
+
+  return matchHookKey(hookDescription)
+}
+
 /** For flashing format: extract near-end frame, boost it, append 5 frames at end */
 async function addFlashFrame(finalPath: string, duration: number, tmpDir: string, slot: number): Promise<void> {
   const flashTime = Math.max(0, duration - 1.2)
@@ -115,8 +141,14 @@ async function addFlashFrame(finalPath: string, duration: number, tmpDir: string
 }
 
 /** For viral_hook format: download hook clip from R2 and prepend to video */
-async function prependHookClip(hookDescription: string, finalPath: string, tmpDir: string, slot: number): Promise<void> {
-  const hookKey = matchHookKey(hookDescription)
+async function prependHookClip(
+  hookDescription: string,
+  finalPath: string,
+  tmpDir: string,
+  slot: number,
+  model: PipelineModel
+): Promise<void> {
+  const hookKey = await getModelHookKey(model, hookDescription)
   const hookRaw = path.join(tmpDir, `s${slot}_hook_raw.mp4`)
   const hookNorm = path.join(tmpDir, `s${slot}_hook_norm.mp4`)
   const withHook = path.join(tmpDir, `s${slot}_with_hook.mp4`)
@@ -142,10 +174,10 @@ async function prependHookClip(hookDescription: string, finalPath: string, tmpDi
     `-map "[v]" -map "1:a?" -c:v libx264 -c:a aac -y "${withHook}"`
   )
   fs.renameSync(withHook, finalPath)
-  console.log(`  🎬 Hook clip prepended from R2 (${hookKey})`)
+  console.log(`  Hook clip prepended from R2 (${hookKey})`)
 }
 
-async function processVideo(video: PipelineVideo, tmpDir: string, handle: string): Promise<void> {
+async function processVideo(video: PipelineVideo, tmpDir: string, handle: string, model: PipelineModel): Promise<void> {
   if (!video.final_r2_key || !video.brief) {
     throw new Error(`Video ${video.id} missing r2 key or brief`)
   }
@@ -183,7 +215,7 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
       )
       hasAudio = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 1000
     } catch {
-      console.log('  ⚠ Source video not in R2, skipping audio')
+      console.log('  Source video not in R2, skipping audio')
     }
   }
 
@@ -198,11 +230,11 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
 
   // Format-specific post-processing
   const contentFormat = video.brief?.content_format
-  if (contentFormat === 'flashing') {
-    console.log('  Adding flash frame (flashing format)...')
+  if (contentFormat === 'flashing' && model.flash_frame_enabled === true) {
+    console.log('  Adding flash frame (flashing format, flash_frame_enabled=true)...')
     await addFlashFrame(finalPath, duration, tmpDir, video.slot)
   } else if (contentFormat === 'viral_hook' && video.brief?.hook_description) {
-    await prependHookClip(video.brief.hook_description, finalPath, tmpDir, video.slot)
+    await prependHookClip(video.brief.hook_description, finalPath, tmpDir, video.slot, model)
   }
 
   // Generate thumbnail at 1s
@@ -211,7 +243,7 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
   // Score video quality — auto-disqualify if AI artifacts clearly visible
   console.log('  Scoring video quality...')
   const scores = await scoreVideo(thumbPath, overlayText, contentFormat ?? 'text_overlay')
-  console.log(`  Quality: AI ${scores.ai_quality}/10 · Total ${scores.total}/90${scores.disqualified ? ' ⛔ DISQUALIFIED' : ''}`)
+  console.log(`  Quality: AI ${scores.ai_quality}/10 · Total ${scores.total}/90${scores.disqualified ? ' DISQUALIFIED' : ''}`)
   if (scores.notes) console.log(`  Notes: ${scores.notes}`)
 
   if (scores.disqualified) {
@@ -237,7 +269,7 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
       await updateVideo(video.id, {
         final_r2_key: finalKey,
         thumbnail_r2_key: thumbKey,
-        status: 'pending',
+        status: 'ready',
         brief: updatedBrief,
       })
       break
@@ -250,7 +282,7 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
   console.log(`  ✓ Slot ${video.slot} processed — ${finalKey}`)
 }
 
-export async function processRun(runId: string, handle: string): Promise<void> {
+export async function processRun(runId: string, handle: string, model: PipelineModel): Promise<void> {
   console.log(`[process] Processing run ${runId} for @${handle}`)
   const videos = await getRunVideos(runId)
   const pending = videos.filter(v => v.status === 'pending' && v.final_r2_key)
@@ -263,7 +295,7 @@ export async function processRun(runId: string, handle: string): Promise<void> {
     for (const video of pending) {
       console.log(`\n  [Slot ${video.slot}] "${video.brief?.overlay_text}"`)
       try {
-        await processVideo(video, tmpDir, handle)
+        await processVideo(video, tmpDir, handle, model)
       } catch (e) {
         console.error(`  ✗ Slot ${video.slot} failed:`, (e as Error).message)
         await updateVideo(video.id, { status: 'rejected' })

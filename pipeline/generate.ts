@@ -7,10 +7,20 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import Anthropic from '@anthropic-ai/sdk'
-import { uploadToR2, r2 } from '../lib/r2'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
+import sharp from 'sharp'
+import { uploadToR2, r2, getSignedVideoUrl } from '../lib/r2'
+import { GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
 import { createImageTask, createVideoTask, pollTask, uploadFileToKie, sleep } from './kie'
-import { getModel, createVideo, updateVideo, updateModelKieRefs, type PipelineModel, type Brief } from './db'
+import {
+  getModel,
+  createVideo,
+  updateVideo,
+  updateModelCharacterSheet,
+  saveVariants,
+  selectVariant,
+  type PipelineModel,
+  type Brief,
+} from './db'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
@@ -55,49 +65,96 @@ async function scoreImage(imagePath: string, isGenerated = false): Promise<numbe
   }
 }
 
-// ─── Reference photo re-upload ────────────────────────────────────────────────
+// ─── Character sheet ──────────────────────────────────────────────────────────
 
-async function refreshKieRefs(model: PipelineModel): Promise<string[]> {
-  const uploadedAt = model.kie_ref_uploaded_at ? new Date(model.kie_ref_uploaded_at) : null
-  const ageMs = uploadedAt ? Date.now() - uploadedAt.getTime() : Infinity
-  const TWO_AND_HALF_DAYS = 2.5 * 24 * 60 * 60 * 1000
+// Exact GuizzField character sheet prompt — works when photos are compressed to ≤1024px before upload
+const CHARACTER_SHEET_PROMPT =
+  'A professional character reference sheet of the exact person from the reference images on a plain white background. ' +
+  'Layout is two rows: top row has four close-up head shots equally sized side by side — front facing, left profile, right profile, back of head. ' +
+  'Bottom row has three full body shots equally sized side by side — full body front, full body side profile, full body back. ' +
+  'Replicate every detail from the reference exactly: facial structure, skin tone, natural blemishes, body proportions, hair color, texture and styling. ' +
+  'Eyes with exact iris color. Soft neutral studio lighting, flat and even, no shadows. Every view perfectly consistent. Photorealistic, sharp micro detail.'
 
-  if (ageMs < TWO_AND_HALF_DAYS && model.kie_ref_urls.length > 0) {
-    console.log(`  kie.ai refs valid (age ${Math.round(ageMs / 3600000)}h), reusing`)
-    return model.kie_ref_urls
-  }
+async function compressTo1024(inputPath: string, outputPath: string): Promise<void> {
+  await sharp(inputPath)
+    .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 85 })
+    .toFile(outputPath)
+}
 
-  console.log('  kie.ai refs expired, re-uploading from R2...')
+async function generateCharacterSheet(model: PipelineModel, tmpDir: string): Promise<string> {
+  // Download source photos from R2, compress to ≤1024px (same as GuizzField) before uploading.
+  // Compression is what allows NSFW photos to pass kie.ai's input scanner — full-res uploads are blocked.
   const prefix = model.source_photos_r2_prefix ?? `models/${model.handle}/source`
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `kie_refs_`))
-
-  // List source files from R2
-  const { ListObjectsV2Command } = await import('@aws-sdk/client-s3')
   const listing = await r2.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix + '/' }))
-  const keys = (listing.Contents ?? []).map(o => o.Key!).filter(Boolean).slice(0, 15)
+  const keys = (listing.Contents ?? []).map(o => o.Key!).filter(Boolean).slice(0, 25)
+  if (keys.length === 0) throw new Error(`No source photos at R2 prefix: ${prefix}`)
 
-  if (keys.length === 0) throw new Error(`No source photos found at R2 prefix: ${prefix}`)
-
-  const newUrls: string[] = []
+  const kieUrls: string[] = []
   for (const key of keys) {
     const filename = path.basename(key)
-    const localPath = path.join(tmpDir, filename)
-    await downloadFromR2(key, localPath)
+    const rawPath = path.join(tmpDir, `raw_${filename}`)
+    const compPath = path.join(tmpDir, `comp_${path.parse(filename).name}.jpg`)
+    await downloadFromR2(key, rawPath)
+    await compressTo1024(rawPath, compPath)
     try {
-      const url = await uploadFileToKie(localPath, filename, `pipeline/${model.handle}`)
-      newUrls.push(url)
+      const url = await uploadFileToKie(compPath, path.basename(compPath), `pipeline/${model.handle}`)
+      kieUrls.push(url)
       await sleep(600)
     } catch (e) {
-      console.error(`  ✗ Re-upload failed for ${filename}:`, (e as Error).message)
+      console.error(`  ✗ Upload failed for ${filename}:`, (e as Error).message)
+    }
+  }
+  if (kieUrls.length < 3) throw new Error(`Too few photos uploaded to kie.ai (${kieUrls.length})`)
+
+  // Generate 16:9 character sheet (GuizzField format)
+  console.log(`  Generating character sheet from ${kieUrls.length} compressed photos...`)
+  const taskId = await createImageTask(CHARACTER_SHEET_PROMPT, kieUrls, '16:9')
+  const sheetUrl = await pollTask(taskId, 10 * 60 * 1000)
+
+  // Download and store permanently in R2
+  const buf = await fetch(sheetUrl).then(r => r.arrayBuffer())
+  const sheetKey = `models/${model.handle}/reference/character_sheet.jpg`
+  await uploadToR2(sheetKey, Buffer.from(new Uint8Array(buf)), 'image/jpeg')
+  await updateModelCharacterSheet(model.id, sheetKey)
+
+  console.log(`  ✓ Character sheet stored → ${sheetKey}`)
+  return sheetKey
+}
+
+/**
+ * Returns a signed URL array for the character sheet reference.
+ *
+ * Priority:
+ * 1. pinned_character_sheet_key — use as-is, no expiry check, no regeneration
+ * 2. character_sheet_r2_key     — reuse existing sheet (no TTL check)
+ * 3. Generate a new character sheet from source photos
+ */
+async function getCharacterSheetRef(model: PipelineModel): Promise<string[]> {
+  let sheetKey: string
+
+  if (model.pinned_character_sheet_key) {
+    console.log(`  Using pinned character sheet: ${model.pinned_character_sheet_key}`)
+    sheetKey = model.pinned_character_sheet_key
+  } else if (model.character_sheet_r2_key) {
+    console.log(`  Character sheet found, reusing: ${model.character_sheet_r2_key}`)
+    sheetKey = model.character_sheet_r2_key
+  } else {
+    console.log('  No character sheet found, generating...')
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `kie_sheet_`))
+    try {
+      sheetKey = await generateCharacterSheet(model, tmpDir)
+      // Update in-memory model so the rest of this run uses the fresh key
+      model.character_sheet_r2_key = sheetKey
+      model.character_sheet_generated_at = new Date().toISOString()
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     }
   }
 
-  fs.rmSync(tmpDir, { recursive: true, force: true })
-
-  if (newUrls.length < 3) throw new Error('Not enough kie.ai ref uploads succeeded')
-  await updateModelKieRefs(model.id, newUrls)
-  console.log(`  Re-uploaded ${newUrls.length} refs to kie.ai`)
-  return newUrls
+  // Signed URL with 6h TTL — enough for one full generation cycle
+  const signedUrl = await getSignedVideoUrl(sheetKey, 6 * 3600)
+  return [signedUrl]
 }
 
 // ─── Image generation ─────────────────────────────────────────────────────────
@@ -129,8 +186,9 @@ async function generateImageVariants(
   model: PipelineModel,
   kieRefs: string[],
   runId: string,
+  videoId: string,
   tmpDir: string
-): Promise<{ url: string; score: number; localPath: string }[]> {
+): Promise<{ url: string; score: number; localPath: string; variantId?: string }[]> {
   const prompt = buildImagePrompt(brief, model)
   const taskIds: string[] = []
 
@@ -155,17 +213,32 @@ async function generateImageVariants(
       await uploadToR2(r2Key, fs.readFileSync(localPath), 'image/jpeg')
       const score = await scoreImage(localPath, true)
       console.log(`    img ${i + 1}/4 score=${score}`)
-      return { url, score, localPath }
+      return { url, score, localPath, r2Key, idx: i + 1 }
     })
   )
 
-  return settled
+  const results = settled
     .map((r, i) => {
       if (r.status === 'fulfilled') return r.value
       console.error(`  ✗ Image ${i + 1}/4 failed:`, (r as PromiseRejectedResult).reason?.message)
       return null
     })
-    .filter((r): r is { url: string; score: number; localPath: string } => r !== null)
+    .filter((r): r is { url: string; score: number; localPath: string; r2Key: string; idx: number } => r !== null)
+
+  // Persist all image variants to DB
+  if (results.length > 0) {
+    try {
+      await saveVariants(
+        videoId,
+        'image',
+        results.map(r => ({ r2_key: r.r2Key, score: r.score, idx: r.idx }))
+      )
+    } catch (e) {
+      console.error('  ✗ saveVariants (image) failed:', (e as Error).message)
+    }
+  }
+
+  return results
 }
 
 // ─── Video generation ─────────────────────────────────────────────────────────
@@ -177,8 +250,9 @@ async function generateVideoVariants(
   model: PipelineModel,
   bestImageUrl: string,
   runId: string,
+  videoId: string,
   tmpDir: string
-): Promise<{ url: string; localPath: string }[]> {
+): Promise<{ url: string; localPath: string; r2Key: string; idx: number }[]> {
   const taskIds: string[] = []
 
   for (let v = 0; v < 4; v++) {
@@ -201,7 +275,7 @@ async function generateVideoVariants(
       const r2Key = `models/${model.handle}/generated/${runId}/slot_${brief.slot}/vid_${i + 1}.mp4`
       await uploadToR2(r2Key, fs.readFileSync(localPath), 'video/mp4')
       console.log(`    vid ${i + 1}/4 done`)
-      return { url, localPath }
+      return { url, localPath, r2Key, idx: i + 1 }
     })
   )
 
@@ -211,7 +285,20 @@ async function generateVideoVariants(
       console.error(`  ✗ Video ${i + 1}/4 failed:`, (r as PromiseRejectedResult).reason?.message)
       return null
     })
-    .filter((r): r is { url: string; localPath: string } => r !== null)
+    .filter((r): r is { url: string; localPath: string; r2Key: string; idx: number } => r !== null)
+
+  // Persist all video variants to DB
+  if (results.length > 0) {
+    try {
+      await saveVariants(
+        videoId,
+        'video',
+        results.map(r => ({ r2_key: r.r2Key, idx: r.idx }))
+      )
+    } catch (e) {
+      console.error('  ✗ saveVariants (video) failed:', (e as Error).message)
+    }
+  }
 
   return results
 }
@@ -223,22 +310,23 @@ export async function generateVideos(
   briefs: Brief[],
   runId: string
 ): Promise<void> {
-  console.log(`[generate] Starting generation for @${model.handle}, run ${runId}`)
+  const slotsExpected = model.videos_per_cycle ?? 6
+  console.log(`[generate] Starting generation for @${model.handle}, run ${runId} (${slotsExpected} slots expected)`)
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `pipeline_gen_`))
 
   try {
-    // Ensure kie.ai refs are fresh
-    const kieRefs = await refreshKieRefs(model)
+    // Get character sheet reference (generate only if none exists)
+    const kieRefs = await getCharacterSheetRef(model)
 
     for (const brief of briefs) {
-      console.log(`\n  [Slot ${brief.slot}/6] "${brief.overlay_text}"`)
+      console.log(`\n  [Slot ${brief.slot}/${slotsExpected}] "${brief.overlay_text}"`)
 
       const videoId = await createVideo(runId, brief.slot, brief, brief.source_post_id)
 
       // Generate images
       console.log('  Generating images...')
-      const imageVariants = await generateImageVariants(brief, model, kieRefs, runId, tmpDir)
+      const imageVariants = await generateImageVariants(brief, model, kieRefs, runId, videoId, tmpDir)
 
       if (imageVariants.length === 0) {
         console.error(`  ✗ No image variants for slot ${brief.slot}, skipping`)
@@ -251,7 +339,7 @@ export async function generateVideos(
 
       // Generate videos from best image
       console.log('  Generating videos...')
-      const videoVariants = await generateVideoVariants(brief, model, bestImage.url, runId, tmpDir)
+      const videoVariants = await generateVideoVariants(brief, model, bestImage.url, runId, videoId, tmpDir)
 
       if (videoVariants.length === 0) {
         console.error(`  ✗ No video variants for slot ${brief.slot}, skipping`)
@@ -261,6 +349,24 @@ export async function generateVideos(
 
       // Pick first successful video (all 7s, motion is similar)
       const bestVideo = videoVariants[0]
+
+      // Mark chosen video variant as selected in DB
+      try {
+        // Retrieve the variant record ID for the selected video by querying variants
+        // We identify it by video_id + type + variant_idx
+        const { data: variantRow } = await (await import('../lib/supabase')).supabaseAdmin
+          .from('pipeline_variants')
+          .select('id')
+          .eq('video_id', videoId)
+          .eq('type', 'video')
+          .eq('variant_idx', bestVideo.idx)
+          .single()
+        if (variantRow?.id) {
+          await selectVariant(videoId, variantRow.id, 'video')
+        }
+      } catch (e) {
+        console.error('  ✗ selectVariant failed:', (e as Error).message)
+      }
 
       // Upload best raw video to R2
       const rawKey = `models/${model.handle}/generated/${runId}/slot_${brief.slot}/best_raw.mp4`

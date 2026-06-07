@@ -12,8 +12,14 @@ export interface PipelineModel {
   kie_ref_urls: string[]
   kie_ref_uploaded_at: string | null
   best_post_times: { morning: string; evening: string } | null
-  branding_file_text: string | null  // personal branding file from FanslyTrends model profile
+  branding_file_text: string | null
+  character_sheet_r2_key: string | null
+  character_sheet_generated_at: string | null
   active: boolean
+  videos_per_cycle: number
+  flash_frame_enabled: boolean
+  pinned_character_sheet_key: string | null
+  notes_for_ai: string | null
 }
 
 export interface PipelineRun {
@@ -36,6 +42,29 @@ export interface PipelineVideo {
   thumbnail_r2_key: string | null
   source_post_id: string | null
   scheduled_for: string | null
+}
+
+export interface PipelineContentBank {
+  id: string
+  model_id: string
+  r2_key: string
+  type: 'own_footage' | 'hook_clip' | 'audio'
+  label: string | null
+  notes: string | null
+  trim_start: number
+  trim_end: number | null
+  created_at: string
+}
+
+export interface PipelineVariant {
+  id: string
+  video_id: string
+  type: 'image' | 'video'
+  variant_idx: number
+  r2_key: string
+  score: number | null
+  is_selected: boolean
+  created_at: string
 }
 
 export type ContentFormat = 'text_overlay' | 'flashing' | 'cta' | 'viral_hook' | 'green_screen'
@@ -69,7 +98,7 @@ export interface Brief {
   overlay_text: string          // text burned onto video (all formats)
   overlay_formula: OverlayFormula
   cta_type?: CtaType            // for cta format
-  hashtags: string[]
+  hashtags?: string[]            // populated at posting time, not during brief generation
   caption: string               // with comment trigger or CTA
   quality_scores?: VideoScores | null  // set after video processing
 }
@@ -98,6 +127,14 @@ export async function updateModelKieRefs(modelId: string, kieRefUrls: string[]) 
     .update({ kie_ref_urls: kieRefUrls, kie_ref_uploaded_at: new Date().toISOString() })
     .eq('id', modelId)
   if (error) throw new Error(`updateModelKieRefs: ${error.message}`)
+}
+
+export async function updateModelCharacterSheet(modelId: string, r2Key: string) {
+  const { error } = await supabaseAdmin
+    .from('pipeline_models')
+    .update({ character_sheet_r2_key: r2Key, character_sheet_generated_at: new Date().toISOString() })
+    .eq('id', modelId)
+  if (error) throw new Error(`updateModelCharacterSheet: ${error.message}`)
 }
 
 export async function createRun(modelId: string, briefs: Brief[]): Promise<string> {
@@ -168,6 +205,41 @@ export async function getRunVideos(runId: string): Promise<PipelineVideo[]> {
   return data ?? []
 }
 
+export async function getTopHashtagsForModel(modelId: string): Promise<string[]> {
+  const { data: runs } = await supabaseAdmin
+    .from('pipeline_runs')
+    .select('id')
+    .eq('model_id', modelId)
+    .order('created_at', { ascending: false })
+    .limit(10)
+
+  if (!runs || runs.length === 0) return []
+
+  const runIds = runs.map(r => r.id)
+  const { data: analytics } = await supabaseAdmin
+    .from('pipeline_analytics')
+    .select('hashtags_used, top_hashtag, views')
+    .in('run_id', runIds)
+    .order('views', { ascending: false })
+    .limit(20)
+
+  if (!analytics || analytics.length === 0) return []
+
+  const tagWeights = new Map<string, number>()
+  for (const a of analytics) {
+    const w = a.views ?? 1
+    if (a.top_hashtag) tagWeights.set(a.top_hashtag, (tagWeights.get(a.top_hashtag) ?? 0) + w * 2)
+    for (const tag of (a.hashtags_used ?? [])) {
+      tagWeights.set(tag, (tagWeights.get(tag) ?? 0) + w)
+    }
+  }
+
+  return Array.from(tagWeights.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 15)
+    .map(([tag]) => tag)
+}
+
 export async function getTrendingPosts(nicheTags: string[], limit = 10) {
   // Try niche-filtered first, fall back to any viral posts
   const { data: nicheData } = await supabaseAdmin
@@ -191,4 +263,179 @@ export async function getTrendingPosts(nicheTags: string[], limit = 10) {
     .limit(limit)
 
   return fallback ?? []
+}
+
+// Get all content bank items for a model, optionally filtered by type
+export async function getContentBank(modelId: string, type?: string): Promise<PipelineContentBank[]> {
+  let query = supabaseAdmin
+    .from('pipeline_content_bank')
+    .select('*')
+    .eq('model_id', modelId)
+    .order('created_at', { ascending: false })
+
+  if (type) {
+    query = query.eq('type', type)
+  }
+
+  const { data, error } = await query
+  if (error) throw new Error(`getContentBank: ${error.message}`)
+  return data ?? []
+}
+
+// Delete a content bank item by id
+export async function deleteContentBankItem(itemId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('pipeline_content_bank')
+    .delete()
+    .eq('id', itemId)
+  if (error) throw new Error(`deleteContentBankItem: ${error.message}`)
+}
+
+// Save all variants (images or videos) for a slot
+export async function saveVariants(
+  videoId: string,
+  type: 'image' | 'video',
+  variants: { r2_key: string; score?: number; idx: number }[]
+): Promise<void> {
+  const rows = variants.map(v => ({
+    video_id: videoId,
+    type,
+    variant_idx: v.idx,
+    r2_key: v.r2_key,
+    score: v.score ?? null,
+    is_selected: false,
+  }))
+
+  const { error } = await supabaseAdmin
+    .from('pipeline_variants')
+    .insert(rows)
+  if (error) throw new Error(`saveVariants: ${error.message}`)
+}
+
+// Get all variants for a video
+export async function getVariants(videoId: string): Promise<PipelineVariant[]> {
+  const { data, error } = await supabaseAdmin
+    .from('pipeline_variants')
+    .select('*')
+    .eq('video_id', videoId)
+    .order('variant_idx')
+  if (error) throw new Error(`getVariants: ${error.message}`)
+  return data ?? []
+}
+
+// Set which variant is selected (deselects others of same type)
+export async function selectVariant(videoId: string, variantId: string, type: 'image' | 'video'): Promise<void> {
+  // Deselect all variants of this type for this video
+  const { error: deselError } = await supabaseAdmin
+    .from('pipeline_variants')
+    .update({ is_selected: false })
+    .eq('video_id', videoId)
+    .eq('type', type)
+  if (deselError) throw new Error(`selectVariant (deselect): ${deselError.message}`)
+
+  // Select the chosen variant
+  const { error: selError } = await supabaseAdmin
+    .from('pipeline_variants')
+    .update({ is_selected: true })
+    .eq('id', variantId)
+  if (selError) throw new Error(`selectVariant (select): ${selError.message}`)
+}
+
+// Get all runs for a model, most recent first
+export async function getModelRuns(modelId: string, limit = 20): Promise<PipelineRun[]> {
+  const { data, error } = await supabaseAdmin
+    .from('pipeline_runs')
+    .select('*')
+    .eq('model_id', modelId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw new Error(`getModelRuns: ${error.message}`)
+  return data ?? []
+}
+
+// Get all active + inactive models
+export async function getAllModels(): Promise<PipelineModel[]> {
+  const { data, error } = await supabaseAdmin
+    .from('pipeline_models')
+    .select('*')
+    .order('handle')
+  if (error) throw new Error(`getAllModels: ${error.message}`)
+  return data ?? []
+}
+
+// Update model fields
+export async function updateModel(modelId: string, updates: Partial<PipelineModel>): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('pipeline_models')
+    .update(updates)
+    .eq('id', modelId)
+  if (error) throw new Error(`updateModel: ${error.message}`)
+}
+
+// Create a new pipeline model
+export async function createModel(handle: string): Promise<string> {
+  const { data, error } = await supabaseAdmin
+    .from('pipeline_models')
+    .insert({
+      handle,
+      niche_tags: [],
+      kie_ref_urls: [],
+      nsfw_flag: false,
+      active: true,
+      videos_per_cycle: 6,
+      flash_frame_enabled: false,
+    })
+    .select('id')
+    .single()
+  if (error) throw new Error(`createModel: ${error.message}`)
+  return data.id
+}
+
+// Load approved suggestions from trends_suggestions for a model (joined with trends_posts for context)
+export async function getApprovedSuggestions(handle: string): Promise<Array<{
+  id: string
+  what_to_change: string
+  post_id: string
+  reasoning: string
+  fansly_post_id: string
+  creator_username: string
+  likes_current: number
+}>> {
+  const { data, error } = await supabaseAdmin
+    .from('trends_suggestions')
+    .select(`
+      id,
+      what_to_change,
+      post_id,
+      reasoning,
+      trends_posts!inner (
+        fansly_post_id,
+        creator_username,
+        likes_current
+      )
+    `)
+    .eq('creator_handle', handle)
+    .eq('status', 'approved')
+    .order('created_at', { ascending: true })
+
+  if (error) throw new Error(`getApprovedSuggestions: ${error.message}`)
+
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    what_to_change: row.what_to_change,
+    post_id: row.post_id,
+    reasoning: row.reasoning,
+    fansly_post_id: row.trends_posts.fansly_post_id,
+    creator_username: row.trends_posts.creator_username,
+    likes_current: row.trends_posts.likes_current,
+  }))
+}
+
+// Mark a suggestion as 'done' (used after a brief is generated from it)
+export async function markSuggestionUsed(suggestionId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('trends_suggestions')
+    .update({ status: 'done' })
+    .eq('id', suggestionId)
+  if (error) throw new Error(`markSuggestionUsed: ${error.message}`)
 }

@@ -1,99 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Brief, ContentFormat, OverlayFormula, PipelineModel } from './db'
-import { getTrendingPosts } from './db'
+import { getTrendingPosts, getApprovedSuggestions, markSuggestionUsed } from './db'
 import { supabaseAdmin } from '../lib/supabase'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
-interface TagsResponse {
-  highestImpact: Array<{ tag: string; impactScore: number }>
-  fastestRising: Array<{ tag: string; changePct: number | null }>
-  lowestSaturation: Array<{ tag: string; saturationScore: number }>
-}
-
-async function fetchHashtags(): Promise<TagsResponse> {
-  try {
-    const res = await fetch('https://fansly-tags.vercel.app/api/tags', {
-      headers: { 'Cache-Control': 'no-store' },
-    } as RequestInit)
-    if (!res.ok) throw new Error(`Tags API ${res.status}`)
-    return await res.json() as TagsResponse
-  } catch (e) {
-    console.error('  ⚠ Could not fetch fansly-tags:', (e as Error).message)
-    return { highestImpact: [], fastestRising: [], lowestSaturation: [] }
-  }
-}
-
-// Tags that are niche-irrelevant for a general pool — evergreen tags come from model.niche_tags directly
-const BLOCKED_GENERAL_TAGS = new Set([
-  'anal', 'trans', 'femboy', 'creampie', 'gangbang', 'squirt', 'fart', 'scat',
-  'bdsm', 'dominatrix', 'cuckold', 'feet', 'footfetish', 'furry', 'hentai',
-  'anime', 'cartoon', 'shemale', 'ladyboy',
-  'pumpkin', 'dashaangel', // specific creator tags that leak into trending pools
-])
-
-interface HashtagPools {
-  fixed: string[]   // evergreen (3) + signature (1) — same for all slots
-  impact: string[]  // 9-tag pool — rotated per slot
-  rising: string[]  // 9-tag pool — rotated per slot
-  lowSat: string[]  // fallback padding pool
-}
-
-/**
- * Builds larger hashtag pools so each slot gets a different 3+3 selection
- * from the Impact + Rising buckets. Per SOP: vary 3-4 tags between consecutive posts.
- */
-function buildHashtagPools(tags: TagsResponse, signatureTag: string | null, nicheTags: string[]): HashtagPools {
-  const nicheSet = new Set(nicheTags.map(t => t.toLowerCase()))
-  const filterTag = (tag: string) =>
-    !BLOCKED_GENERAL_TAGS.has(tag.toLowerCase()) && !nicheSet.has(tag.toLowerCase())
-
-  const evergreen = nicheTags.slice(0, 3).map(t => `#${t.toLowerCase().replace(/\s+/g, '')}`)
-  const sig = signatureTag
-    ? [`#${signatureTag.replace(/^#/, '').toLowerCase().replace(/\s+/g, '')}`]
-    : []
-
-  return {
-    fixed: [...new Set([...evergreen, ...sig])].slice(0, 4),
-    impact: tags.highestImpact.filter(t => filterTag(t.tag)).slice(0, 9).map(t => `#${t.tag}`),
-    rising: tags.fastestRising.filter(t => filterTag(t.tag)).slice(0, 9).map(t => `#${t.tag}`),
-    lowSat: tags.lowestSaturation.filter(t => filterTag(t.tag)).slice(0, 6).map(t => `#${t.tag}`),
-  }
-}
-
-/**
- * Picks a different Impact+Rising window per slot.
- * Shift by 2 each slot → 4 rotating tags differ between consecutive posts.
- * SOP rule: "vary at least 3-4 tags between consecutive posts"
- */
-function buildSlotHashtags(pools: HashtagPools, slotIndex: number): string[] {
-  const pickRotated = (arr: string[], start: number, count: number): string[] => {
-    if (arr.length === 0) return []
-    const result: string[] = []
-    for (let i = 0; i < arr.length && result.length < count; i++) {
-      result.push(arr[(start + i) % arr.length])
-    }
-    return result
-  }
-
-  const shift = slotIndex * 2
-  const selectedImpact = pickRotated(pools.impact, shift, 3)
-  const selectedRising = pickRotated(pools.rising, shift + 1, 3)  // +1 offset from impact for more variety
-
-  const seen = new Set<string>()
-  const tags = [...pools.fixed, ...selectedImpact, ...selectedRising].filter(t => {
-    if (seen.has(t)) return false
-    seen.add(t)
-    return true
-  })
-
-  for (const t of pools.lowSat) {
-    if (tags.length >= 10) break
-    if (!seen.has(t)) { seen.add(t); tags.push(t) }
-  }
-
-  return tags.slice(0, 10)
-}
 
 /**
  * Gets the content formats used in the last successful run for this model.
@@ -196,31 +106,125 @@ A reaction clip of the model (shocked, laughing, blushing, eye roll) is overlaid
 export async function generateBriefs(model: PipelineModel): Promise<Brief[]> {
   console.log(`[research] Generating briefs for @${model.handle}`)
 
-  const [trendingPosts, tags, lastFormats] = await Promise.all([
+  const videosPerCycle = model.videos_per_cycle ?? 6
+
+  const [trendingPosts, lastFormats, approvedSuggestions] = await Promise.all([
     getTrendingPosts(model.niche_tags, 10),
-    fetchHashtags(),
     getLastCycleFormats(model.id),
+    getApprovedSuggestions(model.handle),
   ])
 
   console.log(`  Trending posts found: ${trendingPosts.length}`)
   console.log(`  Branding file: ${model.branding_file_text ? `${model.branding_file_text.length} chars` : 'MISSING — briefs will be generic'}`)
+  console.log(`  Approved suggestions: ${approvedSuggestions.length}`)
   if (lastFormats.length > 0) console.log(`  Last cycle formats: ${lastFormats.join(', ')}`)
 
-  const hashtagPools = buildHashtagPools(tags, model.signature_tag, model.niche_tags)
-  console.log(`  Hashtag pools — impact: ${hashtagPools.impact.length} tags, rising: ${hashtagPools.rising.length} tags`)
+  // Inject branding file and optional AI notes into system prompt
+  const brandingSection = model.branding_file_text
+    ? `\n\n---\n\n## THIS MODEL'S BRANDING FILE\n\nUse this to make every brief specific to her — personality, tone, visual style, content themes.\n\n${model.branding_file_text}`
+    : ''
+
+  const notesSection = model.notes_for_ai
+    ? `\n\n---\n\n## ADDITIONAL NOTES FROM THE MANAGER\n\n${model.notes_for_ai}`
+    : ''
+
+  const fullSystemPrompt = SYSTEM_PROMPT + brandingSection + notesSection
 
   // Trending context — performance stats only, NO captions (captions are explicit)
   const trendContext = trendingPosts.length > 0
     ? trendingPosts.map((p, i) =>
         `${i + 1}. @${p.creator_username} | ${p.likes_current} likes | ${p.growth_24h_pct ?? 0}% growth | ${p.video_duration ?? 7}s | ID: ${p.fansly_post_id}`
       ).join('\n')
-    : Array.from({ length: 6 }, (_, i) => `${i + 1}. @sample | ID: mock_post_${i + 1}`).join('\n')
+    : Array.from({ length: videosPerCycle }, (_, i) => `${i + 1}. @sample | ID: mock_post_${i + 1}`).join('\n')
 
   const formatDiversityNote = lastFormats.length > 0
     ? `\nLast cycle format sequence was: ${lastFormats.join(', ')}. Use a DIFFERENT sequence this cycle — don't repeat the same order.`
     : ''
 
-  const userPrompt = `Write 6 content briefs for 7–15 second reels. Vary the content_format across all 6 slots — do not repeat the same format more than twice. Use different overlay formulas within text_overlay slots.${formatDiversityNote}
+  // ─── PATH A: Approved suggestions exist ────────────────────────────────────
+  if (approvedSuggestions.length >= 1) {
+    const suggestionsToProcess = approvedSuggestions.slice(0, videosPerCycle)
+    console.log(`  Using suggestion-driven path for ${suggestionsToProcess.length} brief(s)`)
+
+    const suggestionBlocks = suggestionsToProcess.map((s, i) => {
+      return `### Suggestion ${i + 1} (slot ${i + 1})
+Source post: @${s.creator_username} | ${s.likes_current} likes | Fansly ID: ${s.fansly_post_id}
+Why it works (reasoning): ${s.reasoning}
+User's specific instructions: ${s.what_to_change}`
+    }).join('\n\n')
+
+    const userPrompt = `Write ${suggestionsToProcess.length} content brief(s) for 7–15 second reels. Each brief is based on an APPROVED suggestion — the user has reviewed specific viral posts and written exact instructions for how to recreate/adapt them. Follow the user's instructions precisely; they override generic format choices.
+
+Vary the content_format across slots where possible. Use different overlay formulas within text_overlay slots.${formatDiversityNote}
+
+Trending audio context (use these IDs as source_post_id only when explicitly recreating that post; otherwise match slot's suggestion post ID):
+${trendContext}
+
+---
+
+${suggestionBlocks}
+
+---
+
+Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s), no other text:
+[
+  {
+    "slot": 1,
+    "content_format": "text_overlay|flashing|cta|viral_hook|green_screen",
+    "hook_description": "What happens in the first 1 second to stop the scroll",
+    "retention_description": "What happens 1-5s to keep them watching",
+    "payoff_description": "What happens in the final second — the reward",
+    "concept": "One sentence describing the full video for the creator",
+    "source_post_id": "fansly_post_id from the matching suggestion above",
+    "overlay_text": "Text burned on video, max 55 chars, with emoji",
+    "overlay_formula": "grammar_bait|celebrity_bait|trolling|controversial_opinion",
+    "cta_type": "comment|share|follow or null if not cta format",
+    "caption": "1-2 sentence post caption with comment trigger or soft CTA"
+  }
+]`
+
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 500 * suggestionsToProcess.length + 500,
+      messages: [{
+        role: 'user',
+        content: [{ type: 'text', text: fullSystemPrompt + '\n\n---\n\n' + userPrompt }],
+      }],
+    })
+
+    const text = (response.content[0] as { type: string; text: string }).text.trim()
+    const jsonMatch = text.match(/\[[\s\S]*\]/m)
+    if (!jsonMatch) throw new Error(`Claude returned non-JSON (suggestion path): ${text.slice(0, 200)}`)
+
+    const rawBriefs: Brief[] = JSON.parse(jsonMatch[0])
+    if (!Array.isArray(rawBriefs) || rawBriefs.length === 0) throw new Error('Claude returned empty briefs array (suggestion path)')
+
+    // Mark each suggestion as used
+    await Promise.all(suggestionsToProcess.map(s => markSuggestionUsed(s.id)))
+    console.log(`  Marked ${suggestionsToProcess.length} suggestion(s) as done`)
+
+    return rawBriefs.map((b, i) => {
+      const suggestion = suggestionsToProcess[i]
+      return {
+        slot: i + 1,
+        content_format: (b.content_format ?? 'text_overlay') as ContentFormat,
+        hook_description: b.hook_description ?? '',
+        retention_description: b.retention_description ?? '',
+        payoff_description: b.payoff_description ?? '',
+        concept: b.concept ?? '',
+        source_post_id: suggestion?.fansly_post_id ?? b.source_post_id ?? (trendingPosts[0]?.fansly_post_id ?? 'unknown'),
+        overlay_text: b.overlay_text ?? '',
+        overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
+        cta_type: b.cta_type ?? undefined,
+        caption: b.caption ?? '',
+      }
+    })
+  }
+
+  // ─── PATH B: No approved suggestions — generic briefs ──────────────────────
+  console.log(`  No approved suggestions — falling back to generic brief generation`)
+
+  const userPrompt = `Write ${videosPerCycle} content briefs for 7–15 second reels. Vary the content_format across all ${videosPerCycle} slots — do not repeat the same format more than twice. Use different overlay formulas within text_overlay slots.${formatDiversityNote}
 
 Source the audio from these trending videos (use their IDs as source_post_id):
 ${trendContext}
@@ -242,17 +246,12 @@ Return ONLY a JSON array, no other text:
   }
 ]`
 
-  // Inject branding file into system prompt if available
-  const brandingSection = model.branding_file_text
-    ? `\n\n---\n\n## THIS MODEL'S BRANDING FILE\n\nUse this to make every brief specific to her — personality, tone, visual style, content themes.\n\n${model.branding_file_text}`
-    : ''
-
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 3000,
     messages: [{
       role: 'user',
-      content: [{ type: 'text', text: SYSTEM_PROMPT + brandingSection + '\n\n---\n\n' + userPrompt }],
+      content: [{ type: 'text', text: fullSystemPrompt + '\n\n---\n\n' + userPrompt }],
     }],
   })
 
@@ -277,8 +276,6 @@ Return ONLY a JSON array, no other text:
     overlay_text: b.overlay_text ?? '',
     overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
     cta_type: b.cta_type ?? undefined,
-    // Hashtags injected programmatically with per-slot rotation — never from Claude
-    hashtags: buildSlotHashtags(hashtagPools, i),
     caption: b.caption ?? '',
   }))
 }

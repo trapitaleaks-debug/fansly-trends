@@ -45,6 +45,7 @@ export default function SettingsPage() {
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           <span className="text-white">Settings</span>
+          <Link href="/pipeline" className="hover:text-white transition-colors">Pipeline</Link>
         </div>
       </nav>
 

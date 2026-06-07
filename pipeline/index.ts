@@ -1,18 +1,15 @@
 /**
- * Pipeline orchestrator — ties research → generate → process → telegram approval together.
- * Called by the cron server every 3 days per active model.
+ * Pipeline orchestrator — ties research → generate → process together.
+ * Called by the cron server every N days per active model, or on-demand via /trigger/:handle.
  */
 
 import dotenv from 'dotenv'
 dotenv.config({ path: '.env.local' })
 
-import { getActiveModels, getModel, createRun, updateRunStatus, getPendingApprovalRuns, getRunVideos } from './db'
+import { getActiveModels, getModel, createRun, updateRunStatus } from './db'
 import { generateBriefs } from './research'
 import { generateVideos } from './generate'
 import { processRun } from './process'
-import { sendApprovalBatch, checkAutoApprove } from './telegram-bot'
-import { postBatch } from './fancore'
-import { sendTelegram } from '../lib/telegram'
 
 export async function runPipelineForModel(handle: string): Promise<void> {
   const model = await getModel(handle)
@@ -26,7 +23,7 @@ export async function runPipelineForModel(handle: string): Promise<void> {
   let runId = ''
 
   try {
-    // Phase 2: Research — generate 6 content briefs
+    // Phase 2: Research — generate briefs (videos_per_cycle slots)
     console.log('[Phase 2] Research...')
     const briefs = await generateBriefs(model)
     console.log(`  Generated ${briefs.length} briefs`)
@@ -41,43 +38,17 @@ export async function runPipelineForModel(handle: string): Promise<void> {
 
     // Phase 4: Process — ffmpeg overlay + audio
     console.log('\n[Phase 4] Processing...')
-    await processRun(runId, handle)
+    await processRun(runId, handle, model)
 
-    // Send to Telegram for approval
-    await updateRunStatus(runId, 'pending_approval')
-    console.log('\n[Phase 5] Sending Telegram approval message...')
-    const run = { id: runId, model_id: model.id, status: 'pending_approval', briefs, created_at: new Date().toISOString(), approved_at: null, posted_at: null }
-    await sendApprovalBatch(run, handle)
-
-    console.log(`\n✅ Pipeline run complete. Waiting for Telegram approval (auto-approve in 4h).`)
+    // Mark run as ready — no Telegram approval step
+    await updateRunStatus(runId, 'ready')
+    console.log('\n✅ Pipeline run complete. Status: ready.')
 
   } catch (e) {
     const msg = (e as Error).message
     console.error(`\n✗ Pipeline failed for @${handle}:`, msg)
     if (runId) await updateRunStatus(runId, 'failed')
-    await sendTelegram(`🚨 <b>Pipeline failed for @${handle}</b>\n\n<code>${msg.slice(0, 300)}</code>`)
     throw e
-  }
-}
-
-export async function processApprovedRuns(): Promise<void> {
-  const runs = await getPendingApprovalRuns()
-  const approved = runs.filter(r => r.status === 'approved')
-
-  for (const run of approved) {
-    const { data: modelRow } = await (await import('../lib/supabase')).supabaseAdmin
-      .from('pipeline_models')
-      .select('*')
-      .eq('id', run.model_id)
-      .single()
-
-    if (!modelRow) continue
-
-    try {
-      await postBatch(run.id, modelRow)
-    } catch (e) {
-      console.error(`Failed to post run ${run.id}:`, (e as Error).message)
-    }
   }
 }
 

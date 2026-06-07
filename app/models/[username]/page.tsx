@@ -11,12 +11,12 @@ interface Model {
   branding_file_md: string | null
   hashtags: string[]
   notes_for_ai: string | null
-  suggestion_counts: { pending: number; done: number; dismissed: number }
+  suggestion_counts: { pending: number; approved: number; done: number; dismissed: number }
   last_generated_at: string | null
   updated_at: string
 }
 
-type SuggestionStatus = 'pending' | 'done' | 'dismissed'
+type SuggestionStatus = 'pending' | 'approved' | 'done' | 'dismissed'
 
 export default function ModelDetailPage({ params }: { params: Promise<{ username: string }> }) {
   const { username } = use(params)
@@ -181,21 +181,23 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     }
   }
 
-  async function handleStatusChange(id: string, status: SuggestionStatus) {
+  async function handleStatusChange(id: string, status: SuggestionStatus, dismissReason?: string) {
+    const body: Record<string, unknown> = { status }
+    if (dismissReason) body.dismiss_reason = dismissReason
     await fetch(`/api/models/${username}/suggestions/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(body),
     })
     setSuggestions(prev => prev.filter(s => s.id !== id))
     fetchModel()
   }
 
-  async function handleNotesChange(id: string, notes: string) {
+  async function handleWhatToChangeEdit(id: string, whatToChange: string) {
     await fetch(`/api/models/${username}/suggestions/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notes }),
+      body: JSON.stringify({ what_to_change: whatToChange }),
     })
   }
 
@@ -239,6 +241,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
+          <Link href="/pipeline" className="hover:text-white transition-colors">Pipeline</Link>
         </div>
       </nav>
 
@@ -474,7 +477,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
           {/* Tabs */}
           <div className="flex items-center gap-2">
             <div className="flex flex-1 gap-1 bg-[#111] border border-[#1e1e1e] rounded-xl p-1">
-              {(['pending', 'done', 'dismissed'] as const).map(tab => (
+              {(['pending', 'approved', 'dismissed'] as const).map(tab => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -506,7 +509,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                 key={s.id}
                 suggestion={s}
                 onStatusChange={handleStatusChange}
-                onNotesChange={handleNotesChange}
+                onWhatToChangeEdit={handleWhatToChangeEdit}
               />
             ))}
           </div>

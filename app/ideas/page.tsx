@@ -59,6 +59,7 @@ export default function IdeasPage() {
           <span className="text-white">Ideas</span>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
+          <Link href="/pipeline" className="hover:text-white transition-colors">Pipeline</Link>
         </div>
       </nav>
 
