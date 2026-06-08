@@ -178,10 +178,26 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
 
+  // Source photos
+  const [sourcePhotos, setSourcePhotos] = useState<{ key: string; filename: string; signedUrl: string }[]>([])
+  const [loadingPhotos, setLoadingPhotos] = useState(true)
+  const [uploadingPhotos, setUploadingPhotos] = useState(false)
+  const [uploadPhotoProgress, setUploadPhotoProgress] = useState('')
+
   // Pin character sheet
   const [pinning, setPinning] = useState(false)
   const [pinned, setPinned] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
+
+  const fetchSourcePhotos = useCallback(async () => {
+    setLoadingPhotos(true)
+    const res = await fetch(`/api/pipeline/models/${handle}/source-photos`)
+    if (res.ok) {
+      const data = await res.json()
+      setSourcePhotos(data.photos ?? [])
+    }
+    setLoadingPhotos(false)
+  }, [handle])
 
   const fetchModel = useCallback(async () => {
     const res = await fetch(`/api/pipeline/models/${handle}`)
@@ -198,7 +214,41 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
 
   useEffect(() => {
     fetchModel()
-  }, [fetchModel])
+    fetchSourcePhotos()
+  }, [fetchModel, fetchSourcePhotos])
+
+  async function handleSourcePhotoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? [])
+    if (!files.length) return
+    setUploadingPhotos(true)
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      setUploadPhotoProgress(`${i + 1} / ${files.length}`)
+      const res = await fetch(`/api/pipeline/models/${handle}/source-photos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: file.name }),
+      })
+      if (!res.ok) continue
+      const { uploadUrl } = await res.json()
+      await fetch(uploadUrl, {
+        method: 'PUT',
+        body: file,
+        headers: { 'Content-Type': file.type || 'image/jpeg' },
+      })
+    }
+    setUploadingPhotos(false)
+    setUploadPhotoProgress('')
+    e.target.value = ''
+    fetchSourcePhotos()
+  }
+
+  async function handleDeleteSourcePhoto(key: string) {
+    await fetch(`/api/pipeline/models/${handle}/source-photos?key=${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    })
+    setSourcePhotos(prev => prev.filter(p => p.key !== key))
+  }
 
   async function handleSaveSettings() {
     setSavingSettings(true)
@@ -346,6 +396,55 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
               className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-sm text-white placeholder-[#333] focus:outline-none focus:border-[#444] resize-none font-mono leading-relaxed"
             />
           </div>
+        </div>
+
+        {/* Source Photos */}
+        <div className="bg-[#111] border border-[#1a1a1a] rounded-xl p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-medium">Source Photos</h3>
+              <p className="text-xs text-[#444] mt-0.5">
+                {loadingPhotos ? 'Loading...' : `${sourcePhotos.length} photo${sourcePhotos.length !== 1 ? 's' : ''} · 10+ recommended`}
+              </p>
+            </div>
+            <label className={`text-xs bg-[#1a1a1a] border border-[#2a2a2a] px-3 py-1.5 rounded-lg transition-colors ${uploadingPhotos ? 'text-[#555] cursor-not-allowed' : 'text-[#888] hover:text-white cursor-pointer'}`}>
+              {uploadingPhotos ? `Uploading ${uploadPhotoProgress}...` : '+ Add Photos'}
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={handleSourcePhotoUpload}
+                disabled={uploadingPhotos}
+              />
+            </label>
+          </div>
+
+          {!loadingPhotos && sourcePhotos.length === 0 && (
+            <p className="text-xs text-[#444]">No photos yet. Upload at least 10 for best results.</p>
+          )}
+
+          {sourcePhotos.length > 0 && (
+            <div className="grid grid-cols-5 gap-2">
+              {sourcePhotos.map(photo => (
+                <div key={photo.key} className="relative group aspect-square">
+                  <img
+                    src={photo.signedUrl}
+                    alt={photo.filename}
+                    className="w-full h-full object-cover rounded-lg border border-[#2a2a2a]"
+                  />
+                  <button
+                    onClick={() => handleDeleteSourcePhoto(photo.key)}
+                    className="absolute inset-0 bg-black/60 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-red-400 text-sm font-bold"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="text-[10px] text-[#444]">After adding or removing photos, hit Regenerate on the character sheet below to rebuild it.</p>
         </div>
 
         {/* Character sheet */}
