@@ -248,6 +248,8 @@ function UploadSection({
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [showTrim, setShowTrim] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingLabel, setEditingLabel] = useState('')
 
   const isVideo = type === 'own_footage' || type === 'hook_clip'
   const typeItems = items.filter(i => i.type === type)
@@ -323,6 +325,16 @@ function UploadSection({
     onDelete(itemId)
   }
 
+  async function handleRename(itemId: string, newLabel: string) {
+    await fetch(`/api/pipeline/content-bank/${modelId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: itemId, label: newLabel }),
+    })
+    setEditingId(null)
+    onUploaded()
+  }
+
   return (
     <div className="space-y-3">
       <h4 className="text-xs font-medium text-[#888]">{sectionLabel}</h4>
@@ -396,8 +408,27 @@ function UploadSection({
               key={item.id}
               className="flex items-center justify-between bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg px-3 py-2"
             >
-              <div className="min-w-0">
-                <p className="text-xs text-[#ccc] truncate">{item.label}</p>
+              <div className="min-w-0 flex-1">
+                {editingId === item.id ? (
+                  <input
+                    autoFocus
+                    value={editingLabel}
+                    onChange={e => setEditingLabel(e.target.value)}
+                    onBlur={() => handleRename(item.id, editingLabel)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleRename(item.id, editingLabel)
+                      if (e.key === 'Escape') setEditingId(null)
+                    }}
+                    className="w-full bg-transparent border-b border-[#444] text-xs text-white outline-none pb-px"
+                  />
+                ) : (
+                  <p
+                    className="text-xs text-[#ccc] truncate cursor-text hover:text-white transition-colors"
+                    onClick={() => { setEditingId(item.id); setEditingLabel(item.label ?? '') }}
+                  >
+                    {item.label || <span className="text-[#444]">Untitled</span>}
+                  </p>
+                )}
                 <div className="flex items-center gap-2 mt-0.5">
                   <p className="text-[10px] text-[#444] truncate">{item.r2_key.split('/').pop()}</p>
                   {item.trim_end != null && (

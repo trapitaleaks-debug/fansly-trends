@@ -30,6 +30,31 @@ export async function GET(
   }
 }
 
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ modelId: string }> }
+) {
+  try {
+    const { modelId } = await params
+    const { id, label } = await request.json()
+
+    if (!id || typeof label !== 'string') {
+      return NextResponse.json({ error: 'id and label required' }, { status: 400 })
+    }
+
+    const { error } = await supabaseAdmin
+      .from('pipeline_content_bank')
+      .update({ label: label.trim() || null })
+      .eq('id', id)
+      .eq('model_id', modelId)
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ ok: true })
+  } catch {
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ modelId: string }> }
