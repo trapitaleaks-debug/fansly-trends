@@ -353,12 +353,12 @@ export default function SuggestionCard({ suggestion, onStatusChange, onWhatToCha
 
 
             {suggestion.status === 'dismissed' && (
-              <div className="flex items-start gap-2 bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg px-3 py-2">
-                <span className="text-[10px] text-[#555] shrink-0 mt-px">SKIPPED</span>
+              <div className="rounded-lg border border-orange-500/25 bg-orange-500/8 px-3 py-2">
+                <span className="text-[10px] font-semibold text-orange-400 uppercase tracking-wide">Skipped</span>
                 {suggestion.dismiss_reason ? (
-                  <p className="text-xs text-[#aaa] leading-relaxed">&ldquo;{suggestion.dismiss_reason}&rdquo;</p>
+                  <p className="text-xs text-white/70 mt-1 leading-relaxed">{suggestion.dismiss_reason}</p>
                 ) : (
-                  <p className="text-xs text-[#444] italic">No reason given</p>
+                  <p className="text-xs text-white/30 mt-1 italic">No reason noted</p>
                 )}
               </div>
             )}
