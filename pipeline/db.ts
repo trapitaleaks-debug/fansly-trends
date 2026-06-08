@@ -424,6 +424,15 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
   creator_username: string
   likes_current: number
 }>> {
+  // trends_suggestions links to trends_models (not pipeline_models); look up model_id first
+  const { data: trendModel } = await supabaseAdmin
+    .from('trends_models')
+    .select('id')
+    .eq('fansly_username', handle)
+    .single()
+
+  if (!trendModel) return []
+
   const { data, error } = await supabaseAdmin
     .from('trends_suggestions')
     .select(`
@@ -437,7 +446,7 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
         likes_current
       )
     `)
-    .eq('creator_handle', handle)
+    .eq('model_id', trendModel.id)
     .eq('status', 'approved')
     .order('created_at', { ascending: true })
 
