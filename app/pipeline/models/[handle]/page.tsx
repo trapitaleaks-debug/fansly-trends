@@ -793,16 +793,20 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
         <div className="bg-[#111] border border-[#1a1a1a] rounded-xl p-6 space-y-4">
           <h3 className="text-sm font-medium">Character Sheet</h3>
 
-          {(model.sheet_status === 'queued' || model.sheet_status === 'generating') ? (
+          {(model.sheet_status === 'queued' || model.sheet_status === 'starting' || model.sheet_status === 'polling' || model.sheet_status === 'generating') ? (
             <div className="flex items-start gap-3 py-1">
               <div className="w-5 h-5 border-2 border-violet-400/30 border-t-violet-400 rounded-full animate-spin shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm text-[#ccc]">
-                  {model.sheet_status === 'queued' ? 'Queued...' : 'Generating...'}
+                  {model.sheet_status === 'queued' ? 'Queued...' :
+                   model.sheet_status === 'starting' ? 'Uploading photos...' :
+                   model.sheet_status === 'polling' ? 'Generating...' : 'Generating...'}
                 </p>
                 <p className="text-xs text-[#555] mt-0.5">
                   {model.sheet_status === 'queued'
-                    ? 'Waiting for the pipeline worker to pick this up. Make sure npm run pipeline:watch is running.'
+                    ? 'Will be picked up automatically within 5 minutes.'
+                    : model.sheet_status === 'starting'
+                    ? 'Compressing and uploading source photos to kie.ai...'
                     : 'Takes ~8 minutes. This page refreshes automatically every 10 seconds.'}
                 </p>
               </div>

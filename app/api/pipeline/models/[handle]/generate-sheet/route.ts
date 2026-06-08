@@ -18,7 +18,7 @@ export async function POST(
       return NextResponse.json({ error: 'Model not found' }, { status: 404 })
     }
 
-    if (model.sheet_status === 'generating') {
+    if (model.sheet_status === 'starting' || model.sheet_status === 'polling') {
       return NextResponse.json({ ok: true, status: 'already_generating' })
     }
 
@@ -26,6 +26,7 @@ export async function POST(
       .from('pipeline_models')
       .update({
         sheet_status: 'queued',
+        sheet_kie_task_id: null,
         character_sheet_r2_key: null,
         character_sheet_generated_at: null,
         pinned_character_sheet_key: null,

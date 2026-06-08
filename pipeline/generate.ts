@@ -16,6 +16,8 @@ import {
   createVideo,
   updateVideo,
   updateModelCharacterSheet,
+  updateModelSheetPolling,
+  updateModelSheetStatus,
   saveVariants,
   selectVariant,
   type PipelineModel,
@@ -120,6 +122,74 @@ export async function generateCharacterSheet(model: PipelineModel, tmpDir: strin
 
   console.log(`  ✓ Character sheet stored → ${sheetKey}`)
   return sheetKey
+}
+
+/**
+ * Phase 1 of async sheet generation: download + compress + upload photos, create kie.ai task.
+ * Stores the taskId and sets sheet_status='polling'. Returns immediately after task creation.
+ */
+export async function startCharacterSheetTask(model: PipelineModel, tmpDir: string): Promise<void> {
+  const prefix = model.source_photos_r2_prefix ?? `models/${model.handle}/source`
+  const listing = await r2.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix + '/' }))
+  const keys = (listing.Contents ?? []).map(o => o.Key!).filter(Boolean).slice(0, 25)
+  if (keys.length === 0) throw new Error(`No source photos at R2 prefix: ${prefix}`)
+
+  const kieUrls: string[] = []
+  for (const key of keys) {
+    const filename = path.basename(key)
+    const rawPath = path.join(tmpDir, `raw_${filename}`)
+    const compPath = path.join(tmpDir, `comp_${path.parse(filename).name}.jpg`)
+    await downloadFromR2(key, rawPath)
+    await compressTo1024(rawPath, compPath)
+    try {
+      const url = await uploadFileToKie(compPath, path.basename(compPath), `pipeline/${model.handle}`)
+      kieUrls.push(url)
+      await sleep(600)
+    } catch (e) {
+      console.error(`  ✗ Upload failed for ${filename}:`, (e as Error).message)
+    }
+  }
+  if (kieUrls.length < 3) throw new Error(`Too few photos uploaded to kie.ai (${kieUrls.length})`)
+
+  const taskId = await createImageTask(CHARACTER_SHEET_PROMPT, kieUrls, '16:9')
+  await updateModelSheetPolling(model.id, taskId)
+  console.log(`  ✓ Character sheet task created: ${taskId}`)
+}
+
+/**
+ * Phase 2 of async sheet generation: check kie.ai task status once.
+ * On success: downloads result, uploads to R2, clears sheet_status.
+ * On failure: sets sheet_status='error'. On pending: does nothing (call again later).
+ */
+export async function checkCharacterSheetTask(model: PipelineModel): Promise<void> {
+  if (!model.sheet_kie_task_id) throw new Error('No kie task ID stored')
+
+  const kieKey = process.env.KIE_API_KEY
+  if (!kieKey) throw new Error('KIE_API_KEY not set')
+
+  const res = await fetch(
+    `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(model.sheet_kie_task_id)}`,
+    { headers: { Authorization: `Bearer ${kieKey}` } }
+  )
+  const json = await res.json() as { code: number; data?: { state?: string; resultJson?: string; failMsg?: string } }
+  if (json.code !== 200 || !json.data) return
+
+  const { state, resultJson, failMsg } = json.data
+  if (state === 'success') {
+    const result = JSON.parse(resultJson ?? '{}')
+    const url = (result.resultUrls ?? result.result_urls ?? [])[0] as string | undefined
+    if (!url) throw new Error('Task succeeded but no URL in resultJson')
+
+    const buf = await fetch(url).then(r => r.arrayBuffer())
+    const sheetKey = `models/${model.handle}/reference/character_sheet.jpg`
+    await uploadToR2(sheetKey, Buffer.from(new Uint8Array(buf)), 'image/jpeg')
+    await updateModelCharacterSheet(model.id, sheetKey)
+    console.log(`  ✓ Character sheet done for @${model.handle}`)
+  } else if (state === 'fail') {
+    await updateModelSheetStatus(model.id, 'error')
+    console.error(`  ✗ Character sheet task failed for @${model.handle}: ${failMsg ?? 'unknown'}`)
+  }
+  // state === 'processing' | 'queuing' → do nothing, check again on next cron tick
 }
 
 /**

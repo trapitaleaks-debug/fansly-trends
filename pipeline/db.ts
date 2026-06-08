@@ -21,6 +21,7 @@ export interface PipelineModel {
   pinned_character_sheet_key: string | null
   notes_for_ai: string | null
   sheet_status: string | null
+  sheet_kie_task_id: string | null
 }
 
 export interface PipelineRun {
@@ -149,6 +150,14 @@ export async function updateModelSheetStatus(modelId: string, status: string | n
     .update({ sheet_status: status })
     .eq('id', modelId)
   if (error) throw new Error(`updateModelSheetStatus: ${error.message}`)
+}
+
+export async function updateModelSheetPolling(modelId: string, kieTaskId: string) {
+  const { error } = await supabaseAdmin
+    .from('pipeline_models')
+    .update({ sheet_status: 'polling', sheet_kie_task_id: kieTaskId })
+    .eq('id', modelId)
+  if (error) throw new Error(`updateModelSheetPolling: ${error.message}`)
 }
 
 export async function createRun(modelId: string, briefs: Brief[]): Promise<string> {
