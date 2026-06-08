@@ -172,6 +172,92 @@ function parseFanslyApiResponse(json: unknown): FanslyPost[] {
 
 export interface ScrapeFYPResult { posts: FanslyPost[]; headers: Record<string, string> }
 
+function buildFanslyHeaders(h: Record<string, string>): Record<string, string> {
+  return {
+    'authorization': h['authorization'] ?? '',
+    'fansly-client-id': h['fansly-client-id'] ?? '',
+    'fansly-client-ts': h['fansly-client-ts'] ?? '',
+    'fansly-client-check': h['fansly-client-check'] ?? '',
+    'fansly-session-id': h['fansly-session-id'] ?? '',
+    'accept': 'application/json, text/plain, */*',
+    'origin': 'https://fansly.com',
+    'referer': 'https://fansly.com/',
+    'user-agent': h['user-agent'] ?? 'Mozilla/5.0',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-site',
+    'cookie': h['cookie'] ?? '',
+  }
+}
+
+// Parse the contentdiscovery/media/suggestionsnew response format (FYP + hashtag feeds).
+// Uses correlationId as the post ID — this matches the fansly.com/post/{id} URL format.
+function parseContentDiscovery(json: Record<string, unknown>): FanslyPost[] {
+  const posts: FanslyPost[] = []
+  const resp = (json?.response ?? json) as Record<string, unknown>
+  const suggestions = (resp?.mediaOfferSuggestions ?? []) as Record<string, unknown>[]
+  const agg = (resp?.aggregationData ?? {}) as Record<string, unknown>
+  const accounts = (agg?.accounts ?? []) as Record<string, unknown>[]
+  const accountMedia = (agg?.accountMedia ?? []) as Record<string, unknown>[]
+  const aggPosts = (agg?.posts ?? []) as Record<string, unknown>[]
+
+  const accountMap = new Map(accounts.map(a => [String(a.id), String(a.username ?? 'unknown')]))
+  const mediaMap = new Map(accountMedia.map(m => [String(m.id), m]))
+  const postMap = new Map(aggPosts.map(p => [String(p.id), p]))
+
+  for (const s of suggestions) {
+    if (s.mediaType !== 2) continue
+
+    const am = mediaMap.get(String(s.mediaOfferId ?? ''))
+    if (!am) continue
+
+    const innerMedia = am.media as Record<string, unknown> | undefined
+    if (innerMedia?.type !== 2) continue
+
+    const locs = innerMedia.locations as Record<string, unknown>[] | undefined
+    const httpsLoc = locs?.find(l => typeof l.location === 'string' && (l.location as string).startsWith('http'))
+    const videoUrl = (httpsLoc?.location as string) ?? null
+
+    const variants = innerMedia.variants as Record<string, unknown>[] | undefined
+    const thumb = variants?.find(v => (v.mimetype as string)?.startsWith('image'))
+    const tLocs = thumb?.locations as Record<string, unknown>[] | undefined
+    const thumbnailUrl = (tLocs?.[0]?.location as string) ?? (thumb?.location as string) ?? null
+
+    let duration = 0
+    try { duration = JSON.parse(innerMedia.metadata as string ?? '{}').duration ?? 0 } catch { /* */ }
+
+    const post = postMap.get(String(s.correlationId ?? ''))
+    const caption = (post as Record<string, unknown>)?.content as string ?? ''
+    const hashtags = (caption.match(/#\w+/g) ?? []).map((t: string) => t.slice(1))
+    const rawDate = (post as Record<string, unknown>)?.createdAt as number | string | null
+    const postDate = rawDate ? new Date((typeof rawDate === 'number' ? rawDate * 1000 : Number(rawDate))).toISOString() : null
+
+    const likes = Math.max(
+      Number(am.likeCount ?? 0),
+      Number((post as Record<string, unknown>)?.likeCount ?? 0),
+      Number((post as Record<string, unknown>)?.mediaLikeCount ?? 0),
+    )
+
+    // correlationId is the actual post ID (matches fansly.com/post/{id} URLs)
+    const id = String(s.correlationId ?? s.mediaOfferId ?? s.id ?? '')
+    if (!id) continue
+
+    posts.push({
+      id,
+      creator_username: accountMap.get(String(am.accountId ?? '')) ?? 'unknown',
+      caption,
+      hashtags: [...new Set(hashtags)],
+      likes,
+      video_url: videoUrl,
+      thumbnail_url: thumbnailUrl,
+      duration,
+      post_date: postDate,
+      is_video: true,
+    })
+  }
+  return posts
+}
+
 export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Promise<ScrapeFYPResult> {
   const acc: AccountConfig = account ?? {
     email: process.env.FANSLY_EMAIL!,
@@ -185,29 +271,13 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
   })
   const page = await context.newPage()
 
-  const collected: FanslyPost[] = []
-  const seenIds = new Set<string>()
   let capturedHeaders: Record<string, string> = {}
-  let initialApiData: Record<string, unknown> | null = null
 
-  // Capture auth headers from the browser's timeline/home request
-  await context.route('**/api/v1/timeline/home**', async (route) => {
-    const req = route.request()
-    const headers = await req.allHeaders()
-    if (Object.keys(capturedHeaders).length === 0) {
-      capturedHeaders = headers
-    }
-    await route.continue()
-  })
-
-  // Capture the initial timeline/home response
-  page.on('response', async (response) => {
-    const u = response.url()
-    if (!u.includes('timeline/home') || initialApiData) return
-    try {
-      const json = await response.json() as Record<string, unknown>
-      initialApiData = (json.response ?? json) as Record<string, unknown>
-    } catch { /* */ }
+  // Capture auth headers from ANY apiv3.fansly.com request — no endpoint filter
+  page.on('request', async (request) => {
+    if (!request.url().includes('apiv3.fansly.com')) return
+    if (Object.keys(capturedHeaders).length > 0) return
+    try { capturedHeaders = await request.allHeaders() } catch { /* */ }
   })
 
   // Try saved session
@@ -223,7 +293,7 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
       }
     } catch { /* */ }
     await page.goto('https://fansly.com/explore/foryou', { waitUntil: 'networkidle' })
-    await page.waitForTimeout(2000)
+    await page.waitForTimeout(3000)
     const session = await page.evaluate('localStorage.getItem("session_active_session")').catch(() => null) as string | null
     authenticated = !!(session && session !== 'null')
     if (!authenticated) console.log('  Session expired, re-logging in...')
@@ -231,114 +301,67 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
 
   if (!authenticated) {
     await login(page, acc)
-  }
-
-  // Save session state
-  await saveSession(context, page, acc.email)
-
-  // Navigate to FYP to trigger the timeline/home API call and capture auth headers
-  if (!initialApiData) {
     await page.goto('https://fansly.com/explore/foryou', { waitUntil: 'networkidle' })
-    await page.waitForTimeout(4000)
+    await page.waitForTimeout(3000)
   }
 
-  const initData = initialApiData as Record<string, unknown> | null
-  console.log(`  📥 Initial FYP load: ${initData ? ((initData.posts as unknown[])?.length ?? 0) : 0} posts`)
-
-  if (!initialApiData || Object.keys(capturedHeaders).length === 0) {
-    await browser.close()
-    throw new Error('Failed to capture API data or auth headers from FYP')
-  }
-
-  // Parse initial batch
-  const initPosts = parseFanslyApiResponse({ response: initialApiData })
-  for (const p of initPosts) {
-    if (p.id && !seenIds.has(p.id)) {
-      seenIds.add(p.id)
-      collected.push(p)
-    }
-  }
-  console.log(`  📥 Parsed ${collected.length} posts from initial batch`)
-
+  await saveSession(context, page, acc.email)
   await browser.close()
-  console.log('  🌐 Browser closed — switching to direct API calls')
+  console.log('  🌐 Browser closed — auth headers captured, switching to direct API')
 
-  // Now paginate via direct API calls (much faster than browser navigation)
-  // Each call to timeline/home?before=<lastId> returns 16 new posts
-  const MAX_BATCHES = Math.ceil(targetCount * 10) // generous ceiling (most batches have ~1-2 qualifying posts)
-  let batchCount = 0
-  let noProgressRounds = 0
-  const MAX_NO_PROGRESS = 5
+  if (Object.keys(capturedHeaders).length === 0) {
+    throw new Error(`Failed to capture auth headers for ${acc.email}`)
+  }
 
-  while (collected.length < targetCount && batchCount < MAX_BATCHES && noProgressRounds < MAX_NO_PROGRESS) {
-    const lastId = collected.length > 0 ? collected[collected.length - 1].id : '0'
-    batchCount++
+  // Scrape FYP via contentdiscovery endpoint (same API the hashtag scraper uses, no tagIds = global FYP)
+  const postMap = new Map<string, FanslyPost>()
+  const FYP_URL = 'https://apiv3.fansly.com/api/v1/contentdiscovery/media/suggestionsnew'
+  const LIMIT = 20
+  let offset = 0
+  let noProgress = 0
 
-    const url = `https://apiv3.fansly.com/api/v1/timeline/home?before=${lastId}&after=0&mode=0&ngsw-bypass=true`
-    const reqHeaders = {
-      'Authorization': capturedHeaders['authorization'],
-      'fansly-client-id': capturedHeaders['fansly-client-id'],
-      'fansly-client-ts': capturedHeaders['fansly-client-ts'],
-      'fansly-client-check': capturedHeaders['fansly-client-check'],
-      'fansly-session-id': capturedHeaders['fansly-session-id'],
-      'Accept': 'application/json, text/plain, */*',
-      'User-Agent': capturedHeaders['user-agent'] ?? 'Mozilla/5.0',
-      'Origin': 'https://fansly.com',
-      'Referer': 'https://fansly.com/',
-      'Cookie': capturedHeaders['cookie'] ?? '',
-    }
-
-    let retries = 0
+  while (postMap.size < targetCount && noProgress < 5) {
+    const url = `${FYP_URL}?before=0&after=0&limit=${LIMIT}&offset=${offset}&ngsw-bypass=true`
     let res: Response | null = null
-    while (retries < 3) {
+
+    for (let retry = 0; retry < 3; retry++) {
       try {
-        res = await fetch(url, { headers: reqHeaders })
+        res = await fetch(url, { headers: buildFanslyHeaders(capturedHeaders) })
         if (res.status === 429) {
-          const wait = 60 * (retries + 1)
-          console.log(`  ⏳ Rate limited (429) — waiting ${wait}s (retry ${retries + 1}/3)...`)
+          const wait = 60 * (retry + 1)
+          console.log(`  ⏳ Rate limited — waiting ${wait}s...`)
           await new Promise(r => setTimeout(r, wait * 1000))
-          retries++
           continue
         }
         break
-      } catch (err) {
-        console.error(`  ❌ Batch ${batchCount} fetch error:`, err)
-        noProgressRounds++
+      } catch (e) {
+        console.error(`  ❌ Fetch error offset=${offset}:`, e)
         res = null
         break
       }
     }
 
     if (!res || !res.ok) {
-      console.log(`  ⚠️  Batch ${batchCount}: HTTP ${res?.status ?? 'failed'} — stopping`)
+      console.log(`  ⚠️  HTTP ${res?.status ?? 'failed'} at offset=${offset} — stopping`)
       break
     }
 
     const json = await res.json() as Record<string, unknown>
-    const batchPosts = parseFanslyApiResponse(json)
-    const before = collected.length
+    const batch = parseContentDiscovery(json)
 
-    for (const p of batchPosts) {
-      if (p.id && !seenIds.has(p.id)) {
-        seenIds.add(p.id)
-        collected.push(p)
-      }
+    if (batch.length === 0) { noProgress++; break }
+    noProgress = 0
+
+    const before = postMap.size
+    for (const p of batch) {
+      if (p.id && p.video_url) postMap.set(p.id, p)
     }
 
-    const gained = collected.length - before
-    console.log(`  🔄 Batch ${batchCount}: +${gained} (${batchPosts.length} raw), total: ${collected.length}/${targetCount}`)
-
-    if (gained === 0) {
-      noProgressRounds++
-      if (noProgressRounds >= MAX_NO_PROGRESS) break
-    } else {
-      noProgressRounds = 0
-    }
-
-    // Polite delay to avoid rate limiting
-    await new Promise(r => setTimeout(r, 1500))
+    console.log(`  🔄 offset=${offset}: +${postMap.size - before} (total: ${postMap.size}/${targetCount})`)
+    offset += LIMIT
+    await new Promise(r => setTimeout(r, 800))
   }
 
-  console.log(`✅ Scrape complete: ${collected.length} posts collected (${batchCount} batches)`)
-  return { posts: collected, headers: capturedHeaders }
+  console.log(`✅ Scrape complete: ${postMap.size} posts collected`)
+  return { posts: Array.from(postMap.values()), headers: capturedHeaders }
 }

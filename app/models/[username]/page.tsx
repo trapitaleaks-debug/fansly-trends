@@ -62,16 +62,18 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     fetchModel()
   }, [username])
 
-  async function fetchModel() {
-    setLoading(true)
+  async function fetchModel(silent = false) {
+    if (!silent) setLoading(true)
     const res = await fetch(`/api/models/${username}`)
     if (!res.ok) { router.push('/models'); return }
     const data = await res.json()
     setModel(data.model)
-    setHashtags(data.model.hashtags ?? [])
-    setNotesForAi(data.model.notes_for_ai ?? '')
-    if (data.model.branding_file_md) setBrandingFileName('branding-file.md')
-    setLoading(false)
+    if (!silent) {
+      setHashtags(data.model.hashtags ?? [])
+      setNotesForAi(data.model.notes_for_ai ?? '')
+      if (data.model.branding_file_md) setBrandingFileName('branding-file.md')
+      setLoading(false)
+    }
   }
 
   const fetchSuggestions = useCallback(async (status: SuggestionStatus, p: number, replace: boolean, sort?: string) => {
@@ -175,7 +177,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
       setActiveTab('pending')
       setPage(0)
       fetchSuggestions('pending', 0, true)
-      fetchModel()
+      fetchModel(true)
     } else {
       setGenerateMsg(data.error ?? 'Generation failed')
     }
@@ -190,7 +192,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
       body: JSON.stringify(body),
     })
     setSuggestions(prev => prev.filter(s => s.id !== id))
-    fetchModel()
+    fetchModel(true)
   }
 
   async function handleWhatToChangeEdit(id: string, whatToChange: string) {
@@ -211,7 +213,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     await fetch(`/api/models/${username}/suggestions/dismiss-all`, { method: 'POST' })
     setSuggestions([])
     setDismissingAll(false)
-    fetchModel()
+    fetchModel(true)
   }
 
   function handleLoadMore() {

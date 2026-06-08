@@ -83,7 +83,7 @@ function parseSuggestions(json: Record<string, unknown>): FanslyPost[] {
     const postDate = rawDate ? new Date((typeof rawDate === 'number' ? rawDate * 1000 : Number(rawDate))).toISOString() : null
 
     posts.push({
-      id: String(s.mediaOfferId ?? s.id ?? ''),
+      id: String(s.correlationId ?? s.mediaOfferId ?? s.id ?? ''),
       creator_username: username,
       caption,
       hashtags: [...new Set(hashtags)],
