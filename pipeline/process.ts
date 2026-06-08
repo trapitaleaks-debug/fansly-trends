@@ -37,25 +37,18 @@ async function downloadFromR2(key: string, destPath: string): Promise<void> {
   fs.writeFileSync(destPath, Buffer.concat(chunks))
 }
 
-function escapeDrawtext(text: string): string {
-  // ffmpeg drawtext special chars: : \ ' ( )
-  return text
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "'\\''")
-    .replace(/:/g, '\\:')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]')
-}
-
-function buildDrawtextFilter(overlayText: string): string {
+// Use textfile= instead of text='...' to avoid ffmpeg drawtext parser issues with emoji/unicode.
+// Emoji (4-byte UTF-8 sequences like 😈) break ffmpeg's single-quote parser, causing the entire
+// fontfile/fontsize/etc options to be rendered as text content. Writing to a temp file is robust.
+function buildDrawtextFilter(overlayText: string, tmpDir: string, slot: number): string {
   const font = fontPath()
   const MAX_CHARS = 40
-  // White text, black stroke (no box background) — matches viral short-form style
   const baseStyle = `fontfile='${font}':fontsize=58:fontcolor=white:bordercolor=black:borderw=4`
 
   if (overlayText.length <= MAX_CHARS) {
-    const escaped = escapeDrawtext(overlayText)
-    return `drawtext=text='${escaped}':${baseStyle}:x=(w-text_w)/2:y=h*0.15`
+    const textFile = path.join(tmpDir, `text_${slot}_1.txt`)
+    fs.writeFileSync(textFile, overlayText, 'utf8')
+    return `drawtext=textfile='${textFile}':${baseStyle}:x=(w-text_w)/2:y=h*0.15`
   }
 
   // Split into two lines at nearest word boundary
@@ -68,11 +61,16 @@ function buildDrawtextFilter(overlayText: string): string {
     if (overlayText[i] === ' ') { splitIdx = i; break }
   }
 
-  const line1 = escapeDrawtext(overlayText.slice(0, splitIdx).trim())
-  const line2 = escapeDrawtext(overlayText.slice(splitIdx).trim())
+  const line1 = overlayText.slice(0, splitIdx).trim()
+  const line2 = overlayText.slice(splitIdx).trim()
 
-  const filter1 = `drawtext=text='${line1}':${baseStyle}:x=(w-text_w)/2:y=h*0.13`
-  const filter2 = `drawtext=text='${line2}':${baseStyle}:x=(w-text_w)/2:y=h*0.21`
+  const textFile1 = path.join(tmpDir, `text_${slot}_1.txt`)
+  const textFile2 = path.join(tmpDir, `text_${slot}_2.txt`)
+  fs.writeFileSync(textFile1, line1, 'utf8')
+  fs.writeFileSync(textFile2, line2, 'utf8')
+
+  const filter1 = `drawtext=textfile='${textFile1}':${baseStyle}:x=(w-text_w)/2:y=h*0.13`
+  const filter2 = `drawtext=textfile='${textFile2}':${baseStyle}:x=(w-text_w)/2:y=h*0.21`
 
   return `${filter1},${filter2}`
 }
@@ -222,7 +220,7 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
   }
 
   // Burn overlay + merge audio
-  const drawtextFilter = overlayText?.trim() ? buildDrawtextFilter(overlayText) : null
+  const drawtextFilter = overlayText?.trim() ? buildDrawtextFilter(overlayText, tmpDir, video.slot) : null
   // preset ultrafast + threads 2 keeps RAM under Railway's container limit (~512MB)
   const encodeFlags = `-c:v libx264 -preset ultrafast -threads 2 -crf 23`
   const ffmpegCmd = hasAudio

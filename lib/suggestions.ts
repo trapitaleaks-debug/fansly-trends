@@ -66,7 +66,7 @@ export async function generateSuggestions(modelId: string, brandingFileMd: strin
 
   const message = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 8192,
+    max_tokens: 16000,
     system: 'You are a Fansly content strategy advisor. Given a model\'s Personal Branding File and a list of trending Fansly posts, identify which posts she should copy with her personal twist. Return a JSON array only — no markdown fences, no explanation, just the raw JSON array starting with [.',
     messages: [
       {
@@ -107,13 +107,33 @@ Return only the JSON array.`,
   const raw = message.content[0].type === 'text' ? message.content[0].text.trim() : ''
 
   let parsed: SuggestionInput[] = []
+  const clean = raw.replace(/^```[a-z]*\s*/i, '').replace(/\s*```\s*$/, '').trim()
   try {
-    // Strip any accidental markdown fences (```json ... ``` or ``` ... ```)
-    const clean = raw.replace(/^```[a-z]*\s*/i, '').replace(/\s*```\s*$/, '').trim()
     parsed = JSON.parse(clean)
     if (!Array.isArray(parsed)) parsed = []
   } catch {
-    throw new Error(`Claude returned invalid JSON: ${raw.slice(0, 200)}`)
+    // Response may have been truncated at max_tokens — extract any complete JSON objects we got
+    const objects: SuggestionInput[] = []
+    let depth = 0
+    let objStart = -1
+    for (let i = 0; i < clean.length; i++) {
+      if (clean[i] === '{') {
+        if (depth === 0) objStart = i
+        depth++
+      } else if (clean[i] === '}') {
+        depth--
+        if (depth === 0 && objStart !== -1) {
+          try { objects.push(JSON.parse(clean.slice(objStart, i + 1))) } catch { /* skip incomplete */ }
+          objStart = -1
+        }
+      }
+    }
+    if (objects.length > 0) {
+      console.warn(`[suggestions] JSON truncated — recovered ${objects.length} complete objects`)
+      parsed = objects
+    } else {
+      throw new Error(`Claude returned invalid JSON: ${raw.slice(0, 200)}`)
+    }
   }
 
   // Validate: post_id must be a real UUID from the posts we sent Claude — prevents hallucinated IDs
