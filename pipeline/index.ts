@@ -15,7 +15,7 @@ import { generateBriefs } from './research'
 import { generateVideos, generateCharacterSheet } from './generate'
 import { processRun } from './process'
 
-export async function runPipelineForModel(handle: string): Promise<void> {
+export async function runPipelineForModel(handle: string, existingRunId?: string): Promise<void> {
   const model = await getModel(handle)
   if (!model) throw new Error(`Model @${handle} not found in pipeline_models`)
   if (!model.active) throw new Error(`Model @${handle} is not active`)
@@ -32,8 +32,17 @@ export async function runPipelineForModel(handle: string): Promise<void> {
     const briefs = await generateBriefs(model)
     console.log(`  Generated ${briefs.length} briefs`)
 
-    // Create run record
-    runId = await createRun(model.id, briefs)
+    // Use provided run ID (UI-created) or create a fresh one (cron-triggered)
+    if (existingRunId) {
+      runId = existingRunId
+      const { error } = await supabaseAdmin
+        .from('pipeline_runs')
+        .update({ briefs, status: 'generating' })
+        .eq('id', existingRunId)
+      if (error) throw new Error(`Failed to update run ${existingRunId}: ${error.message}`)
+    } else {
+      runId = await createRun(model.id, briefs)
+    }
     console.log(`  Run ID: ${runId}`)
 
     // Phase 3: Generate — kie.ai images + videos

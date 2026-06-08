@@ -358,7 +358,7 @@ export default function RunReviewPage({ params }: { params: Promise<{ runId: str
     const res = await fetch(`/api/pipeline/runs/${runId}`)
     if (res.ok) {
       const data = await res.json()
-      setRun(data.run)
+      setRun({ ...data.run, slots: data.videos ?? [] })
     }
     setLoading(false)
   }, [runId])
@@ -370,7 +370,7 @@ export default function RunReviewPage({ params }: { params: Promise<{ runId: str
   // Auto-poll while any slot is still in progress
   useEffect(() => {
     if (!run) return
-    const active = run.slots.some(s => s.status === 'pending' || s.status === 'generating' || s.status === 'processing')
+    const active = (run.slots ?? []).some(s => s.status === 'pending' || s.status === 'generating' || s.status === 'processing')
     const runActive = run.status === 'queued' || run.status === 'generating' || run.status === 'processing'
     if (!active && !runActive) return
     const id = setInterval(fetchRun, 12_000)

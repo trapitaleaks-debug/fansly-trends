@@ -29,10 +29,10 @@ app.get('/health', (_req, res) => {
 
 app.post('/trigger/:handle', async (req, res) => {
   const { handle } = req.params
+  const { runId } = (req.body ?? {}) as { runId?: string }
   res.status(202).json({ message: 'Pipeline started', handle })
 
-  // Fire and forget
-  runPipelineForModel(handle).catch(e =>
+  runPipelineForModel(handle, runId).catch(e =>
     console.error(`[trigger] Failed for @${handle}:`, e.message)
   )
 })

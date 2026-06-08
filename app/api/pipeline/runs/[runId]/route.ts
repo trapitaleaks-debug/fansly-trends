@@ -10,7 +10,7 @@ export async function GET(
 
     const { data: run, error: runError } = await supabaseAdmin
       .from('pipeline_runs')
-      .select('*')
+      .select('*, pipeline_models!inner(handle)')
       .eq('id', runId)
       .single()
 
@@ -18,6 +18,9 @@ export async function GET(
       if (runError.code === 'PGRST116') return NextResponse.json({ error: 'Run not found' }, { status: 404 })
       return NextResponse.json({ error: runError.message }, { status: 500 })
     }
+
+    const { pipeline_models, ...runData } = run as typeof run & { pipeline_models: { handle: string } }
+    const runWithHandle = { ...runData, handle: pipeline_models?.handle ?? '' }
 
     const { data: videos, error: videosError } = await supabaseAdmin
       .from('pipeline_videos')
@@ -50,7 +53,7 @@ export async function GET(
       variants: variantsByVideo[v.id] ?? [],
     }))
 
-    return NextResponse.json({ run, videos: videosWithVariants })
+    return NextResponse.json({ run: runWithHandle, videos: videosWithVariants })
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

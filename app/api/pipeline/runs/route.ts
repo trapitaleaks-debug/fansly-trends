@@ -77,9 +77,11 @@ export async function POST(request: NextRequest) {
 
     if (runError) return NextResponse.json({ error: runError.message }, { status: 500 })
 
-    fetch(`${PIPELINE_SERVICE_URL}/trigger/${handle}`, { method: 'POST' }).catch(() => {
-      // Pipeline server unreachable — run stays 'queued', picked up on next poll
-    })
+    fetch(`${PIPELINE_SERVICE_URL}/trigger/${handle}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: run.id }),
+    }).catch(() => {})
 
     return NextResponse.json({ runId: run.id }, { status: 201 })
   } catch {
