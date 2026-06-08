@@ -136,11 +136,15 @@ Return only the JSON array.`,
     }
   }
 
-  // Validate: post_id must be a real UUID from the posts we sent Claude — prevents hallucinated IDs
+  // Validate: post_id must be (a) a valid UUID format AND (b) from the posts we actually sent Claude
+  // Belt-and-suspenders: regex catches hallucinated IDs even if Set.has() somehow passes
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
   const validPostIds = new Set(posts.map(p => p.id))
-  const valid = parsed.filter(
-    s => s.post_id && validPostIds.has(s.post_id) && s.reasoning && s.branding_section && s.what_to_change
-  )
+  const valid = parsed.filter(s => {
+    if (!s.post_id || !UUID_RE.test(s.post_id)) return false
+    if (!validPostIds.has(s.post_id)) return false
+    return !!(s.reasoning && s.branding_section && s.what_to_change)
+  })
 
   if (valid.length === 0) return 0
 
