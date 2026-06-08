@@ -35,18 +35,19 @@ export async function POST(
 ) {
   try {
     const { handle } = await params
-    const { filename } = await request.json()
-    if (!filename) return NextResponse.json({ error: 'filename required' }, { status: 400 })
+    const body = await request.json()
+    const filenames: string[] = Array.isArray(body.filenames) ? body.filenames : [body.filename].filter(Boolean)
+    if (!filenames.length) return NextResponse.json({ error: 'filenames required' }, { status: 400 })
 
-    const ext = filename.split('.').pop()?.toLowerCase() ?? 'jpg'
-    const key = `models/${handle}/source/${Date.now()}.${ext}`
-    const uploadUrl = await getSignedUrl(
-      r2,
-      new PutObjectCommand({ Bucket, Key: key }),
-      { expiresIn: 3600 }
-    )
+    const now = Date.now()
+    const slots = await Promise.all(filenames.map(async (filename, i) => {
+      const ext = filename.split('.').pop()?.toLowerCase() ?? 'jpg'
+      const key = `models/${handle}/source/${now}_${i}.${ext}`
+      const uploadUrl = await getSignedUrl(r2, new PutObjectCommand({ Bucket, Key: key }), { expiresIn: 3600 })
+      return { uploadUrl, key }
+    }))
 
-    return NextResponse.json({ uploadUrl, key }, { status: 201 })
+    return NextResponse.json({ slots }, { status: 201 })
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

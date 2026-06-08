@@ -223,26 +223,32 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
     const imageFiles = files.filter(f => f.type.startsWith('image/'))
     if (!imageFiles.length) return
     setUploadingPhotos(true)
-    let done = 0
     setUploadPhotoProgress(`0 / ${imageFiles.length}`)
-    const BATCH = 50
-    for (let i = 0; i < imageFiles.length; i += BATCH) {
-      await Promise.all(imageFiles.slice(i, i + BATCH).map(async file => {
-        try {
-          const res = await fetch(`/api/pipeline/models/${handle}/source-photos`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: file.name }),
-          })
-          if (!res.ok) return
-          const { uploadUrl } = await res.json()
-          await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'image/jpeg' } })
-        } finally {
-          done++
-          setUploadPhotoProgress(`${done} / ${imageFiles.length}`)
-        }
-      }))
-    }
+
+    // One API call → all presigned URLs at once (avoids browser per-origin connection limit)
+    const res = await fetch(`/api/pipeline/models/${handle}/source-photos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filenames: imageFiles.map(f => f.name) }),
+    })
+    if (!res.ok) { setUploadingPhotos(false); setUploadPhotoProgress(''); return }
+    const { slots } = await res.json() as { slots: { uploadUrl: string; key: string }[] }
+
+    // All PUTs fire simultaneously to R2 (different domain — no per-origin limit applies)
+    let done = 0
+    await Promise.all(slots.map(async ({ uploadUrl }, i) => {
+      try {
+        await fetch(uploadUrl, {
+          method: 'PUT',
+          body: imageFiles[i],
+          headers: { 'Content-Type': imageFiles[i].type || 'image/jpeg' },
+        })
+      } finally {
+        done++
+        setUploadPhotoProgress(`${done} / ${imageFiles.length}`)
+      }
+    }))
+
     setUploadingPhotos(false)
     setUploadPhotoProgress('')
     fetchSourcePhotos()
