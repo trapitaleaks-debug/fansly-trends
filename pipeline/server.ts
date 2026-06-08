@@ -83,6 +83,30 @@ app.post('/reprocess/:videoId', async (req, res) => {
 
 // ─── Crons ────────────────────────────────────────────────────────────────────
 
+// Every 2 min: pick up any queued runs dropped by a restart/deploy
+cron.schedule('*/2 * * * *', async () => {
+  try {
+    const { data: queuedRuns } = await supabaseAdmin
+      .from('pipeline_runs')
+      .select('id, pipeline_models!inner(handle)')
+      .eq('status', 'queued')
+      .order('created_at', { ascending: true })
+      .limit(3)
+
+    if (!queuedRuns || queuedRuns.length === 0) return
+
+    for (const run of queuedRuns) {
+      const handle = (run as unknown as { id: string; pipeline_models: { handle: string } }).pipeline_models.handle
+      console.log(`[cron:queued] Picking up dropped run ${run.id} for @${handle}`)
+      runPipelineForModel(handle, run.id).catch(e =>
+        console.error(`[cron:queued] Failed for ${run.id}:`, e.message)
+      )
+    }
+  } catch (e) {
+    console.error('[cron:queued] Error:', (e as Error).message)
+  }
+})
+
 // Every N days at 3am UTC: trigger pipeline for all active models in parallel
 const cycleHour = 3
 const cycleCron = `0 ${cycleHour} */${CYCLE_DAYS} * *`
