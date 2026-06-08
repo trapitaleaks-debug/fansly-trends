@@ -31,13 +31,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: modelError.message }, { status: 500 })
     }
 
+    const ext = filename.split('.').pop()?.toLowerCase() ?? ''
+    const contentTypeMap: Record<string, string> = {
+      mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
+      webm: 'video/webm', m4v: 'video/mp4', mkv: 'video/x-matroska',
+      mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', aac: 'audio/aac', ogg: 'audio/ogg',
+    }
+    const contentType = contentTypeMap[ext] ?? 'application/octet-stream'
+
     const key = `models/${model.handle}/bank/${type}/${Date.now()}_${filename}`
 
     const uploadUrl = await getSignedUrl(
       r2,
-      new PutObjectCommand({ Bucket, Key: key }),
+      new PutObjectCommand({ Bucket, Key: key, ContentType: contentType }),
       { expiresIn: 3600 }
     )
+
+    const trimStart = typeof body.trim_start === 'number' ? body.trim_start : 0
+    const trimEnd = typeof body.trim_end === 'number' ? body.trim_end : null
 
     const { data: item, error: insertError } = await supabaseAdmin
       .from('pipeline_content_bank')
@@ -46,13 +57,15 @@ export async function POST(request: NextRequest) {
         r2_key: key,
         type,
         label: label || filename,
+        trim_start: trimStart,
+        trim_end: trimEnd,
       })
       .select('id')
       .single()
 
     if (insertError) return NextResponse.json({ error: insertError.message }, { status: 500 })
 
-    return NextResponse.json({ uploadUrl, r2_key: key, itemId: item.id }, { status: 201 })
+    return NextResponse.json({ uploadUrl, contentType, r2_key: key, itemId: item.id }, { status: 201 })
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
