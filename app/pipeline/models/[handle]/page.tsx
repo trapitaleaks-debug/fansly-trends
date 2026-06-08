@@ -181,6 +181,7 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
   // Pin character sheet
   const [pinning, setPinning] = useState(false)
   const [pinned, setPinned] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
 
   const fetchModel = useCallback(async () => {
     const res = await fetch(`/api/pipeline/models/${handle}`)
@@ -227,6 +228,22 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
     fetchModel()
   }
 
+  async function handleRegenerateSheet() {
+    setRegenerating(true)
+    await fetch(`/api/pipeline/models/${handle}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        character_sheet_r2_key: null,
+        character_sheet_generated_at: null,
+        pinned_character_sheet_key: null,
+      }),
+    })
+    setRegenerating(false)
+    setPinned(false)
+    fetchModel()
+  }
+
   function handleItemDeleted(itemId: string) {
     setModel(prev => {
       if (!prev) return prev
@@ -258,7 +275,6 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
-          <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
           <Link href="/pipeline" className="text-white">Pipeline</Link>
         </div>
       </nav>
@@ -361,6 +377,13 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
                       {pinning ? 'Pinning...' : 'Pin this version'}
                     </button>
                   )}
+                  <button
+                    onClick={handleRegenerateSheet}
+                    disabled={regenerating}
+                    className="text-xs bg-[#1a1a1a] border border-[#2a2a2a] text-red-400 hover:text-red-300 hover:border-red-400/30 px-3 py-1.5 rounded-lg disabled:opacity-50 transition-colors"
+                  >
+                    {regenerating ? 'Clearing...' : 'Regenerate'}
+                  </button>
                 </div>
               </div>
               {model.character_sheet_signed_url && (
@@ -371,7 +394,7 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
                     className="w-full rounded-lg border border-[#2a2a2a]"
                     style={{ imageRendering: 'auto' }}
                   />
-                  <p className="text-[10px] text-[#444]">This is what AI uses as a face reference for every generation. If it looks wrong, don't pin it — regenerate by clearing the key in Supabase.</p>
+                  <p className="text-[10px] text-[#444]">This is what AI uses as a face reference for every generation. If it looks wrong, hit Regenerate — the next pipeline run will build a new one from scratch.</p>
                 </div>
               )}
             </div>
