@@ -232,17 +232,17 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
       body: JSON.stringify({ filenames: imageFiles.map(f => f.name) }),
     })
     if (!res.ok) { setUploadingPhotos(false); setUploadPhotoProgress(''); return }
-    const { slots } = await res.json() as { slots: { uploadUrl: string; key: string }[] }
+    const { slots } = await res.json() as { slots: { uploadUrl: string; key: string; contentType: string }[] }
 
     // All PUTs fire simultaneously to R2 (different domain — no per-origin limit applies)
     let done = 0
     let failed = 0
-    await Promise.allSettled(slots.map(async ({ uploadUrl }, i) => {
+    await Promise.allSettled(slots.map(async ({ uploadUrl, contentType }, i) => {
       try {
         const putRes = await fetch(uploadUrl, {
           method: 'PUT',
           body: imageFiles[i],
-          headers: { 'Content-Type': imageFiles[i].type || 'image/jpeg' },
+          headers: { 'Content-Type': contentType },
         })
         if (!putRes.ok) {
           console.error(`PUT failed ${putRes.status} for ${imageFiles[i].name}`)

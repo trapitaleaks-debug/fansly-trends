@@ -42,9 +42,10 @@ export async function POST(
     const now = Date.now()
     const slots = await Promise.all(filenames.map(async (filename, i) => {
       const ext = filename.split('.').pop()?.toLowerCase() ?? 'jpg'
+      const contentType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg'
       const key = `models/${handle}/source/${now}_${i}.${ext}`
-      const uploadUrl = await getSignedUrl(r2, new PutObjectCommand({ Bucket, Key: key }), { expiresIn: 3600 })
-      return { uploadUrl, key }
+      const uploadUrl = await getSignedUrl(r2, new PutObjectCommand({ Bucket, Key: key, ContentType: contentType }), { expiresIn: 3600 })
+      return { uploadUrl, key, contentType }
     }))
 
     return NextResponse.json({ slots }, { status: 201 })
