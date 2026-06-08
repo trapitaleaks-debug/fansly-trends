@@ -116,9 +116,10 @@ Return only the JSON array.`,
     throw new Error(`Claude returned invalid JSON: ${raw.slice(0, 200)}`)
   }
 
-  // Validate and filter
+  // Validate: post_id must be a real UUID from the posts we sent Claude — prevents hallucinated IDs
+  const validPostIds = new Set(posts.map(p => p.id))
   const valid = parsed.filter(
-    s => s.post_id && s.reasoning && s.branding_section && s.what_to_change
+    s => s.post_id && validPostIds.has(s.post_id) && s.reasoning && s.branding_section && s.what_to_change
   )
 
   if (valid.length === 0) return 0

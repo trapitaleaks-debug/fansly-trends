@@ -150,6 +150,8 @@ If hook_description includes any version of "slowly", "begins to", "starts to", 
 ---
 
 ## OVERLAY TEXT RULES (all formats)
+- **MANDATORY — always return a non-empty overlay_text for every slot, no exceptions**
+- When the suggestion says "same text on screen" or "similar text": INVENT a new text using the formulas above — the original text is not available to you, so write a new one in the same style
 - Max 55 characters
 - No explicit language — platform filters catch it
 - Confident first-person female perspective where applicable
@@ -291,6 +293,8 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
         payoff_description: b.payoff_description ?? '',
         concept: b.concept ?? '',
         source_post_id: suggestion?.fansly_post_id ?? b.source_post_id ?? (trendingPosts[0]?.fansly_post_id ?? 'unknown'),
+        // Preserve what_to_change from the approved suggestion so the run review page can show it
+        what_to_change: suggestion?.what_to_change ?? undefined,
         overlay_text: b.overlay_text ?? '',
         overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
         cta_type: b.cta_type ?? undefined,

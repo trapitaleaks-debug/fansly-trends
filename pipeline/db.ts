@@ -110,6 +110,13 @@ export interface Brief {
   rewatch_trigger?: string      // how this slot engineers a replay
   // Own footage: if set, skip kie.ai entirely and use this R2 key as the raw video
   own_footage_r2_key?: string
+  // Preserved from approved suggestion — shown in run review UI
+  what_to_change?: string
+  // User feedback fields (stored in brief JSONB, never sent to AI generation)
+  user_action?: string
+  dismiss_reason?: string
+  reprocess_feedback?: string
+  feedback_history?: Array<{ feedback: string; at: string }>
 }
 
 export async function getActiveModels(): Promise<PipelineModel[]> {

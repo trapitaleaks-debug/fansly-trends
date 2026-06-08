@@ -222,14 +222,18 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
   }
 
   // Burn overlay + merge audio
-  const drawtextFilter = buildDrawtextFilter(overlayText)
+  const drawtextFilter = overlayText?.trim() ? buildDrawtextFilter(overlayText) : null
   // preset ultrafast + threads 2 keeps RAM under Railway's container limit (~512MB)
   const encodeFlags = `-c:v libx264 -preset ultrafast -threads 2 -crf 23`
   const ffmpegCmd = hasAudio
-    ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`
-    : `${ffmpegBin()} -i "${rawPath}" -vf "${drawtextFilter}" ${encodeFlags} -an -y "${finalPath}"`
+    ? (drawtextFilter
+      ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`
+      : `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`)
+    : (drawtextFilter
+      ? `${ffmpegBin()} -i "${rawPath}" -vf "${drawtextFilter}" ${encodeFlags} -an -y "${finalPath}"`
+      : `${ffmpegBin()} -i "${rawPath}" ${encodeFlags} -an -y "${finalPath}"`)
 
-  console.log(`  Burning overlay: "${overlayText}"`)
+  console.log(`  Burning overlay: "${overlayText || '(none)'}"`)
   run(ffmpegCmd)
 
   // Format-specific post-processing

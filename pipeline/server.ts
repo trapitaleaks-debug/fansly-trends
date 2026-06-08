@@ -11,6 +11,8 @@ import cron from 'node-cron'
 import { runPipelineForModel } from './index'
 import { getActiveModels, getModel } from './db'
 import { processRun } from './process'
+import { generateBriefs } from './research'
+import { generateSlot } from './generate'
 import { supabaseAdmin } from '../lib/supabase'
 
 const app = express()
@@ -77,6 +79,77 @@ app.post('/reprocess/:videoId', async (req, res) => {
       await processRun(video.run_id, handle, model)
     } catch (e) {
       console.error(`[reprocess] Failed for ${videoId}:`, (e as Error).message)
+    }
+  })()
+})
+
+// ─── Regenerate endpoint: re-generate brief + video for a single slot (with user feedback) ──
+
+app.post('/regenerate/:videoId', async (req, res) => {
+  const { videoId } = req.params
+  const { feedback } = (req.body ?? {}) as { feedback?: string }
+  res.status(202).json({ message: 'Regeneration started', videoId })
+
+  ;(async () => {
+    try {
+      const { data: video } = await supabaseAdmin
+        .from('pipeline_videos')
+        .select('*, pipeline_runs!inner(model_id, pipeline_models!inner(handle))')
+        .eq('id', videoId)
+        .single()
+
+      if (!video) throw new Error('Video not found')
+
+      const handle = (video as unknown as { pipeline_runs: { pipeline_models: { handle: string } } }).pipeline_runs.pipeline_models.handle
+      const model = await getModel(handle)
+      if (!model) throw new Error('Model not found')
+
+      console.log(`[regenerate] Re-generating slot ${video.slot} for @${handle} with feedback: "${feedback ?? 'none'}"`)
+
+      // Mark as generating so UI shows progress
+      await supabaseAdmin.from('pipeline_videos').update({ status: 'generating' }).eq('id', videoId)
+
+      // Inject feedback into the model's notes temporarily for this generation
+      const augmentedModel = feedback
+        ? { ...model, notes_for_ai: `${model.notes_for_ai ?? ''}\n\n## USER FEEDBACK ON PREVIOUS VERSION (slot ${video.slot})\n${feedback}\n\nFix the issues mentioned above. Do not repeat the same mistakes.` }
+        : model
+
+      // Re-generate briefs and pick the one for this slot
+      const briefs = await generateBriefs(augmentedModel)
+      const newBrief = briefs[video.slot - 1] ?? briefs[0]
+
+      // Preserve feedback history
+      const prevBrief = video.brief as Record<string, unknown> | null
+      const rawHistory = (prevBrief?.feedback_history as Array<{ feedback: string; at: string }>) ?? []
+      if (feedback) rawHistory.push({ feedback, at: new Date().toISOString() })
+      const updatedBrief = { ...newBrief, feedback_history: rawHistory }
+
+      // Save new brief, reset status
+      await supabaseAdmin.from('pipeline_videos').update({
+        brief: updatedBrief,
+        status: 'queued',
+        final_r2_key: null,
+        thumbnail_r2_key: null,
+      }).eq('id', videoId)
+
+      // Re-generate visual
+      await generateSlot(videoId, updatedBrief, handle, model)
+
+      // Re-process with ffmpeg
+      const { data: refreshed } = await supabaseAdmin
+        .from('pipeline_videos')
+        .select('*')
+        .eq('id', videoId)
+        .single()
+
+      if (refreshed?.status === 'pending' && refreshed.final_r2_key) {
+        await processRun(video.run_id, handle, model)
+      }
+
+      console.log(`[regenerate] ✓ Slot ${video.slot} regenerated`)
+    } catch (e) {
+      console.error(`[regenerate] Failed for ${videoId}:`, (e as Error).message)
+      await supabaseAdmin.from('pipeline_videos').update({ status: 'rejected' }).eq('id', videoId)
     }
   })()
 })

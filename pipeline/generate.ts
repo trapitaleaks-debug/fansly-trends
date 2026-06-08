@@ -327,6 +327,49 @@ async function generateVideoVariants(
   }
 }
 
+// ─── Single-slot generation (used by /regenerate endpoint) ───────────────────
+
+export async function generateSlot(
+  videoId: string,
+  brief: Brief,
+  handle: string,
+  model: PipelineModel
+): Promise<void> {
+  const runId = (await import('../lib/supabase').then(m => m.supabaseAdmin)
+    .then(sb => sb.from('pipeline_videos').select('run_id').eq('id', videoId).single())
+    .then(r => r.data?.run_id)) ?? 'unknown'
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `pipeline_regen_`))
+
+  try {
+    console.log(`  [regenerate slot ${brief.slot}] "${brief.overlay_text}"`)
+
+    // Own footage: skip kie.ai
+    if (brief.own_footage_r2_key) {
+      console.log(`  [regenerate slot ${brief.slot}] Using own footage: ${brief.own_footage_r2_key}`)
+      await updateVideo(videoId, { status: 'pending', final_r2_key: brief.own_footage_r2_key })
+      return
+    }
+
+    const kieRefs = await getCharacterSheetRef(model)
+    const imageVariants = await generateImageVariants(brief, model, kieRefs, runId, videoId, tmpDir)
+    if (imageVariants.length === 0) {
+      await updateVideo(videoId, { status: 'rejected' })
+      throw new Error('No image variants generated')
+    }
+
+    const videoVariants = await generateVideoVariants(brief, model, imageVariants[0].url, runId, videoId, tmpDir)
+    if (videoVariants.length === 0) {
+      await updateVideo(videoId, { status: 'rejected' })
+      throw new Error('No video variants generated')
+    }
+
+    await updateVideo(videoId, { status: 'pending', final_r2_key: videoVariants[0].r2Key })
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export async function generateVideos(

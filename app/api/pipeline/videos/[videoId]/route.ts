@@ -21,10 +21,20 @@ export async function PATCH(
       return NextResponse.json({ error: videoError.message }, { status: 500 })
     }
 
-    if (overlay_text !== undefined || caption !== undefined) {
+    const { user_action, dismiss_reason, reprocess_feedback } = body
+
+    if (overlay_text !== undefined || caption !== undefined || user_action !== undefined || dismiss_reason !== undefined || reprocess_feedback !== undefined) {
       const briefUpdate: Record<string, unknown> = { ...(video.brief ?? {}) }
       if (overlay_text !== undefined) briefUpdate.overlay_text = overlay_text
       if (caption !== undefined) briefUpdate.caption = caption
+      if (user_action !== undefined) briefUpdate.user_action = user_action
+      if (dismiss_reason !== undefined) briefUpdate.dismiss_reason = dismiss_reason
+      if (reprocess_feedback !== undefined) {
+        // Append to feedback history
+        const history = (briefUpdate.feedback_history as unknown[]) ?? []
+        briefUpdate.feedback_history = [...history, { feedback: reprocess_feedback, at: new Date().toISOString() }]
+        briefUpdate.reprocess_feedback = reprocess_feedback
+      }
 
       const { error } = await supabaseAdmin
         .from('pipeline_videos')
