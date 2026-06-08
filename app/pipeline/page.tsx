@@ -95,6 +95,14 @@ export default function PipelinePage() {
     setRunsLoading(false)
   }, [])
 
+  // Auto-poll while any run is active
+  useEffect(() => {
+    const hasActive = runs.some(r => r.status === 'queued' || r.status === 'generating' || r.status === 'processing')
+    if (!hasActive) return
+    const id = setInterval(() => { fetchRuns(); fetchModels() }, 12_000)
+    return () => clearInterval(id)
+  }, [runs, fetchRuns, fetchModels])
+
   useEffect(() => {
     fetchModels()
     fetchRuns()
@@ -250,14 +258,12 @@ export default function PipelinePage() {
                           <span className="text-xs text-[#555]">{timeAgo(model.last_run.created_at)}</span>
                           <span className="text-xs text-[#444]">{model.last_run.slot_count} slots</span>
                         </div>
-                        {model.last_run.status === 'ready' && (
-                          <Link
-                            href={`/pipeline/${model.last_run.id}`}
-                            className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
-                          >
-                            Review
-                          </Link>
-                        )}
+                        <Link
+                          href={`/pipeline/${model.last_run.id}`}
+                          className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                        >
+                          {model.last_run.status === 'ready' ? 'Review →' : 'View →'}
+                        </Link>
                       </div>
                     ) : (
                       <p className="text-xs text-[#444]">No runs yet</p>
@@ -300,18 +306,22 @@ export default function PipelinePage() {
                 </thead>
                 <tbody>
                   {runs.map((run, i) => (
-                    <tr key={run.id} className={`${i < runs.length - 1 ? 'border-b border-[#1a1a1a]' : ''} hover:bg-[#0f0f0f] transition-colors`}>
+                    <tr
+                      key={run.id}
+                      className={`${i < runs.length - 1 ? 'border-b border-[#1a1a1a]' : ''} hover:bg-[#0f0f0f] transition-colors cursor-pointer`}
+                      onClick={() => window.location.href = `/pipeline/${run.id}`}
+                    >
                       <td className="px-4 py-3 text-[#ccc]">@{run.handle}</td>
                       <td className="px-4 py-3"><StatusBadge status={run.status} /></td>
                       <td className="px-4 py-3 text-[#555]">{timeAgo(run.created_at)}</td>
                       <td className="px-4 py-3 text-[#555]">{run.slot_count}</td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-4 py-3 text-right" onClick={e => e.stopPropagation()}>
                         {run.status === 'ready' && (
                           <Link
                             href={`/pipeline/${run.id}`}
                             className="text-violet-400 hover:text-violet-300 transition-colors"
                           >
-                            Review
+                            Review →
                           </Link>
                         )}
                         {run.status === 'failed' && (

@@ -367,6 +367,16 @@ export default function RunReviewPage({ params }: { params: Promise<{ runId: str
     fetchRun()
   }, [fetchRun])
 
+  // Auto-poll while any slot is still in progress
+  useEffect(() => {
+    if (!run) return
+    const active = run.slots.some(s => s.status === 'pending' || s.status === 'generating' || s.status === 'processing')
+    const runActive = run.status === 'queued' || run.status === 'generating' || run.status === 'processing'
+    if (!active && !runActive) return
+    const id = setInterval(fetchRun, 12_000)
+    return () => clearInterval(id)
+  }, [run, fetchRun])
+
   function handleSlotUpdate(slotId: string, updated: Partial<VideoSlot>) {
     setRun(prev => {
       if (!prev) return prev

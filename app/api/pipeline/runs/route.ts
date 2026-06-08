@@ -77,11 +77,9 @@ export async function POST(request: NextRequest) {
 
     if (runError) return NextResponse.json({ error: runError.message }, { status: 500 })
 
-    if (process.env.PIPELINE_SERVICE_URL) {
-      fetch(`${PIPELINE_SERVICE_URL}/trigger/${handle}`, { method: 'POST' }).catch(() => {
-        // Railway unreachable — run stays 'queued', trigger manually with: npm run pipeline:run
-      })
-    }
+    fetch(`${PIPELINE_SERVICE_URL}/trigger/${handle}`, { method: 'POST' }).catch(() => {
+      // Pipeline server unreachable — run stays 'queued', picked up on next poll
+    })
 
     return NextResponse.json({ runId: run.id }, { status: 201 })
   } catch {
