@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:22-slim
 
 # ffmpeg for video overlay processing, fonts-liberation for text rendering
 RUN apt-get update && apt-get install -y \

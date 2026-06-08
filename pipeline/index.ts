@@ -24,7 +24,8 @@ export async function runPipelineForModel(handle: string, existingRunId?: string
   console.log(`Pipeline run: @${handle}`)
   console.log(`${'='.repeat(50)}\n`)
 
-  let runId = ''
+  // Set runId immediately so the catch block can mark it failed on any error
+  let runId = existingRunId ?? ''
 
   try {
     // Phase 2: Research — generate briefs (videos_per_cycle slots)
@@ -34,7 +35,6 @@ export async function runPipelineForModel(handle: string, existingRunId?: string
 
     // Use provided run ID (UI-created) or create a fresh one (cron-triggered)
     if (existingRunId) {
-      runId = existingRunId
       const { error } = await supabaseAdmin
         .from('pipeline_runs')
         .update({ briefs, status: 'generating' })
