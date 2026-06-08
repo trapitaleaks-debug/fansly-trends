@@ -14,6 +14,7 @@
     "pipeline:server": "ts-node --project pipeline/tsconfig.json pipeline/server.ts",
     "pipeline:run": "ts-node --project pipeline/tsconfig.json pipeline/index.ts",
     "pipeline:watch": "ts-node --project pipeline/tsconfig.json pipeline/index.ts --watch",
+    "pipeline:sheet": "ts-node --project pipeline/tsconfig.json pipeline/sheet.ts",
     "pipeline:post": "ts-node --project pipeline/tsconfig.json pipeline/post-approved.ts"
   },
   "dependencies": {

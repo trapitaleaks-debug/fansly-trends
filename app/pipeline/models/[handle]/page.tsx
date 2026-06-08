@@ -583,7 +583,19 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
               )}
             </div>
           ) : (
-            <p className="text-xs text-[#444]">No character sheet generated yet. Run a generation to create one.</p>
+            <div className="space-y-3">
+              <p className="text-xs text-[#888]">No character sheet yet. Run this command in your terminal to generate one from the source photos above:</p>
+              <div className="flex items-center gap-2 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2.5">
+                <code className="text-xs text-violet-400 flex-1 font-mono">npm run pipeline:sheet -- --handle {handle}</code>
+                <button
+                  onClick={() => navigator.clipboard.writeText(`npm run pipeline:sheet -- --handle ${handle}`)}
+                  className="text-[10px] text-[#555] hover:text-white transition-colors shrink-0"
+                >
+                  Copy
+                </button>
+              </div>
+              <p className="text-[10px] text-[#444]">Takes ~8 min. When done, the sheet appears here automatically on next page load. Refresh to check.</p>
+            </div>
           )}
         </div>
 

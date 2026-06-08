@@ -82,7 +82,7 @@ async function compressTo1024(inputPath: string, outputPath: string): Promise<vo
     .toFile(outputPath)
 }
 
-async function generateCharacterSheet(model: PipelineModel, tmpDir: string): Promise<string> {
+export async function generateCharacterSheet(model: PipelineModel, tmpDir: string): Promise<string> {
   // Download source photos from R2, compress to ≤1024px (same as GuizzField) before uploading.
   // Compression is what allows NSFW photos to pass kie.ai's input scanner — full-res uploads are blocked.
   const prefix = model.source_photos_r2_prefix ?? `models/${model.handle}/source`
