@@ -242,17 +242,10 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
   // Generate thumbnail at 1s
   run(`${ffmpegBin()} -i "${finalPath}" -ss 00:00:01 -vframes 1 -y "${thumbPath}"`)
 
-  // Score video quality — auto-disqualify if AI artifacts clearly visible
+  // Score video quality — informational only, never auto-reject
   console.log('  Scoring video quality...')
   const scores = await scoreVideo(thumbPath, overlayText, contentFormat ?? 'text_overlay')
-  console.log(`  Quality: AI ${scores.ai_quality}/10 · Total ${scores.total}/90${scores.disqualified ? ' DISQUALIFIED' : ''}`)
-  if (scores.notes) console.log(`  Notes: ${scores.notes}`)
-
-  if (scores.disqualified) {
-    console.error(`  ✗ Slot ${video.slot} disqualified — AI quality score ${scores.ai_quality}/10 (minimum 5)`)
-    await updateVideo(video.id, { status: 'rejected' })
-    return
-  }
+  console.log(`  Quality: AI ${scores.ai_quality}/10 · Total ${scores.total}/90`)
 
   // Upload final video + thumbnail to R2
   const runId = video.run_id
