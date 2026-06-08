@@ -21,6 +21,7 @@ interface PipelineModelDetail {
   character_sheet_generated_at: string | null
   character_sheet_signed_url: string | null
   pinned_character_sheet_key: string | null
+  sheet_status: string | null
   content_bank: ContentBankItem[]
 }
 
@@ -186,10 +187,10 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
   const [selectedPhotoKeys, setSelectedPhotoKeys] = useState<Set<string>>(new Set())
   const [isDragOver, setIsDragOver] = useState(false)
 
-  // Pin character sheet
+  // Pin / generate character sheet
   const [pinning, setPinning] = useState(false)
   const [pinned, setPinned] = useState(false)
-  const [regenerating, setRegenerating] = useState(false)
+  const [sheetQueuing, setSheetQueuing] = useState(false)
 
   const fetchSourcePhotos = useCallback(async () => {
     setLoadingPhotos(true)
@@ -218,6 +219,13 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
     fetchModel()
     fetchSourcePhotos()
   }, [fetchModel, fetchSourcePhotos])
+
+  // Auto-refresh while sheet is generating
+  useEffect(() => {
+    if (!model?.sheet_status || model.sheet_status === 'error') return
+    const interval = setInterval(fetchModel, 10_000)
+    return () => clearInterval(interval)
+  }, [model?.sheet_status, fetchModel])
 
   async function uploadPhotoFiles(files: File[]) {
     const imageFiles = files.filter(f => f.type.startsWith('image/'))
@@ -325,18 +333,10 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
     fetchModel()
   }
 
-  async function handleRegenerateSheet() {
-    setRegenerating(true)
-    await fetch(`/api/pipeline/models/${handle}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        character_sheet_r2_key: null,
-        character_sheet_generated_at: null,
-        pinned_character_sheet_key: null,
-      }),
-    })
-    setRegenerating(false)
+  async function handleGenerateSheet() {
+    setSheetQueuing(true)
+    await fetch(`/api/pipeline/models/${handle}/generate-sheet`, { method: 'POST' })
+    setSheetQueuing(false)
     setPinned(false)
     fetchModel()
   }
@@ -535,11 +535,37 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
         {/* Character sheet */}
         <div className="bg-[#111] border border-[#1a1a1a] rounded-xl p-6 space-y-4">
           <h3 className="text-sm font-medium">Character Sheet</h3>
-          {model.character_sheet_r2_key ? (
+
+          {(model.sheet_status === 'queued' || model.sheet_status === 'generating') ? (
+            <div className="flex items-start gap-3 py-1">
+              <div className="w-5 h-5 border-2 border-violet-400/30 border-t-violet-400 rounded-full animate-spin shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm text-[#ccc]">
+                  {model.sheet_status === 'queued' ? 'Queued...' : 'Generating...'}
+                </p>
+                <p className="text-xs text-[#555] mt-0.5">
+                  {model.sheet_status === 'queued'
+                    ? 'Waiting for the pipeline worker to pick this up. Make sure npm run pipeline:watch is running.'
+                    : 'Takes ~8 minutes. This page refreshes automatically every 10 seconds.'}
+                </p>
+              </div>
+            </div>
+          ) : model.sheet_status === 'error' ? (
+            <div className="space-y-3">
+              <p className="text-xs text-red-400">Generation failed. Check the pipeline worker logs for details.</p>
+              <button
+                onClick={handleGenerateSheet}
+                disabled={sheetQueuing}
+                className="text-xs bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                {sheetQueuing ? 'Queuing...' : 'Try Again'}
+              </button>
+            </div>
+          ) : model.character_sheet_r2_key ? (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-xs text-[#ccc]">Character sheet exists</p>
+                  <p className="text-xs text-[#ccc]">Character sheet ready</p>
                   {model.character_sheet_generated_at && (
                     <p className="text-xs text-[#444] mt-0.5">
                       Generated {new Date(model.character_sheet_generated_at).toLocaleDateString()}
@@ -562,11 +588,11 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
                     </button>
                   )}
                   <button
-                    onClick={handleRegenerateSheet}
-                    disabled={regenerating}
+                    onClick={handleGenerateSheet}
+                    disabled={sheetQueuing}
                     className="text-xs bg-[#1a1a1a] border border-[#2a2a2a] text-red-400 hover:text-red-300 hover:border-red-400/30 px-3 py-1.5 rounded-lg disabled:opacity-50 transition-colors"
                   >
-                    {regenerating ? 'Clearing...' : 'Regenerate'}
+                    {sheetQueuing ? 'Queuing...' : 'Regenerate'}
                   </button>
                 </div>
               </div>
@@ -578,23 +604,23 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
                     className="w-full rounded-lg border border-[#2a2a2a]"
                     style={{ imageRendering: 'auto' }}
                   />
-                  <p className="text-[10px] text-[#444]">This is what AI uses as a face reference for every generation. If it looks wrong, hit Regenerate — the next pipeline run will build a new one from scratch.</p>
+                  <p className="text-[10px] text-[#444]">This is what AI uses as a face reference for every generation. If it looks wrong, hit Regenerate.</p>
                 </div>
               )}
             </div>
           ) : (
-            <div className="space-y-3">
-              <p className="text-xs text-[#888]">No character sheet yet. Run this command in your terminal to generate one from the source photos above:</p>
-              <div className="flex items-center gap-2 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2.5">
-                <code className="text-xs text-violet-400 flex-1 font-mono">npm run pipeline:sheet -- --handle {handle}</code>
-                <button
-                  onClick={() => navigator.clipboard.writeText(`npm run pipeline:sheet -- --handle ${handle}`)}
-                  className="text-[10px] text-[#555] hover:text-white transition-colors shrink-0"
-                >
-                  Copy
-                </button>
-              </div>
-              <p className="text-[10px] text-[#444]">Takes ~8 min. When done, the sheet appears here automatically on next page load. Refresh to check.</p>
+            <div className="space-y-4">
+              <p className="text-xs text-[#888]">No character sheet yet. Generate one from the source photos above — the pipeline worker will process it automatically.</p>
+              <button
+                onClick={handleGenerateSheet}
+                disabled={sheetQueuing || loadingPhotos || sourcePhotos.length === 0}
+                className="text-sm bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-lg transition-colors font-medium"
+              >
+                {sheetQueuing ? 'Queuing...' : 'Generate Sheet'}
+              </button>
+              {!loadingPhotos && sourcePhotos.length === 0 && (
+                <p className="text-xs text-[#555]">Add source photos first, then come back to generate the sheet.</p>
+              )}
             </div>
           )}
         </div>

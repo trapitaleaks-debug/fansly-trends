@@ -6,10 +6,13 @@
 import dotenv from 'dotenv'
 dotenv.config({ path: '.env.local' })
 
-import { getActiveModels, getModel, createRun, updateRunStatus, getAllModels } from './db'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { getActiveModels, getModel, createRun, updateRunStatus, getAllModels, updateModelSheetStatus } from './db'
 import { supabaseAdmin } from '../lib/supabase'
 import { generateBriefs } from './research'
-import { generateVideos } from './generate'
+import { generateVideos, generateCharacterSheet } from './generate'
 import { processRun } from './process'
 
 export async function runPipelineForModel(handle: string): Promise<void> {
@@ -53,6 +56,33 @@ export async function runPipelineForModel(handle: string): Promise<void> {
   }
 }
 
+/** Pick up models with sheet_status='queued' and generate their character sheets. */
+export async function processQueuedSheets(): Promise<void> {
+  const { data: models } = await supabaseAdmin
+    .from('pipeline_models')
+    .select('*')
+    .eq('sheet_status', 'queued')
+    .order('updated_at', { ascending: true })
+
+  if (!models || models.length === 0) return
+
+  console.log(`${models.length} queued sheet generation(s) found.`)
+  for (const model of models) {
+    await updateModelSheetStatus(model.id, 'generating')
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kie_sheet_'))
+    try {
+      console.log(`\nGenerating character sheet for @${model.handle}...`)
+      await generateCharacterSheet(model, tmpDir)
+      console.log(`✓ Sheet done for @${model.handle}`)
+    } catch (e) {
+      console.error(`✗ Sheet generation failed for @${model.handle}:`, (e as Error).message)
+      await updateModelSheetStatus(model.id, 'error')
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  }
+}
+
 /** Pick up all runs with status='queued' and process them sequentially. */
 export async function processQueuedRuns(): Promise<void> {
   const { data: queued } = await supabaseAdmin
@@ -87,9 +117,10 @@ if (require.main === module) {
   const handle = handleIdx !== -1 ? args[handleIdx + 1] : undefined
 
   if (args.includes('--watch')) {
-    console.log('Watch mode — checking for queued runs every 5 minutes. Leave this terminal open.')
+    console.log('Watch mode — checking for queued runs and sheets every 5 minutes. Leave this terminal open.')
     const poll = async () => {
-      await processQueuedRuns().catch(e => console.error('Poll error:', (e as Error).message))
+      await processQueuedSheets().catch(e => console.error('Sheet poll error:', (e as Error).message))
+      await processQueuedRuns().catch(e => console.error('Run poll error:', (e as Error).message))
       setTimeout(poll, 5 * 60 * 1000)
     }
     poll()

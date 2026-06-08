@@ -20,6 +20,7 @@ export interface PipelineModel {
   flash_frame_enabled: boolean
   pinned_character_sheet_key: string | null
   notes_for_ai: string | null
+  sheet_status: string | null
 }
 
 export interface PipelineRun {
@@ -132,9 +133,17 @@ export async function updateModelKieRefs(modelId: string, kieRefUrls: string[]) 
 export async function updateModelCharacterSheet(modelId: string, r2Key: string) {
   const { error } = await supabaseAdmin
     .from('pipeline_models')
-    .update({ character_sheet_r2_key: r2Key, character_sheet_generated_at: new Date().toISOString() })
+    .update({ character_sheet_r2_key: r2Key, character_sheet_generated_at: new Date().toISOString(), sheet_status: null })
     .eq('id', modelId)
   if (error) throw new Error(`updateModelCharacterSheet: ${error.message}`)
+}
+
+export async function updateModelSheetStatus(modelId: string, status: string | null) {
+  const { error } = await supabaseAdmin
+    .from('pipeline_models')
+    .update({ sheet_status: status })
+    .eq('id', modelId)
+  if (error) throw new Error(`updateModelSheetStatus: ${error.message}`)
 }
 
 export async function createRun(modelId: string, briefs: Brief[]): Promise<string> {
