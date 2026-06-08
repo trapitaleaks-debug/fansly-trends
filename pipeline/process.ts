@@ -50,10 +50,12 @@ function escapeDrawtext(text: string): string {
 function buildDrawtextFilter(overlayText: string): string {
   const font = fontPath()
   const MAX_CHARS = 40
+  // White text, black stroke (no box background) — matches viral short-form style
+  const baseStyle = `fontfile='${font}':fontsize=58:fontcolor=white:bordercolor=black:borderw=4`
 
   if (overlayText.length <= MAX_CHARS) {
     const escaped = escapeDrawtext(overlayText)
-    return `drawtext=text='${escaped}':fontfile='${font}':fontsize=52:fontcolor=white:x=(w-text_w)/2:y=h*0.20:box=1:boxcolor=black@0.55:boxborderw=18`
+    return `drawtext=text='${escaped}':${baseStyle}:x=(w-text_w)/2:y=h*0.15`
   }
 
   // Split into two lines at nearest word boundary
@@ -69,8 +71,8 @@ function buildDrawtextFilter(overlayText: string): string {
   const line1 = escapeDrawtext(overlayText.slice(0, splitIdx).trim())
   const line2 = escapeDrawtext(overlayText.slice(splitIdx).trim())
 
-  const filter1 = `drawtext=text='${line1}':fontfile='${font}':fontsize=52:fontcolor=white:x=(w-text_w)/2:y=h*0.18:box=1:boxcolor=black@0.55:boxborderw=18`
-  const filter2 = `drawtext=text='${line2}':fontfile='${font}':fontsize=52:fontcolor=white:x=(w-text_w)/2:y=h*0.26:box=1:boxcolor=black@0.55:boxborderw=18`
+  const filter1 = `drawtext=text='${line1}':${baseStyle}:x=(w-text_w)/2:y=h*0.13`
+  const filter2 = `drawtext=text='${line2}':${baseStyle}:x=(w-text_w)/2:y=h*0.21`
 
   return `${filter1},${filter2}`
 }

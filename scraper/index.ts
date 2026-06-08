@@ -6,7 +6,6 @@ import { fetchTopHashtags, scrapeHashtagList } from './hashtag'
 import { uploadBuffer, downloadUrl } from './storage'
 import { upsertPost, getBlacklist, getExistingPostIds, batchUpdateLikes, getClient, enforceCreatorCap } from './db'
 import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
-import { generateSuggestions } from '../lib/suggestions'
 
 const MIN_LIKES = 150
 const TARGET_COUNT = 4000
@@ -192,24 +191,7 @@ async function main() {
     console.log(`\n✅ Done in ${elapsed}s — added: ${added}, updated: ${updated}, skipped: ${skipped}`)
     await sendTelegram(scraperSuccess(added, updated, skipped))
 
-    // Phase 4: Auto-generate suggestions for all models with a branding file
-    if (process.env.ANTHROPIC_API_KEY) {
-      console.log('\n--- Phase 4: Auto-generating suggestions ---')
-      const { data: models } = await getClient()
-        .from('trends_models')
-        .select('id, fansly_username, branding_file_md, notes_for_ai')
-        .not('branding_file_md', 'is', null)
-        .neq('branding_file_md', '')
-
-      for (const model of (models ?? [])) {
-        try {
-          const n = await generateSuggestions(model.id, model.branding_file_md, model.notes_for_ai)
-          console.log(`  ✅ @${model.fansly_username}: ${n} new suggestions`)
-        } catch (err) {
-          console.error(`  ❌ @${model.fansly_username} suggestions failed:`, err instanceof Error ? err.message : err)
-        }
-      }
-    }
+    // Suggestions are generated on-demand via the UI — not auto-generated after scraping
 
     process.exit(0)
   } catch (err) {

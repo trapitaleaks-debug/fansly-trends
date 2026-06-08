@@ -23,20 +23,22 @@ interface SuggestionInput {
 }
 
 export async function generateSuggestions(modelId: string, brandingFileMd: string, notesForAi?: string | null): Promise<number> {
-  // Load posts not already suggested for this model, sorted by likes desc
+  // Load all existing non-pending suggestions — exclude their posts from new generation pool
+  // (pending were deleted before calling this; approved/dismissed posts are permanently excluded)
   const { data: existingSuggestions } = await supabaseAdmin
     .from('trends_suggestions')
     .select('post_id, status, dismiss_reason')
     .eq('model_id', modelId)
+    .in('status', ['approved', 'dismissed'])
 
   const excludedPostIds = (existingSuggestions ?? []).map(s => s.post_id)
 
-  // Collect dismiss reasons for AI feedback
+  // Collect dismiss reasons for AI feedback — tells Claude what to avoid
   const dismissFeedback = (existingSuggestions ?? [])
     .filter((s): s is { post_id: string; status: string; dismiss_reason: string } =>
       s.status === 'dismissed' && typeof s.dismiss_reason === 'string' && s.dismiss_reason.trim() !== ''
     )
-    .slice(0, 15)
+    .slice(0, 20)
 
   let postsQuery = supabaseAdmin
     .from('trends_posts')
@@ -74,7 +76,14 @@ ${brandingFileMd}
 
 ## Trending Posts
 ${JSON.stringify(postsJson, null, 0)}
-${notesForAi ? `\n## Important constraints — you MUST follow these when selecting and adapting suggestions\n${notesForAi}\n` : ''}${dismissFeedback.length > 0 ? `\n## Previously Dismissed (with reasons) — avoid suggesting similar content\n${dismissFeedback.map(d => `- Dismissed reason: "${d.dismiss_reason}"`).join('\n')}\n` : ''}
+${notesForAi ? `\n## Manager Constraints — HARD RULES, follow exactly\n${notesForAi}\n` : ''}${dismissFeedback.length > 0 ? `\n## Previously Dismissed — learn from these mistakes, do NOT suggest anything similar\n${dismissFeedback.map(d => `- "${d.dismiss_reason}"`).join('\n')}\n` : ''}
+## FILTERING RULES — skip any post that violates these
+- SKIP: videos featuring male performers or male-female couples (this is a solo female creator)
+- SKIP: group sex, gangbang, or multi-person explicit content
+- SKIP: content that contradicts the manager constraints above
+- SKIP: posts where the caption/hashtags clearly indicate content that doesn't match the model's niche
+Only suggest posts the model can actually recreate solo, based on her branding file and constraints.
+
 Return a JSON array of up to 20 suggestions, ranked most relevant first. Each item must have exactly these keys:
 - "post_id": the UUID from the trending posts list
 - "reasoning": 1-2 sentences on why this video fits her brand

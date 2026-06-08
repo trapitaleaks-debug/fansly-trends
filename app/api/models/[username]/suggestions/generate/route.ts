@@ -18,6 +18,13 @@ export async function POST(_request: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Upload a branding file before generating suggestions' }, { status: 400 })
   }
 
+  // Delete all pending suggestions — regenerate from scratch, leave approved/dismissed untouched
+  await supabaseAdmin
+    .from('trends_suggestions')
+    .delete()
+    .eq('model_id', model.id)
+    .eq('status', 'pending')
+
   try {
     const generated = await generateSuggestions(model.id, model.branding_file_md, model.notes_for_ai)
     return NextResponse.json({ generated })
