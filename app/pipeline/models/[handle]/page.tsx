@@ -2,6 +2,68 @@
 import { useState, useEffect, useRef, useCallback, use } from 'react'
 import Link from 'next/link'
 
+async function trimVideoClientSide(
+  file: File,
+  trimStart: number,
+  trimEnd: number,
+  onProgress: (msg: string) => void
+): Promise<{ blob: Blob; filename: string }> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video')
+    const objectUrl = URL.createObjectURL(file)
+    video.src = objectUrl
+    video.preload = 'auto'
+
+    video.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Video failed to load')) }
+
+    video.onloadedmetadata = () => {
+      const captureStream = (video as any).captureStream?.bind(video) || (video as any).mozCaptureStream?.bind(video)
+      if (!captureStream) { URL.revokeObjectURL(objectUrl); reject(new Error('captureStream not supported')); return }
+
+      const stream: MediaStream = captureStream()
+      const mimeType = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+        .find(t => { try { return MediaRecorder.isTypeSupported(t) } catch { return false } }) ?? 'video/webm'
+
+      const recorder = new MediaRecorder(stream, { mimeType })
+      const chunks: Blob[] = []
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
+      recorder.onstop = () => {
+        URL.revokeObjectURL(objectUrl)
+        const type = mimeType.split(';')[0]
+        const blob = new Blob(chunks, { type })
+        const ext = type === 'video/mp4' ? 'mp4' : 'webm'
+        resolve({ blob, filename: file.name.replace(/\.[^.]+$/, `.${ext}`) })
+      }
+
+      video.currentTime = trimStart
+      video.onseeked = () => {
+        video.onseeked = null
+        const duration = trimEnd - trimStart
+        let remaining = Math.ceil(duration)
+        onProgress(`Recording clip... ${remaining}s`)
+        const tick = setInterval(() => {
+          remaining = Math.max(0, remaining - 1)
+          onProgress(`Recording clip... ${remaining}s`)
+        }, 1000)
+        recorder.start(250)
+        video.play()
+        const check = () => {
+          if (video.currentTime >= trimEnd) {
+            clearInterval(tick)
+            video.pause()
+            recorder.stop()
+          } else {
+            requestAnimationFrame(check)
+          }
+        }
+        requestAnimationFrame(check)
+      }
+    }
+
+    video.load()
+  })
+}
+
 interface ContentBankItem {
   id: string
   type: 'own_footage' | 'hook_clip' | 'audio'
@@ -29,7 +91,7 @@ interface PipelineModelDetail {
 
 
 function TrimSelector({
-  file, label, onLabelChange, onConfirm, onCancel, uploading,
+  file, label, onLabelChange, onConfirm, onCancel, uploading, trimProgress,
 }: {
   file: File
   label: string
@@ -37,6 +99,7 @@ function TrimSelector({
   onConfirm: (start: number, end: number) => void
   onCancel: () => void
   uploading: boolean
+  trimProgress?: string | null
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [objectUrl, setObjectUrl] = useState('')
@@ -147,7 +210,7 @@ function TrimSelector({
           disabled={!valid || uploading}
           className="flex-1 text-xs bg-white text-black px-3 py-2 rounded-lg hover:bg-[#e5e5e5] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {uploading ? 'Uploading...' : 'Confirm & Upload'}
+          {trimProgress ?? (uploading ? 'Uploading...' : 'Confirm & Upload')}
         </button>
         <button
           onClick={onCancel}
@@ -181,6 +244,7 @@ function UploadSection({
   const [file, setFile] = useState<File | null>(null)
   const [fileLabel, setFileLabel] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [trimProgress, setTrimProgress] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [showTrim, setShowTrim] = useState(false)
@@ -192,6 +256,24 @@ function UploadSection({
     if (!file) return
     setUploading(true)
     setUploadError(null)
+    setTrimProgress(null)
+
+    let uploadFile: File | Blob = file
+    let uploadFilename = file.name
+
+    if (isVideo && trimEnd != null) {
+      try {
+        const trimmed = await trimVideoClientSide(file, trimStart, trimEnd, msg => setTrimProgress(msg))
+        uploadFile = trimmed.blob
+        uploadFilename = trimmed.filename
+      } catch (e) {
+        setUploadError((e as Error).message || 'Video trimming failed')
+        setUploading(false)
+        setTrimProgress(null)
+        return
+      }
+      setTrimProgress(null)
+    }
 
     const res = await fetch('/api/pipeline/upload', {
       method: 'POST',
@@ -199,7 +281,7 @@ function UploadSection({
       body: JSON.stringify({
         model_id: modelId,
         type,
-        filename: file.name,
+        filename: uploadFilename,
         label: fileLabel || file.name,
         trim_start: trimStart,
         trim_end: trimEnd,
@@ -217,8 +299,8 @@ function UploadSection({
 
     const putRes = await fetch(uploadUrl, {
       method: 'PUT',
-      body: file,
-      headers: { 'Content-Type': ct || file.type || 'application/octet-stream' },
+      body: uploadFile,
+      headers: { 'Content-Type': ct || (uploadFile as File).type || 'application/octet-stream' },
     })
 
     setUploading(false)
@@ -253,6 +335,7 @@ function UploadSection({
           onConfirm={handleUpload}
           onCancel={() => { setShowTrim(false); setFile(null); setFileLabel('') }}
           uploading={uploading}
+          trimProgress={trimProgress}
         />
       ) : isVideo ? (
         <label className="flex items-center justify-center border-2 border-dashed border-[#2a2a2a] hover:border-[#3a3a3a] rounded-lg py-5 cursor-pointer transition-colors">
