@@ -263,57 +263,32 @@ async function generateImageVariants(
   runId: string,
   videoId: string,
   tmpDir: string
-): Promise<{ url: string; score: number; localPath: string; variantId?: string }[]> {
+): Promise<{ url: string; score: number; localPath: string }[]> {
   const prompt = buildImagePrompt(brief, model)
-  const taskIds: string[] = []
 
-  for (let v = 0; v < 4; v++) {
-    try {
-      const taskId = await createImageTask(prompt, kieRefs)
-      taskIds.push(taskId)
-      await sleep(700)
-    } catch (e) {
-      console.error(`  ✗ Image task ${v + 1}/4 failed:`, (e as Error).message)
-    }
+  let taskId: string
+  try {
+    taskId = await createImageTask(prompt, kieRefs)
+  } catch (e) {
+    console.error(`  [slot ${brief.slot}] ✗ Image task create failed:`, (e as Error).message)
+    return []
   }
 
-  // Poll all image tasks in parallel
-  const settled = await Promise.allSettled(
-    taskIds.map(async (taskId, i) => {
-      const url = await pollTask(taskId, 6 * 60 * 1000)
-      const localPath = path.join(tmpDir, `slot${brief.slot}_img${i + 1}.jpg`)
-      const buf = await fetch(url).then(r => r.arrayBuffer())
-      fs.writeFileSync(localPath, Buffer.from(new Uint8Array(buf)))
-      const r2Key = `models/${model.handle}/generated/${runId}/slot_${brief.slot}/img_${i + 1}.jpg`
-      await uploadToR2(r2Key, fs.readFileSync(localPath), 'image/jpeg')
-      const score = await scoreImage(localPath, true)
-      console.log(`    img ${i + 1}/4 score=${score}`)
-      return { url, score, localPath, r2Key, idx: i + 1 }
-    })
-  )
-
-  const results = settled
-    .map((r, i) => {
-      if (r.status === 'fulfilled') return r.value
-      console.error(`  ✗ Image ${i + 1}/4 failed:`, (r as PromiseRejectedResult).reason?.message)
-      return null
-    })
-    .filter((r): r is { url: string; score: number; localPath: string; r2Key: string; idx: number } => r !== null)
-
-  // Persist all image variants to DB
-  if (results.length > 0) {
-    try {
-      await saveVariants(
-        videoId,
-        'image',
-        results.map(r => ({ r2_key: r.r2Key, score: r.score, idx: r.idx }))
-      )
-    } catch (e) {
-      console.error('  ✗ saveVariants (image) failed:', (e as Error).message)
-    }
+  try {
+    const url = await pollTask(taskId, 6 * 60 * 1000)
+    const localPath = path.join(tmpDir, `slot${brief.slot}_img1.jpg`)
+    const buf = await fetch(url).then(r => r.arrayBuffer())
+    fs.writeFileSync(localPath, Buffer.from(new Uint8Array(buf)))
+    const r2Key = `models/${model.handle}/generated/${runId}/slot_${brief.slot}/img_1.jpg`
+    await uploadToR2(r2Key, fs.readFileSync(localPath), 'image/jpeg')
+    const score = await scoreImage(localPath, true)
+    console.log(`  [slot ${brief.slot}] img score=${score}`)
+    await saveVariants(videoId, 'image', [{ r2_key: r2Key, score, idx: 1 }]).catch(() => {})
+    return [{ url, score, localPath }]
+  } catch (e) {
+    console.error(`  [slot ${brief.slot}] ✗ Image poll/upload failed:`, (e as Error).message)
+    return []
   }
-
-  return results
 }
 
 // ─── Video generation ─────────────────────────────────────────────────────────
@@ -328,54 +303,28 @@ async function generateVideoVariants(
   videoId: string,
   tmpDir: string
 ): Promise<{ url: string; localPath: string; r2Key: string; idx: number }[]> {
-  const taskIds: string[] = []
-
-  for (let v = 0; v < 4; v++) {
-    try {
-      const taskId = await createVideoTask(VIDEO_MOTION_PROMPT, bestImageUrl)
-      taskIds.push(taskId)
-      await sleep(700)
-    } catch (e) {
-      console.error(`  ✗ Video task ${v + 1}/4 failed:`, (e as Error).message)
-    }
+  let taskId: string
+  try {
+    taskId = await createVideoTask(VIDEO_MOTION_PROMPT, bestImageUrl)
+  } catch (e) {
+    console.error(`  [slot ${brief.slot}] ✗ Video task create failed:`, (e as Error).message)
+    return []
   }
 
-  // Poll all video tasks in parallel (they all start around the same time on kie.ai)
-  const settled = await Promise.allSettled(
-    taskIds.map(async (taskId, i) => {
-      const url = await pollTask(taskId, 12 * 60 * 1000)
-      const localPath = path.join(tmpDir, `slot${brief.slot}_vid${i + 1}.mp4`)
-      const buf = await fetch(url).then(r => r.arrayBuffer())
-      fs.writeFileSync(localPath, Buffer.from(new Uint8Array(buf)))
-      const r2Key = `models/${model.handle}/generated/${runId}/slot_${brief.slot}/vid_${i + 1}.mp4`
-      await uploadToR2(r2Key, fs.readFileSync(localPath), 'video/mp4')
-      console.log(`    vid ${i + 1}/4 done`)
-      return { url, localPath, r2Key, idx: i + 1 }
-    })
-  )
-
-  const results = settled
-    .map((r, i) => {
-      if (r.status === 'fulfilled') return r.value
-      console.error(`  ✗ Video ${i + 1}/4 failed:`, (r as PromiseRejectedResult).reason?.message)
-      return null
-    })
-    .filter((r): r is { url: string; localPath: string; r2Key: string; idx: number } => r !== null)
-
-  // Persist all video variants to DB
-  if (results.length > 0) {
-    try {
-      await saveVariants(
-        videoId,
-        'video',
-        results.map(r => ({ r2_key: r.r2Key, idx: r.idx }))
-      )
-    } catch (e) {
-      console.error('  ✗ saveVariants (video) failed:', (e as Error).message)
-    }
+  try {
+    const url = await pollTask(taskId, 12 * 60 * 1000)
+    const localPath = path.join(tmpDir, `slot${brief.slot}_vid1.mp4`)
+    const buf = await fetch(url).then(r => r.arrayBuffer())
+    fs.writeFileSync(localPath, Buffer.from(new Uint8Array(buf)))
+    const r2Key = `models/${model.handle}/generated/${runId}/slot_${brief.slot}/vid_1.mp4`
+    await uploadToR2(r2Key, fs.readFileSync(localPath), 'video/mp4')
+    console.log(`  [slot ${brief.slot}] vid done`)
+    await saveVariants(videoId, 'video', [{ r2_key: r2Key, idx: 1 }]).catch(() => {})
+    return [{ url, localPath, r2Key, idx: 1 }]
+  } catch (e) {
+    console.error(`  [slot ${brief.slot}] ✗ Video poll/upload failed:`, (e as Error).message)
+    return []
   }
-
-  return results
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -394,67 +343,38 @@ export async function generateVideos(
     // Get character sheet reference (generate only if none exists)
     const kieRefs = await getCharacterSheetRef(model)
 
-    for (const brief of briefs) {
+    // All slots run in parallel — total time ≈ slowest single slot (~8 min), not N×slot
+    await Promise.all(briefs.map(async (brief) => {
       console.log(`\n  [Slot ${brief.slot}/${slotsExpected}] "${brief.overlay_text}"`)
 
       const videoId = await createVideo(runId, brief.slot, brief, brief.source_post_id)
 
-      // Generate images
-      console.log('  Generating images...')
       const imageVariants = await generateImageVariants(brief, model, kieRefs, runId, videoId, tmpDir)
-
       if (imageVariants.length === 0) {
-        console.error(`  ✗ No image variants for slot ${brief.slot}, skipping`)
+        console.error(`  [slot ${brief.slot}] ✗ No image — skipping slot`)
         await updateVideo(videoId, { status: 'rejected' })
-        continue
+        return
       }
 
-      const bestImage = imageVariants.reduce((a, b) => a.score > b.score ? a : b)
-      console.log(`  Best image score: ${bestImage.score}`)
+      const bestImage = imageVariants[0]
+      console.log(`  [slot ${brief.slot}] image score: ${bestImage.score}`)
 
-      // Generate videos from best image
-      console.log('  Generating videos...')
       const videoVariants = await generateVideoVariants(brief, model, bestImage.url, runId, videoId, tmpDir)
-
       if (videoVariants.length === 0) {
-        console.error(`  ✗ No video variants for slot ${brief.slot}, skipping`)
+        console.error(`  [slot ${brief.slot}] ✗ No video — skipping slot`)
         await updateVideo(videoId, { status: 'rejected' })
-        continue
+        return
       }
 
-      // Pick first successful video (all 7s, motion is similar)
       const bestVideo = videoVariants[0]
-
-      // Mark chosen video variant as selected in DB
-      try {
-        // Retrieve the variant record ID for the selected video by querying variants
-        // We identify it by video_id + type + variant_idx
-        const { data: variantRow } = await (await import('../lib/supabase')).supabaseAdmin
-          .from('pipeline_variants')
-          .select('id')
-          .eq('video_id', videoId)
-          .eq('type', 'video')
-          .eq('variant_idx', bestVideo.idx)
-          .single()
-        if (variantRow?.id) {
-          await selectVariant(videoId, variantRow.id, 'video')
-        }
-      } catch (e) {
-        console.error('  ✗ selectVariant failed:', (e as Error).message)
-      }
-
-      // Upload best raw video to R2
-      const rawKey = `models/${model.handle}/generated/${runId}/slot_${brief.slot}/best_raw.mp4`
-      await uploadToR2(rawKey, fs.readFileSync(bestVideo.localPath), 'video/mp4')
 
       await updateVideo(videoId, {
         status: 'pending',
-        final_r2_key: rawKey, // process.ts will overwrite with final (overlay+audio)
+        final_r2_key: bestVideo.r2Key,
       })
 
-      console.log(`  ✓ Slot ${brief.slot} done — raw video saved to R2`)
-      await sleep(500)
-    }
+      console.log(`  [slot ${brief.slot}] ✓ done`)
+    }))
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   }
