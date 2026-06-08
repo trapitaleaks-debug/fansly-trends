@@ -236,13 +236,21 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
 
     // All PUTs fire simultaneously to R2 (different domain — no per-origin limit applies)
     let done = 0
-    await Promise.all(slots.map(async ({ uploadUrl }, i) => {
+    let failed = 0
+    await Promise.allSettled(slots.map(async ({ uploadUrl }, i) => {
       try {
-        await fetch(uploadUrl, {
+        const putRes = await fetch(uploadUrl, {
           method: 'PUT',
           body: imageFiles[i],
           headers: { 'Content-Type': imageFiles[i].type || 'image/jpeg' },
         })
+        if (!putRes.ok) {
+          console.error(`PUT failed ${putRes.status} for ${imageFiles[i].name}`)
+          failed++
+        }
+      } catch (e) {
+        console.error(`PUT threw for ${imageFiles[i].name}:`, e)
+        failed++
       } finally {
         done++
         setUploadPhotoProgress(`${done} / ${imageFiles.length}`)
@@ -251,6 +259,7 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
 
     setUploadingPhotos(false)
     setUploadPhotoProgress('')
+    if (failed > 0) console.warn(`${failed} uploads failed — check R2 CORS config`)
     fetchSourcePhotos()
   }
 
