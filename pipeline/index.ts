@@ -58,11 +58,16 @@ export async function runPipelineForModel(handle: string): Promise<void> {
 
 /** Pick up models with sheet_status='queued' and generate their character sheets. */
 export async function processQueuedSheets(): Promise<void> {
-  const { data: models } = await supabaseAdmin
+  const { data: models, error: sheetQueryError } = await supabaseAdmin
     .from('pipeline_models')
     .select('*')
     .eq('sheet_status', 'queued')
-    .order('updated_at', { ascending: true })
+    .order('created_at', { ascending: true })
+
+  if (sheetQueryError) {
+    console.error('processQueuedSheets query error:', sheetQueryError.message)
+    return
+  }
 
   if (!models || models.length === 0) return
 
