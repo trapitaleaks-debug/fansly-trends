@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Brief, ContentFormat, OverlayFormula, PipelineModel } from './db'
-import { getTrendingPosts, getApprovedSuggestions, markSuggestionUsed } from './db'
+import { getTrendingPosts, getApprovedSuggestions, markSuggestionUsed, getContentBank } from './db'
 import { supabaseAdmin } from '../lib/supabase'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -167,16 +167,21 @@ export async function generateBriefs(model: PipelineModel): Promise<Brief[]> {
 
   const videosPerCycle = model.videos_per_cycle ?? 6
 
-  const [trendingPosts, lastFormats, approvedSuggestions] = await Promise.all([
+  const [trendingPosts, lastFormats, approvedSuggestions, ownFootage] = await Promise.all([
     getTrendingPosts(model.niche_tags, 10),
     getLastCycleFormats(model.id),
     getApprovedSuggestions(model.handle),
+    getContentBank(model.id, 'own_footage'),
   ])
 
   console.log(`  Trending posts found: ${trendingPosts.length}`)
   console.log(`  Branding file: ${model.branding_file_text ? `${model.branding_file_text.length} chars` : 'MISSING — briefs will be generic'}`)
   console.log(`  Approved suggestions: ${approvedSuggestions.length}`)
+  console.log(`  Own footage in bank: ${ownFootage.length}`)
   if (lastFormats.length > 0) console.log(`  Last cycle formats: ${lastFormats.join(', ')}`)
+
+  // Build footage lookup map: label → r2_key
+  const footageMap = new Map(ownFootage.map(f => [f.label ?? f.id, f.r2_key]))
 
   // Inject branding file and optional AI notes into system prompt
   const brandingSection = model.branding_file_text
@@ -187,7 +192,12 @@ export async function generateBriefs(model: PipelineModel): Promise<Brief[]> {
     ? `\n\n---\n\n## ADDITIONAL NOTES FROM THE MANAGER\n\n${model.notes_for_ai}`
     : ''
 
-  const fullSystemPrompt = SYSTEM_PROMPT + brandingSection + notesSection
+  // Tell Claude what own footage is available so it can assign it to slots
+  const footageSection = ownFootage.length > 0
+    ? `\n\n---\n\n## AVAILABLE OWN FOOTAGE (prefer over AI generation per manager notes)\n\nFor slots that should use own footage, set "own_footage_label" to EXACTLY one of these labels:\n${ownFootage.map(f => `- "${f.label ?? f.id}"`).join('\n')}\n\nOmit "own_footage_label" only when AI generation is explicitly required for a slot.`
+    : ''
+
+  const fullSystemPrompt = SYSTEM_PROMPT + brandingSection + notesSection + footageSection
 
   // Trending context — performance stats only, NO captions (captions are explicit)
   const trendContext = trendingPosts.length > 0
@@ -242,7 +252,8 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
     "location": "specific background/setting for this slot",
     "props": "props in this slot, comma-separated, or empty string",
     "color_hint": "lighting/color direction for this slot",
-    "rewatch_trigger": "flash_ending|hidden_detail|unresolved_question|seamless_loop"
+    "rewatch_trigger": "flash_ending|hidden_detail|unresolved_question|seamless_loop",
+    "own_footage_label": "EXACT label from Available Own Footage list if this slot uses own footage, otherwise omit"
   }
 ]`
 
@@ -266,8 +277,12 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
     await Promise.all(suggestionsToProcess.map(s => markSuggestionUsed(s.id)))
     console.log(`  Marked ${suggestionsToProcess.length} suggestion(s) as done`)
 
-    return rawBriefs.map((b, i) => {
+    return rawBriefs.map((b: Brief & { own_footage_label?: string }, i) => {
       const suggestion = suggestionsToProcess[i]
+      const ownFootageKey = b.own_footage_label ? footageMap.get(b.own_footage_label) : undefined
+      if (b.own_footage_label) {
+        console.log(`  [slot ${i + 1}] own footage: "${b.own_footage_label}" → ${ownFootageKey ?? 'NOT FOUND'}`)
+      }
       return {
         slot: i + 1,
         content_format: (b.content_format ?? 'text_overlay') as ContentFormat,
@@ -284,6 +299,7 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
         props: b.props ?? undefined,
         color_hint: b.color_hint ?? undefined,
         rewatch_trigger: b.rewatch_trigger ?? undefined,
+        own_footage_r2_key: ownFootageKey,
       }
     })
   }
@@ -313,7 +329,8 @@ Return ONLY a JSON array, no other text:
     "location": "specific background/setting for this slot",
     "props": "props in this slot, comma-separated, or empty string",
     "color_hint": "lighting/color direction for this slot",
-    "rewatch_trigger": "flash_ending|hidden_detail|unresolved_question|seamless_loop"
+    "rewatch_trigger": "flash_ending|hidden_detail|unresolved_question|seamless_loop",
+    "own_footage_label": "EXACT label from Available Own Footage list if this slot uses own footage, otherwise omit"
   }
 ]`
 
@@ -331,26 +348,33 @@ Return ONLY a JSON array, no other text:
   const jsonMatch = text.match(/\[[\s\S]*\]/m)
   if (!jsonMatch) throw new Error(`Claude returned non-JSON: ${text.slice(0, 200)}`)
 
-  const briefs: Brief[] = JSON.parse(jsonMatch[0])
+  const briefs: (Brief & { own_footage_label?: string })[] = JSON.parse(jsonMatch[0])
   if (!Array.isArray(briefs) || briefs.length === 0) throw new Error('Claude returned empty briefs array')
 
   const fallbackPostId = trendingPosts[0]?.fansly_post_id ?? 'unknown'
 
-  return briefs.map((b, i) => ({
-    slot: i + 1,
-    content_format: (b.content_format ?? 'text_overlay') as ContentFormat,
-    hook_description: b.hook_description ?? '',
-    retention_description: b.retention_description ?? '',
-    payoff_description: b.payoff_description ?? '',
-    concept: b.concept ?? '',
-    source_post_id: b.source_post_id ?? fallbackPostId,
-    overlay_text: b.overlay_text ?? '',
-    overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
-    cta_type: b.cta_type ?? undefined,
-    caption: b.caption ?? '',
-    location: b.location ?? undefined,
-    props: b.props ?? undefined,
-    color_hint: b.color_hint ?? undefined,
-    rewatch_trigger: b.rewatch_trigger ?? undefined,
-  }))
+  return briefs.map((b, i) => {
+    const ownFootageKey = b.own_footage_label ? footageMap.get(b.own_footage_label) : undefined
+    if (b.own_footage_label) {
+      console.log(`  [slot ${i + 1}] own footage: "${b.own_footage_label}" → ${ownFootageKey ?? 'NOT FOUND'}`)
+    }
+    return {
+      slot: i + 1,
+      content_format: (b.content_format ?? 'text_overlay') as ContentFormat,
+      hook_description: b.hook_description ?? '',
+      retention_description: b.retention_description ?? '',
+      payoff_description: b.payoff_description ?? '',
+      concept: b.concept ?? '',
+      source_post_id: b.source_post_id ?? fallbackPostId,
+      overlay_text: b.overlay_text ?? '',
+      overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
+      cta_type: b.cta_type ?? undefined,
+      caption: b.caption ?? '',
+      location: b.location ?? undefined,
+      props: b.props ?? undefined,
+      color_hint: b.color_hint ?? undefined,
+      rewatch_trigger: b.rewatch_trigger ?? undefined,
+      own_footage_r2_key: ownFootageKey,
+    }
+  })
 }

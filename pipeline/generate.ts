@@ -349,6 +349,14 @@ export async function generateVideos(
 
       const videoId = await createVideo(runId, brief.slot, brief, brief.source_post_id)
 
+      // Own footage: skip kie.ai entirely, use the Content Bank video directly
+      if (brief.own_footage_r2_key) {
+        console.log(`  [slot ${brief.slot}] Using own footage: ${brief.own_footage_r2_key}`)
+        await updateVideo(videoId, { status: 'pending', final_r2_key: brief.own_footage_r2_key })
+        console.log(`  [slot ${brief.slot}] ✓ own footage queued for processing`)
+        return
+      }
+
       const imageVariants = await generateImageVariants(brief, model, kieRefs, runId, videoId, tmpDir)
       if (imageVariants.length === 0) {
         console.error(`  [slot ${brief.slot}] ✗ No image — skipping slot`)

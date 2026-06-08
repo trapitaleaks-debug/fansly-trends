@@ -108,6 +108,8 @@ export interface Brief {
   props?: string                // e.g. "lollipop" or "silk sheets, velvet choker"
   color_hint?: string           // e.g. "warm pink ambient lighting"
   rewatch_trigger?: string      // how this slot engineers a replay
+  // Own footage: if set, skip kie.ai entirely and use this R2 key as the raw video
+  own_footage_r2_key?: string
 }
 
 export async function getActiveModels(): Promise<PipelineModel[]> {
