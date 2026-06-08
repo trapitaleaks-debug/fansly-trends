@@ -28,6 +28,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
       trends_suggestions: undefined,
       suggestion_counts: {
         pending: suggestions.filter(s => s.status === 'pending').length,
+        approved: suggestions.filter(s => s.status === 'approved').length,
         done: suggestions.filter(s => s.status === 'done').length,
         dismissed: suggestions.filter(s => s.status === 'dismissed').length,
       },

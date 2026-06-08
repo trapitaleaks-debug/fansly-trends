@@ -33,12 +33,12 @@ export async function uploadFileToKie(localPath: string, fileName: string, folde
   return json.data.downloadUrl
 }
 
-export async function createImageTask(prompt: string, imageUrls: string[], nsfw = true): Promise<string> {
+export async function createImageTask(prompt: string, imageUrls: string[], aspectRatio = '9:16'): Promise<string> {
   const body = {
     model: 'seedream/4.5-edit',
     input: {
       prompt,
-      aspect_ratio: '9:16',
+      aspect_ratio: aspectRatio,
       quality: 'basic',
       nsfw_checker: false,
       image_urls: imageUrls,

@@ -73,7 +73,6 @@ export async function sendApprovalBatch(run: PipelineRun, handle: string): Promi
         brief?.hook_description ? `🪝 ${brief.hook_description}` : '',
         brief?.payoff_description ? `💥 ${brief.payoff_description}` : '',
         `📝 ${brief?.caption}`,
-        `🏷 ${brief?.hashtags?.slice(0, 4).join(' ')}...`,
         scoreBar,
         finalUrl ? `\n🎬 <a href="${finalUrl}">Watch video</a>` : '',
       ].filter(Boolean).join('\n')

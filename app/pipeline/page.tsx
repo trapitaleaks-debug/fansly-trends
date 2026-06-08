@@ -157,7 +157,7 @@ export default function PipelinePage() {
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
-          <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
+          
           <span className="text-white">Pipeline</span>
         </div>
       </nav>

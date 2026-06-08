@@ -7,9 +7,10 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { chromium, type Browser, type Page } from 'playwright'
+import Anthropic from '@anthropic-ai/sdk'
 import { r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
-import { getRunVideos, updateVideo, updateRunStatus, getRun, type PipelineModel } from './db'
+import { getRunVideos, updateVideo, updateRunStatus, getRun, getTopHashtagsForModel, type PipelineModel, type PipelineVideo } from './db'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
@@ -77,6 +78,99 @@ function getScheduledTime(slot: number, bestTimes: { morning: string; evening: s
   return date
 }
 
+const BANNED_HASHTAGS = new Set([
+  'anal', 'trans', 'deepthroat', 'creampie', 'gangbang', 'squirt', 'bdsm',
+  'dominatrix', 'cuckold', 'feet', 'footfetish', 'scat', 'furry', 'hentai',
+  'femboy', 'ladyboy', 'shemale',
+])
+
+async function selectHashtags(video: PipelineVideo, model: PipelineModel): Promise<string[]> {
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+  // 1. Fetch current trending tags from fansly-tags
+  let trendingImpact: string[] = []
+  let trendingRising: string[] = []
+  try {
+    const res = await fetch('https://fansly-tags.vercel.app/api/tags', {
+      headers: { 'Cache-Control': 'no-store' },
+    } as RequestInit)
+    if (res.ok) {
+      const data = await res.json() as {
+        highestImpact?: { tag: string }[]
+        fastestRising?: { tag: string }[]
+      }
+      trendingImpact = (data.highestImpact ?? [])
+        .map(t => t.tag)
+        .filter(t => !BANNED_HASHTAGS.has(t.toLowerCase()))
+        .slice(0, 20)
+      trendingRising = (data.fastestRising ?? [])
+        .map(t => t.tag)
+        .filter(t => !BANNED_HASHTAGS.has(t.toLowerCase()))
+        .slice(0, 15)
+    }
+  } catch { /* skip — use fallback pools only */ }
+
+  // 2. Get top-performing tags from past analytics for this model
+  const pastTopTags = await getTopHashtagsForModel(model.id)
+
+  const brief = video.brief!
+  const brandingSnippet = model.branding_file_text
+    ? model.branding_file_text.slice(0, 500)
+    : `Niche: ${model.niche_tags.join(', ')}`
+
+  const prompt = `Select exactly 10 hashtags for this Fansly video post. Return ONLY a JSON array of 10 strings, lowercase, no # symbol. Nothing else.
+
+VIDEO:
+- Format: ${brief.content_format}
+- Overlay: "${brief.overlay_text}"
+- Caption: "${brief.caption}"
+- Concept: "${brief.concept}"
+
+MODEL BRANDING:
+${brandingSnippet}
+Niche tags: ${model.niche_tags.join(', ')}
+Signature tag: ${model.signature_tag ?? 'none'}
+
+CURRENTLY TRENDING — Highest Impact:
+${trendingImpact.join(', ') || 'unavailable'}
+
+CURRENTLY TRENDING — Fastest Rising:
+${trendingRising.join(', ') || 'unavailable'}
+
+TOP PERFORMERS FOR THIS MODEL (from FanCore analytics):
+${pastTopTags.length > 0 ? pastTopTags.join(', ') : 'no data yet — skip this constraint'}
+
+RULES:
+- Always include the model's signature tag if set
+- Pick 2–3 from Highest Impact that match the video's content/vibe
+- Pick 1–2 from Fastest Rising if relevant
+- Pick 1–2 from past top performers if contextually relevant
+- Fill remaining slots with niche-specific tags that fit this specific video
+- Do NOT use banned tags: anal, trans, deepthroat, creampie, gangbang, bdsm, etc.
+- Tags must vary from a standard rotation — do not always return the same 10`
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 150,
+      messages: [{ role: 'user', content: prompt }],
+    })
+    const text = (response.content[0] as { type: string; text: string }).text.trim()
+    const match = text.match(/\[[\s\S]*?\]/)
+    if (match) {
+      const tags: string[] = JSON.parse(match[0])
+      return tags.filter(t => !BANNED_HASHTAGS.has(t.toLowerCase())).slice(0, 10)
+    }
+  } catch (e) {
+    console.error('  ⚠ selectHashtags failed:', (e as Error).message)
+  }
+
+  // Fallback: niche tags + signature
+  const fallback = [...model.niche_tags]
+  if (model.signature_tag) fallback.unshift(model.signature_tag)
+  return fallback.slice(0, 10)
+}
+
 export async function postBatch(runId: string, model: PipelineModel): Promise<void> {
   console.log(`[fancore] Posting run ${runId} for @${model.handle}`)
 
@@ -114,6 +208,16 @@ export async function postBatch(runId: string, model: PipelineModel): Promise<vo
 
       console.log(`\n  [Slot ${video.slot}] Uploading to FanCore...`)
 
+      // Select optimal hashtags just before posting
+      console.log(`  [Slot ${video.slot}] Selecting hashtags...`)
+      const selectedHashtags = await selectHashtags(video, model)
+      console.log(`  [Slot ${video.slot}] Tags: ${selectedHashtags.join(', ')}`)
+
+      // Persist selected hashtags to brief in DB for analytics tracking
+      await updateVideo(video.id, {
+        brief: { ...video.brief!, hashtags: selectedHashtags },
+      })
+
       // Download video to temp
       const videoPath = path.join(tmpDir, `slot_${video.slot}.mp4`)
       await downloadFromR2(video.final_r2_key, videoPath)
@@ -147,8 +251,8 @@ export async function postBatch(runId: string, model: PipelineModel): Promise<vo
       await fileInput.setInputFiles(videoPath)
       await page.waitForTimeout(3000) // Wait for upload processing
 
-      // Fill caption
-      const caption = [video.brief.caption, video.brief.hashtags.join(' ')].join('\n\n')
+      // Fill caption with hashtags selected just before posting
+      const caption = [video.brief!.caption, selectedHashtags.map(t => `#${t}`).join(' ')].join('\n\n')
       const captionField = page.locator('textarea').first()
       await captionField.fill(caption)
 

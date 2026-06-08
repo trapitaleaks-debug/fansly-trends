@@ -8,10 +8,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   const body = await request.json()
 
   const updates: Record<string, unknown> = {}
-  if ('status' in body && ['pending', 'done', 'dismissed'].includes(body.status)) {
+  if ('status' in body && ['pending', 'done', 'approved', 'dismissed'].includes(body.status)) {
     updates.status = body.status
   }
   if ('notes' in body) updates.notes = body.notes
+  if ('dismiss_reason' in body) updates.dismiss_reason = body.dismiss_reason
+  if ('what_to_change' in body && typeof body.what_to_change === 'string') {
+    updates.what_to_change = body.what_to_change
+  }
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })

@@ -78,19 +78,29 @@ export async function processQueuedRuns(): Promise<void> {
 }
 
 // Run standalone:
-//   npm run pipeline:run -- --handle liisaofficial   (specific model)
-//   npm run pipeline:run                              (process all queued runs from web UI)
+//   npm run pipeline:watch                            (keep running, auto-process queued runs every 5 min)
+//   npm run pipeline:run -- --handle liisaofficial   (run once for a specific model)
+//   npm run pipeline:run                              (run once, process all currently queued runs)
 if (require.main === module) {
   const args = process.argv.slice(2)
   const handleIdx = args.indexOf('--handle')
   const handle = handleIdx !== -1 ? args[handleIdx + 1] : undefined
 
-  const task = handle
-    ? runPipelineForModel(handle)
-    : processQueuedRuns()
+  if (args.includes('--watch')) {
+    console.log('Watch mode — checking for queued runs every 5 minutes. Leave this terminal open.')
+    const poll = async () => {
+      await processQueuedRuns().catch(e => console.error('Poll error:', (e as Error).message))
+      setTimeout(poll, 5 * 60 * 1000)
+    }
+    poll()
+  } else {
+    const task = handle
+      ? runPipelineForModel(handle)
+      : processQueuedRuns()
 
-  task.catch(e => {
-    console.error(e)
-    process.exit(1)
-  })
+    task.catch(e => {
+      console.error(e)
+      process.exit(1)
+    })
+  }
 }

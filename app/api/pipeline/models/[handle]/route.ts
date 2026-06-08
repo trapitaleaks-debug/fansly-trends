@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
+import { getSignedVideoUrl } from '@/lib/r2'
 
 export async function GET(
   _request: NextRequest,
@@ -34,8 +35,18 @@ export async function GET(
       .eq('model_id', model.id)
       .order('created_at', { ascending: false })
 
+    let character_sheet_signed_url: string | null = null
+    if (model.character_sheet_r2_key) {
+      character_sheet_signed_url = await getSignedVideoUrl(model.character_sheet_r2_key, 3600).catch(() => null)
+    }
+
     return NextResponse.json({
-      model: { ...model, status: model.active ? 'active' : 'inactive', content_bank: contentBank ?? [] },
+      model: {
+        ...model,
+        status: model.active ? 'active' : 'inactive',
+        content_bank: contentBank ?? [],
+        character_sheet_signed_url,
+      },
       recentRuns: recentRuns ?? [],
     })
   } catch {

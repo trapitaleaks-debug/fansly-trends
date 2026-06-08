@@ -19,27 +19,11 @@ interface PipelineModelDetail {
   notes_for_ai: string | null
   character_sheet_r2_key: string | null
   character_sheet_generated_at: string | null
+  character_sheet_signed_url: string | null
   pinned_character_sheet_key: string | null
   content_bank: ContentBankItem[]
 }
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-        checked ? 'bg-violet-500' : 'bg-[#333]'
-      }`}
-      type="button"
-    >
-      <span
-        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-          checked ? 'translate-x-4.5' : 'translate-x-0.5'
-        }`}
-      />
-    </button>
-  )
-}
 
 function UploadSection({
   modelId,
@@ -190,7 +174,6 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
 
   // Settings state
   const [videosPerCycle, setVideosPerCycle] = useState(6)
-  const [flashFrameEnabled, setFlashFrameEnabled] = useState(false)
   const [notesForAi, setNotesForAi] = useState('')
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
@@ -206,7 +189,6 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
       const m: PipelineModelDetail = { ...data.model, content_bank: data.model.content_bank ?? [] }
       setModel(m)
       setVideosPerCycle(m.videos_per_cycle)
-      setFlashFrameEnabled(m.flash_frame_enabled)
       setNotesForAi(m.notes_for_ai ?? '')
       setPinned(!!m.pinned_character_sheet_key)
     }
@@ -224,7 +206,6 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         videos_per_cycle: videosPerCycle,
-        flash_frame_enabled: flashFrameEnabled,
         notes_for_ai: notesForAi,
       }),
     })
@@ -333,15 +314,6 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
             />
           </div>
 
-          {/* flash_frame_enabled */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-[#ccc]">Flash frame</p>
-              <p className="text-xs text-[#444] mt-0.5">Add a 1-frame flash cut to the intro</p>
-            </div>
-            <Toggle checked={flashFrameEnabled} onChange={setFlashFrameEnabled} />
-          </div>
-
           {/* notes_for_ai */}
           <div className="space-y-2">
             <div>
@@ -364,31 +336,44 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
         <div className="bg-[#111] border border-[#1a1a1a] rounded-xl p-6 space-y-4">
           <h3 className="text-sm font-medium">Character Sheet</h3>
           {model.character_sheet_r2_key ? (
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-xs text-[#ccc]">Character sheet exists</p>
-                {model.character_sheet_generated_at && (
-                  <p className="text-xs text-[#444] mt-0.5">
-                    Generated {new Date(model.character_sheet_generated_at).toLocaleDateString()}
-                  </p>
-                )}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs text-[#ccc]">Character sheet exists</p>
+                  {model.character_sheet_generated_at && (
+                    <p className="text-xs text-[#444] mt-0.5">
+                      Generated {new Date(model.character_sheet_generated_at).toLocaleDateString()}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {pinned || model.pinned_character_sheet_key ? (
+                    <span className="text-xs text-green-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                      Pinned ✓
+                    </span>
+                  ) : (
+                    <button
+                      onClick={handlePinCharacterSheet}
+                      disabled={pinning}
+                      className="text-xs bg-[#1a1a1a] border border-[#2a2a2a] text-[#888] hover:text-white px-3 py-1.5 rounded-lg disabled:opacity-50 transition-colors"
+                    >
+                      {pinning ? 'Pinning...' : 'Pin this version'}
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                {pinned || model.pinned_character_sheet_key ? (
-                  <span className="text-xs text-green-400 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                    Pinned ✓
-                  </span>
-                ) : (
-                  <button
-                    onClick={handlePinCharacterSheet}
-                    disabled={pinning}
-                    className="text-xs bg-[#1a1a1a] border border-[#2a2a2a] text-[#888] hover:text-white px-3 py-1.5 rounded-lg disabled:opacity-50 transition-colors"
-                  >
-                    {pinning ? 'Pinning...' : 'Pin this version'}
-                  </button>
-                )}
-              </div>
+              {model.character_sheet_signed_url && (
+                <div className="space-y-2">
+                  <img
+                    src={model.character_sheet_signed_url}
+                    alt="Character sheet"
+                    className="w-full rounded-lg border border-[#2a2a2a]"
+                    style={{ imageRendering: 'auto' }}
+                  />
+                  <p className="text-[10px] text-[#444]">This is what AI uses as a face reference for every generation. If it looks wrong, don't pin it — regenerate by clearing the key in Supabase.</p>
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-xs text-[#444]">No character sheet generated yet. Run a generation to create one.</p>

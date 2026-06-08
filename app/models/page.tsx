@@ -50,7 +50,7 @@ export default function ModelsPage() {
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <span className="text-white">Models</span>
-          <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
+          
           <Link href="/pipeline" className="hover:text-white transition-colors">Pipeline</Link>
         </div>
       </nav>
