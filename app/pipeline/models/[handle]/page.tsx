@@ -183,6 +183,8 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
   const [loadingPhotos, setLoadingPhotos] = useState(true)
   const [uploadingPhotos, setUploadingPhotos] = useState(false)
   const [uploadPhotoProgress, setUploadPhotoProgress] = useState('')
+  const [selectedPhotoKeys, setSelectedPhotoKeys] = useState<Set<string>>(new Set())
+  const [isDragOver, setIsDragOver] = useState(false)
 
   // Pin character sheet
   const [pinning, setPinning] = useState(false)
@@ -217,36 +219,66 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
     fetchSourcePhotos()
   }, [fetchModel, fetchSourcePhotos])
 
-  async function handleSourcePhotoUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? [])
-    if (!files.length) return
+  async function uploadPhotoFiles(files: File[]) {
+    const imageFiles = files.filter(f => f.type.startsWith('image/'))
+    if (!imageFiles.length) return
     setUploadingPhotos(true)
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]
-      setUploadPhotoProgress(`${i + 1} / ${files.length}`)
-      const res = await fetch(`/api/pipeline/models/${handle}/source-photos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: file.name }),
-      })
-      if (!res.ok) continue
-      const { uploadUrl } = await res.json()
-      await fetch(uploadUrl, {
-        method: 'PUT',
-        body: file,
-        headers: { 'Content-Type': file.type || 'image/jpeg' },
-      })
+    let done = 0
+    setUploadPhotoProgress(`0 / ${imageFiles.length}`)
+    const BATCH = 5
+    for (let i = 0; i < imageFiles.length; i += BATCH) {
+      await Promise.all(imageFiles.slice(i, i + BATCH).map(async file => {
+        try {
+          const res = await fetch(`/api/pipeline/models/${handle}/source-photos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: file.name }),
+          })
+          if (!res.ok) return
+          const { uploadUrl } = await res.json()
+          await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'image/jpeg' } })
+        } finally {
+          done++
+          setUploadPhotoProgress(`${done} / ${imageFiles.length}`)
+        }
+      }))
     }
     setUploadingPhotos(false)
     setUploadPhotoProgress('')
-    e.target.value = ''
     fetchSourcePhotos()
   }
 
-  async function handleDeleteSourcePhoto(key: string) {
-    await fetch(`/api/pipeline/models/${handle}/source-photos?key=${encodeURIComponent(key)}`, {
-      method: 'DELETE',
+  function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? [])
+    e.target.value = ''
+    uploadPhotoFiles(files)
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setIsDragOver(false)
+    uploadPhotoFiles(Array.from(e.dataTransfer.files))
+  }
+
+  function toggleSelectPhoto(key: string) {
+    setSelectedPhotoKeys(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
     })
+  }
+
+  async function handleDeleteSelected() {
+    const keys = Array.from(selectedPhotoKeys)
+    await Promise.all(keys.map(key =>
+      fetch(`/api/pipeline/models/${handle}/source-photos?key=${encodeURIComponent(key)}`, { method: 'DELETE' })
+    ))
+    setSourcePhotos(prev => prev.filter(p => !selectedPhotoKeys.has(p.key)))
+    setSelectedPhotoKeys(new Set())
+  }
+
+  async function handleDeleteSourcePhoto(key: string) {
+    await fetch(`/api/pipeline/models/${handle}/source-photos?key=${encodeURIComponent(key)}`, { method: 'DELETE' })
     setSourcePhotos(prev => prev.filter(p => p.key !== key))
   }
 
@@ -399,48 +431,86 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
         </div>
 
         {/* Source Photos */}
-        <div className="bg-[#111] border border-[#1a1a1a] rounded-xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
+        <div
+          className={`bg-[#111] border rounded-xl p-6 space-y-4 transition-colors ${isDragOver ? 'border-violet-500/50 bg-violet-500/5' : 'border-[#1a1a1a]'}`}
+          onDragOver={e => { e.preventDefault(); setIsDragOver(true) }}
+          onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragOver(false) }}
+          onDrop={handleDrop}
+        >
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <div>
               <h3 className="text-sm font-medium">Source Photos</h3>
               <p className="text-xs text-[#444] mt-0.5">
                 {loadingPhotos ? 'Loading...' : `${sourcePhotos.length} photo${sourcePhotos.length !== 1 ? 's' : ''} · 10+ recommended`}
               </p>
             </div>
-            <label className={`text-xs bg-[#1a1a1a] border border-[#2a2a2a] px-3 py-1.5 rounded-lg transition-colors ${uploadingPhotos ? 'text-[#555] cursor-not-allowed' : 'text-[#888] hover:text-white cursor-pointer'}`}>
-              {uploadingPhotos ? `Uploading ${uploadPhotoProgress}...` : '+ Add Photos'}
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={handleSourcePhotoUpload}
-                disabled={uploadingPhotos}
-              />
-            </label>
+            <div className="flex items-center gap-2">
+              {selectedPhotoKeys.size > 0 && (
+                <button
+                  onClick={handleDeleteSelected}
+                  className="text-xs text-red-400 border border-red-400/20 bg-red-400/5 hover:border-red-400/40 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Delete {selectedPhotoKeys.size} selected
+                </button>
+              )}
+              {selectedPhotoKeys.size > 0 && (
+                <button
+                  onClick={() => setSelectedPhotoKeys(new Set())}
+                  className="text-xs text-[#555] hover:text-white px-2 py-1.5 transition-colors"
+                >
+                  Cancel
+                </button>
+              )}
+              <label className={`text-xs bg-[#1a1a1a] border border-[#2a2a2a] px-3 py-1.5 rounded-lg transition-colors ${uploadingPhotos ? 'text-[#555] cursor-not-allowed' : 'text-[#888] hover:text-white cursor-pointer'}`}>
+                {uploadingPhotos ? `Uploading ${uploadPhotoProgress}` : '+ Add Photos'}
+                <input type="file" accept="image/*" multiple className="hidden" onChange={handleFileInputChange} disabled={uploadingPhotos} />
+              </label>
+            </div>
           </div>
 
-          {!loadingPhotos && sourcePhotos.length === 0 && (
-            <p className="text-xs text-[#444]">No photos yet. Upload at least 10 for best results.</p>
+          {isDragOver && (
+            <div className="border-2 border-dashed border-violet-500/40 rounded-xl py-10 text-center text-sm text-violet-400 pointer-events-none">
+              Drop photos here
+            </div>
           )}
 
-          {sourcePhotos.length > 0 && (
+          {!isDragOver && !loadingPhotos && sourcePhotos.length === 0 && (
+            <div className="border-2 border-dashed border-[#2a2a2a] rounded-xl py-8 text-center text-xs text-[#444]">
+              Drag photos here or click + Add Photos
+            </div>
+          )}
+
+          {!isDragOver && sourcePhotos.length > 0 && (
             <div className="grid grid-cols-5 gap-2">
-              {sourcePhotos.map(photo => (
-                <div key={photo.key} className="relative group aspect-square">
-                  <img
-                    src={photo.signedUrl}
-                    alt={photo.filename}
-                    className="w-full h-full object-cover rounded-lg border border-[#2a2a2a]"
-                  />
-                  <button
-                    onClick={() => handleDeleteSourcePhoto(photo.key)}
-                    className="absolute inset-0 bg-black/60 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-red-400 text-sm font-bold"
+              {sourcePhotos.map(photo => {
+                const selected = selectedPhotoKeys.has(photo.key)
+                return (
+                  <div
+                    key={photo.key}
+                    className="relative group aspect-square cursor-pointer"
+                    onClick={() => toggleSelectPhoto(photo.key)}
                   >
-                    ✕
-                  </button>
-                </div>
-              ))}
+                    <img
+                      src={photo.signedUrl}
+                      alt={photo.filename}
+                      className={`w-full h-full object-cover rounded-lg border-2 transition-colors ${selected ? 'border-violet-500' : 'border-transparent'}`}
+                    />
+                    {/* Selection checkmark */}
+                    <div className={`absolute top-1 right-1 w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] font-bold transition-all ${selected ? 'bg-violet-500 border-violet-500 text-white opacity-100' : 'bg-black/40 border-white/30 text-transparent group-hover:opacity-100 opacity-0'}`}>
+                      ✓
+                    </div>
+                    {/* Single delete on hover (only when nothing selected) */}
+                    {selectedPhotoKeys.size === 0 && (
+                      <button
+                        onClick={e => { e.stopPropagation(); handleDeleteSourcePhoto(photo.key) }}
+                        className="absolute bottom-1 right-1 w-6 h-6 bg-black/70 rounded-md opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-red-400 text-xs font-bold"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
 
