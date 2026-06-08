@@ -133,10 +133,10 @@ async function addFlashFrame(finalPath: string, duration: number, tmpDir: string
   const concatTxt = path.join(tmpDir, `s${slot}_concat.txt`)
 
   run(`${ffmpegBin()} -i "${finalPath}" -ss ${flashTime.toFixed(2)} -vframes 1 -vf "eq=brightness=0.18:contrast=1.35:saturation=1.2" -y "${flashJpeg}"`)
-  run(`${ffmpegBin()} -loop 1 -i "${flashJpeg}" -t 0.17 -r 30 -c:v libx264 -pix_fmt yuv420p -y "${flashMp4}"`)
+  run(`${ffmpegBin()} -loop 1 -i "${flashJpeg}" -t 0.17 -r 30 -c:v libx264 -preset ultrafast -threads 2 -pix_fmt yuv420p -y "${flashMp4}"`)
 
   fs.writeFileSync(concatTxt, `file '${finalPath}'\nfile '${flashMp4}'\n`)
-  run(`${ffmpegBin()} -f concat -safe 0 -i "${concatTxt}" -c:v libx264 -c:a aac -y "${withFlash}"`)
+  run(`${ffmpegBin()} -f concat -safe 0 -i "${concatTxt}" -c:v libx264 -preset ultrafast -threads 2 -c:a aac -y "${withFlash}"`)
   fs.renameSync(withFlash, finalPath)
 }
 
@@ -164,14 +164,14 @@ async function prependHookClip(
   run(
     `${ffmpegBin()} -i "${hookRaw}" -t 3 ` +
     `-vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" ` +
-    `-c:v libx264 -an -y "${hookNorm}"`
+    `-c:v libx264 -preset ultrafast -threads 2 -an -y "${hookNorm}"`
   )
 
   // Concat: hook (video only) + main (video + audio)
   run(
     `${ffmpegBin()} -i "${hookNorm}" -i "${finalPath}" ` +
     `-filter_complex "[0:v][1:v]concat=n=2:v=1:a=0[v]" ` +
-    `-map "[v]" -map "1:a?" -c:v libx264 -c:a aac -y "${withHook}"`
+    `-map "[v]" -map "1:a?" -c:v libx264 -preset ultrafast -threads 2 -c:a aac -y "${withHook}"`
   )
   fs.renameSync(withHook, finalPath)
   console.log(`  Hook clip prepended from R2 (${hookKey})`)
@@ -221,9 +221,11 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
 
   // Burn overlay + merge audio
   const drawtextFilter = buildDrawtextFilter(overlayText)
+  // preset ultrafast + threads 2 keeps RAM under Railway's container limit (~512MB)
+  const encodeFlags = `-c:v libx264 -preset ultrafast -threads 2 -crf 23`
   const ffmpegCmd = hasAudio
-    ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" -c:v libx264 -c:a aac -shortest -y "${finalPath}"`
-    : `${ffmpegBin()} -i "${rawPath}" -vf "${drawtextFilter}" -c:v libx264 -an -y "${finalPath}"`
+    ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`
+    : `${ffmpegBin()} -i "${rawPath}" -vf "${drawtextFilter}" ${encodeFlags} -an -y "${finalPath}"`
 
   console.log(`  Burning overlay: "${overlayText}"`)
   run(ffmpegCmd)
