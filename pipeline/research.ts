@@ -90,6 +90,65 @@ A reaction clip of the model (shocked, laughing, blushing, eye roll) is overlaid
 
 ---
 
+### 6. Additional overlay formulas (use when the 4 main ones don't fit)
+
+*identity_statement* — "Men who [specific trait] are the only ones who understand this." Creates in-group pride + out-group curiosity. Non-joiners comment to defend themselves.
+- "Men who actually have taste already know who I am 👑"
+- "The type of man I attract is very specific 😏"
+- "If you know, you know. If you don't… you're the problem 🤭"
+
+*vulnerability_bait* — a confession or admission that triggers protective/possessive instincts:
+- "I've never done this for anyone before 🫣"
+- "Nobody ever makes me feel like this 🥺"
+- "I don't usually show this side of me 😳"
+
+*pov_frame* — puts the viewer inside a first-person scenario, forces imagination:
+- "POV: you just found your new addiction"
+- "Men are weak for THIS"
+- "This is why your GF is mad at you"
+- "She had no idea this was being filmed."
+
+---
+
+## COMPONENT ALTERATION — vary every slot
+
+Creativity is systematic variation. Break each slot into its components and change 1–2 from what you used in the previous slot. Specify exactly what you choose in the JSON.
+
+**Location / Background (pick one per slot, vary across all 6):**
+candle-lit bathtub, LED-lit bedroom (pink or purple), inside a car at night, parking lot, kitchen counter, walk-in closet, bathroom mirror setup, hotel room, gas station at night, neon-lit hallway
+
+**Props (use 0–2 per slot, pick ones that trigger pattern interrupts):**
+lollipop, silk sheets, velvet choker, sunglasses, champagne glass, handcuffs (just visible off to the side), iPhone showing DM notifications, bedside lamp casting warm shadows, flower petals
+
+**Color direction (pink and orange are the two least-used colors in advertising — they cut through visual noise):**
+warm pink ambient lighting, orange-tinted golden lighting, deep red candlelight, purple LED accent, peachy warm backlight
+
+Never use the same location + color combination twice in one 6-slot batch.
+
+---
+
+## REWATCH LOOP ENGINEERING
+
+Every slot must have exactly one rewatch trigger. State it in rewatch_trigger field.
+
+- **flash_ending** — (flashing format only) the flash is 0.1–0.2s — too quick to catch in one watch, forces replay
+- **hidden_detail** — a subtle prop, gesture, or expression that rewards close viewing — reference it in hook_description so the AI image captures it
+- **unresolved_question** — the text asks a question whose answer is subtly in the video itself
+- **seamless_loop** — the last frame leads naturally into the first, making replays feel effortless (describe how in payoff_description)
+
+---
+
+## SPEED TO VALUE
+
+The hook IS the video. hook_description must describe **frame 1** — what the viewer sees the instant the video starts. No build-up to the hook. No slow intro.
+
+- Wrong: "She slowly approaches the camera"
+- Right: "Tight face close-up, already looking directly into camera, lips slightly parted"
+
+If hook_description includes any version of "slowly", "begins to", "starts to", or "walks toward" → rewrite it.
+
+---
+
 ## OVERLAY TEXT RULES (all formats)
 - Max 55 characters
 - No explicit language — platform filters catch it
@@ -171,15 +230,19 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
   {
     "slot": 1,
     "content_format": "text_overlay|flashing|cta|viral_hook|green_screen",
-    "hook_description": "What happens in the first 1 second to stop the scroll",
+    "hook_description": "Frame 1 description — what the viewer sees instantly, no slow intro",
     "retention_description": "What happens 1-5s to keep them watching",
     "payoff_description": "What happens in the final second — the reward",
     "concept": "One sentence describing the full video for the creator",
     "source_post_id": "fansly_post_id from the matching suggestion above",
     "overlay_text": "Text burned on video, max 55 chars, with emoji",
-    "overlay_formula": "grammar_bait|celebrity_bait|trolling|controversial_opinion",
+    "overlay_formula": "grammar_bait|celebrity_bait|trolling|controversial_opinion|identity_statement|vulnerability_bait|pov_frame",
     "cta_type": "comment|share|follow or null if not cta format",
-    "caption": "1-2 sentence post caption with comment trigger or soft CTA"
+    "caption": "1-2 sentence post caption with comment trigger or soft CTA",
+    "location": "specific background/setting for this slot",
+    "props": "props in this slot, comma-separated, or empty string",
+    "color_hint": "lighting/color direction for this slot",
+    "rewatch_trigger": "flash_ending|hidden_detail|unresolved_question|seamless_loop"
   }
 ]`
 
@@ -217,6 +280,10 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
         overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
         cta_type: b.cta_type ?? undefined,
         caption: b.caption ?? '',
+        location: b.location ?? undefined,
+        props: b.props ?? undefined,
+        color_hint: b.color_hint ?? undefined,
+        rewatch_trigger: b.rewatch_trigger ?? undefined,
       }
     })
   }
@@ -234,15 +301,19 @@ Return ONLY a JSON array, no other text:
   {
     "slot": 1,
     "content_format": "text_overlay|flashing|cta|viral_hook|green_screen",
-    "hook_description": "What happens in the first 1 second to stop the scroll",
+    "hook_description": "Frame 1 description — what the viewer sees instantly, no slow intro",
     "retention_description": "What happens 1-5s to keep them watching",
     "payoff_description": "What happens in the final second — the reward",
     "concept": "One sentence describing the full video for the creator",
     "source_post_id": "id_from_above",
     "overlay_text": "Text burned on video, max 55 chars, with emoji",
-    "overlay_formula": "grammar_bait|celebrity_bait|trolling|controversial_opinion",
+    "overlay_formula": "grammar_bait|celebrity_bait|trolling|controversial_opinion|identity_statement|vulnerability_bait|pov_frame",
     "cta_type": "comment|share|follow or null if not cta format",
-    "caption": "1-2 sentence post caption with comment trigger or soft CTA"
+    "caption": "1-2 sentence post caption with comment trigger or soft CTA",
+    "location": "specific background/setting for this slot",
+    "props": "props in this slot, comma-separated, or empty string",
+    "color_hint": "lighting/color direction for this slot",
+    "rewatch_trigger": "flash_ending|hidden_detail|unresolved_question|seamless_loop"
   }
 ]`
 
@@ -277,5 +348,9 @@ Return ONLY a JSON array, no other text:
     overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
     cta_type: b.cta_type ?? undefined,
     caption: b.caption ?? '',
+    location: b.location ?? undefined,
+    props: b.props ?? undefined,
+    color_hint: b.color_hint ?? undefined,
+    rewatch_trigger: b.rewatch_trigger ?? undefined,
   }))
 }

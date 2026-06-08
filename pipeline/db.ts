@@ -69,7 +69,7 @@ export interface PipelineVariant {
 }
 
 export type ContentFormat = 'text_overlay' | 'flashing' | 'cta' | 'viral_hook' | 'green_screen'
-export type OverlayFormula = 'grammar_bait' | 'celebrity_bait' | 'trolling' | 'controversial_opinion'
+export type OverlayFormula = 'grammar_bait' | 'celebrity_bait' | 'trolling' | 'controversial_opinion' | 'identity_statement' | 'vulnerability_bait' | 'pov_frame'
 export type CtaType = 'comment' | 'share' | 'follow'
 
 export interface VideoScores {
@@ -102,6 +102,11 @@ export interface Brief {
   hashtags?: string[]            // populated at posting time, not during brief generation
   caption: string               // with comment trigger or CTA
   quality_scores?: VideoScores | null  // set after video processing
+  // Component alteration fields — vary per slot for visual diversity
+  location?: string             // e.g. "candle-lit bathtub" or "LED-lit bedroom"
+  props?: string                // e.g. "lollipop" or "silk sheets, velvet choker"
+  color_hint?: string           // e.g. "warm pink ambient lighting"
+  rewatch_trigger?: string      // how this slot engineers a replay
 }
 
 export async function getActiveModels(): Promise<PipelineModel[]> {

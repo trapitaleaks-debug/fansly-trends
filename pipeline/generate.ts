@@ -170,15 +170,20 @@ function buildImagePrompt(brief: Brief, model: PipelineModel): string {
   ]
   const framing = framings[(brief.slot - 1) % framings.length]
 
-  // SOP: pink and orange are the two least-used colors in advertising — use them
-  const colorHints = [
+  // SOP: pink and orange are the two least-used colors in advertising.
+  // Brief's color_hint overrides the rotation when the research phase picked a specific direction.
+  const colorFallbacks = [
     'warm pink ambient lighting',
     'orange-tinted golden lighting',
     'peachy warm backlight',
   ]
-  const colorHint = colorHints[(brief.slot - 1) % colorHints.length]
+  const colorHint = brief.color_hint ?? colorFallbacks[(brief.slot - 1) % colorFallbacks.length]
 
-  return `Ultra-realistic photograph. ${niche} woman. ${framing}. Face clearly visible, natural expression, eyes open and expressive. ${colorHint}. Confident, sensual energy. Sharp focus on face. 9:16 vertical portrait. ${brief.concept}. No text overlays, no watermarks.`
+  // Component alteration: location and props from the brief drive visual diversity across slots
+  const locationStr = brief.location ? `Setting: ${brief.location}.` : ''
+  const propsStr = brief.props ? `Visible props in frame: ${brief.props}.` : ''
+
+  return `Ultra-realistic photograph. ${niche} woman. ${framing}. ${locationStr} ${propsStr} Face clearly visible, natural expression, eyes open and expressive. ${colorHint}. Confident, sensual energy. Sharp focus on face. 9:16 vertical portrait. ${brief.concept}. No text overlays, no watermarks.`.replace(/\s+/g, ' ').trim()
 }
 
 async function generateImageVariants(
