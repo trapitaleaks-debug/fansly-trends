@@ -225,7 +225,7 @@ export default function ModelSettingsPage({ params }: { params: Promise<{ handle
     setUploadingPhotos(true)
     let done = 0
     setUploadPhotoProgress(`0 / ${imageFiles.length}`)
-    const BATCH = 5
+    const BATCH = 50
     for (let i = 0; i < imageFiles.length; i += BATCH) {
       await Promise.all(imageFiles.slice(i, i + BATCH).map(async file => {
         try {
