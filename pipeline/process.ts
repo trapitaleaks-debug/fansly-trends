@@ -43,15 +43,18 @@ async function renderWithHyperframes(
   slot: number,
   tmpDir: string
 ): Promise<void> {
-  const videoFile = path.basename(rawPath)
+  // Pre-normalize to proper H.264/mp4 — own footage may be .webm which Chrome won't
+  // decode if the Hyperframes server serves it with video/mp4 MIME type (wrong container).
+  const normPath = path.join(tmpDir, `slot${slot}_hf_norm.mp4`)
+  run(`${ffmpegBin()} -i "${rawPath}" -c:v libx264 -preset ultrafast -threads 2 -crf 18 -an -y "${normPath}"`)
 
   // Hyperframes render expects a directory containing index.html (not a bare HTML file)
   const compDir = path.join(tmpDir, `comp_${slot}`)
   fs.mkdirSync(compDir, { recursive: true })
 
-  // Symlink the raw video into the composition directory so index.html can reference it by filename
-  const videoLinkPath = path.join(compDir, videoFile)
-  if (!fs.existsSync(videoLinkPath)) fs.symlinkSync(rawPath, videoLinkPath)
+  // Use a fixed filename so the HTML src is simple
+  const videoFile = 'video.mp4'
+  fs.symlinkSync(normPath, path.join(compDir, videoFile))
 
   const compositionHtml = buildComposition({ videoFile, overlayText, duration, slot })
   fs.writeFileSync(path.join(compDir, 'index.html'), compositionHtml, 'utf8')
@@ -259,13 +262,33 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
   console.log(`  Composing overlay: "${overlayText || '(none)'}"`)
 
   if (process.platform !== 'darwin') {
-    // Hyperframes path (Linux / Railway)
+    // Hyperframes path (Linux / Railway) with ffmpeg fallback
     const composedPath = path.join(tmpDir, `slot${video.slot}_composed.mp4`)
-    await renderWithHyperframes(rawPath, composedPath, overlayText, duration, video.slot, tmpDir)
-    if (hasAudio) {
-      run(`${ffmpegBin()} -i "${composedPath}" -i "${audioPath}" -c:v copy -c:a aac -shortest -y "${finalPath}"`)
+    let hfOk = false
+    try {
+      await renderWithHyperframes(rawPath, composedPath, overlayText, duration, video.slot, tmpDir)
+      hfOk = true
+    } catch (e) {
+      console.log(`  [Hyperframes] failed — falling back to ffmpeg. Reason: ${(e as Error).message.slice(0, 120)}`)
+    }
+
+    if (hfOk) {
+      if (hasAudio) {
+        run(`${ffmpegBin()} -i "${composedPath}" -i "${audioPath}" -c:v copy -c:a aac -shortest -y "${finalPath}"`)
+      } else {
+        fs.renameSync(composedPath, finalPath)
+      }
     } else {
-      fs.renameSync(composedPath, finalPath)
+      // ffmpeg drawtext fallback
+      const drawtextFilter = overlayText?.trim() ? buildDrawtextFilter(overlayText, tmpDir, video.slot) : null
+      const ffmpegCmd = hasAudio
+        ? (drawtextFilter
+          ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`
+          : `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`)
+        : (drawtextFilter
+          ? `${ffmpegBin()} -i "${rawPath}" -vf "${drawtextFilter}" ${encodeFlags} -an -y "${finalPath}"`
+          : `${ffmpegBin()} -i "${rawPath}" ${encodeFlags} -an -y "${finalPath}"`)
+      run(ffmpegCmd)
     }
   } else {
     // ffmpeg drawtext fallback (Mac dev)
