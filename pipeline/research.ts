@@ -281,10 +281,31 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
 
     return rawBriefs.map((b: Brief & { own_footage_label?: string }, i) => {
       const suggestion = suggestionsToProcess[i]
-      const ownFootageKey = b.own_footage_label ? footageMap.get(b.own_footage_label) : undefined
-      if (b.own_footage_label) {
-        console.log(`  [slot ${i + 1}] own footage: "${b.own_footage_label}" → ${ownFootageKey ?? 'NOT FOUND'}`)
+
+      // Apply text_mode override from suggestion approval
+      let overlay_text = b.overlay_text ?? ''
+      if (suggestion?.text_mode === 'none') {
+        overlay_text = ''
+        console.log(`  [slot ${i + 1}] text_mode=none — overlay removed`)
+      } else if (suggestion?.text_mode === 'custom' && suggestion.custom_text) {
+        overlay_text = suggestion.custom_text
+        console.log(`  [slot ${i + 1}] text_mode=custom — overlay: "${overlay_text}"`)
       }
+      // text_mode='original' or null → keep AI-generated overlay_text
+
+      // Apply footage_type override from suggestion approval
+      let own_footage_r2_key: string | undefined
+      if (suggestion?.footage_type === 'own' && suggestion.own_footage_r2_key) {
+        own_footage_r2_key = suggestion.own_footage_r2_key
+        console.log(`  [slot ${i + 1}] footage_type=own — using approval footage: ${own_footage_r2_key}`)
+      } else {
+        const ownFootageKey = b.own_footage_label ? footageMap.get(b.own_footage_label) : undefined
+        own_footage_r2_key = ownFootageKey
+        if (b.own_footage_label) {
+          console.log(`  [slot ${i + 1}] own footage: "${b.own_footage_label}" → ${ownFootageKey ?? 'NOT FOUND'}`)
+        }
+      }
+
       return {
         slot: i + 1,
         content_format: (b.content_format ?? 'text_overlay') as ContentFormat,
@@ -293,9 +314,8 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
         payoff_description: b.payoff_description ?? '',
         concept: b.concept ?? '',
         source_post_id: suggestion?.fansly_post_id ?? b.source_post_id ?? (trendingPosts[0]?.fansly_post_id ?? 'unknown'),
-        // Preserve what_to_change from the approved suggestion so the run review page can show it
         what_to_change: suggestion?.what_to_change ?? undefined,
-        overlay_text: b.overlay_text ?? '',
+        overlay_text,
         overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
         cta_type: b.cta_type ?? undefined,
         caption: b.caption ?? '',
@@ -303,7 +323,7 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
         props: b.props ?? undefined,
         color_hint: b.color_hint ?? undefined,
         rewatch_trigger: b.rewatch_trigger ?? undefined,
-        own_footage_r2_key: ownFootageKey,
+        own_footage_r2_key,
       }
     })
   }

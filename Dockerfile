@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     fonts-liberation \
     fonts-noto-color-emoji \
+    fontconfig \
     python3 \
     make \
     g++ \
@@ -21,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     libxdamage1 \
     libxfixes3 \
     libxrandr2 \
+    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
 # Install chrome-headless-shell for Hyperframes BeginFrame mode

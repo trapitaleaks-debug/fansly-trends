@@ -73,32 +73,47 @@ async function downloadFromR2(key: string, destPath: string): Promise<void> {
   fs.writeFileSync(destPath, Buffer.concat(chunks))
 }
 
-// Use textfile= instead of text='...' to avoid ffmpeg drawtext parser issues with emoji/unicode.
-// Emoji (4-byte UTF-8 sequences like 😈) break ffmpeg's single-quote parser, causing the entire
-// fontfile/fontsize/etc options to be rendered as text content. Writing to a temp file is robust.
+// Strip emoji from text for ffmpeg drawtext — Liberation Sans doesn't support emoji glyphs.
+// When drawtext hits an unsupported glyph, libfreetype may fail the entire text_w measurement,
+// causing the position calculation to produce NaN/off-screen coords and no text is rendered.
+function stripEmoji(text: string): string {
+  return text
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')  // Mahjong to Supplemental Symbols (😈 etc.)
+    .replace(/[\u{2600}-\u{27BF}]/gu, '')      // Misc symbols, Dingbats
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')      // Variation selectors
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Use textfile= instead of text='...' to avoid ffmpeg drawtext parser issues with special chars.
+// Writing to a temp file handles any UTF-8 content safely without shell escaping concerns.
 function buildDrawtextFilter(overlayText: string, tmpDir: string, slot: number): string {
   const font = fontPath()
   const MAX_CHARS = 40
   const baseStyle = `fontfile='${font}':fontsize=58:fontcolor=white:bordercolor=black:borderw=4`
 
-  if (overlayText.length <= MAX_CHARS) {
+  // Emoji can't render in Liberation Sans — strip them to prevent broken text layout
+  const safeText = stripEmoji(overlayText)
+  if (!safeText) return ''
+
+  if (safeText.length <= MAX_CHARS) {
     const textFile = path.join(tmpDir, `text_${slot}_1.txt`)
-    fs.writeFileSync(textFile, overlayText, 'utf8')
+    fs.writeFileSync(textFile, safeText, 'utf8')
     return `drawtext=textfile='${textFile}':${baseStyle}:x=(w-text_w)/2:y=h*0.15`
   }
 
   // Split into two lines at nearest word boundary
-  const mid = Math.floor(overlayText.length / 2)
+  const mid = Math.floor(safeText.length / 2)
   let splitIdx = mid
-  for (let i = mid; i < overlayText.length; i++) {
-    if (overlayText[i] === ' ') { splitIdx = i; break }
+  for (let i = mid; i < safeText.length; i++) {
+    if (safeText[i] === ' ') { splitIdx = i; break }
   }
   for (let i = mid; i >= 0; i--) {
-    if (overlayText[i] === ' ') { splitIdx = i; break }
+    if (safeText[i] === ' ') { splitIdx = i; break }
   }
 
-  const line1 = overlayText.slice(0, splitIdx).trim()
-  const line2 = overlayText.slice(splitIdx).trim()
+  const line1 = safeText.slice(0, splitIdx).trim()
+  const line2 = safeText.slice(splitIdx).trim()
 
   const textFile1 = path.join(tmpDir, `text_${slot}_1.txt`)
   const textFile2 = path.join(tmpDir, `text_${slot}_2.txt`)
@@ -269,7 +284,10 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
       await renderWithHyperframes(rawPath, composedPath, overlayText, duration, video.slot, tmpDir)
       hfOk = true
     } catch (e) {
-      console.log(`  [Hyperframes] failed — falling back to ffmpeg. Reason: ${(e as Error).message.slice(0, 120)}`)
+      const hfErr = e as Error & { stderr?: Buffer; stdout?: Buffer }
+      const detail = hfErr.stderr?.toString().replace(/\n/g, ' ').slice(0, 400)
+        || hfErr.message.slice(0, 200)
+      console.log(`  [Hyperframes] failed — falling back to ffmpeg.\n  Stderr: ${detail}`)
     }
 
     if (hfOk) {
@@ -280,7 +298,7 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
       }
     } else {
       // ffmpeg drawtext fallback
-      const drawtextFilter = overlayText?.trim() ? buildDrawtextFilter(overlayText, tmpDir, video.slot) : null
+      const drawtextFilter = (overlayText?.trim() ? buildDrawtextFilter(overlayText, tmpDir, video.slot) : '') || null
       const ffmpegCmd = hasAudio
         ? (drawtextFilter
           ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`
