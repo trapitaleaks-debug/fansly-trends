@@ -25,11 +25,17 @@ RUN apt-get update && apt-get install -y \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
-# Install chrome-headless-shell for Hyperframes BeginFrame mode
-# (regular chromium falls back to slow screenshot mode; chrome-headless-shell enables
-#  deterministic frame-by-frame capture that is ~100x faster and more reliable)
+# Install chrome-headless-shell for Hyperframes BeginFrame mode.
+# Regular chromium (from apt) doesn't support HeadlessExperimental.beginFrame,
+# so Hyperframes falls back to screenshot mode (~2s/frame = 7+ min for a 7s clip).
+# chrome-headless-shell enables frame-by-frame deterministic capture (~fast).
+# Symlink to a fixed path and set HYPERFRAMES_BROWSER_PATH so Hyperframes finds it
+# instead of falling back to system /usr/bin/chromium.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable 2>&1 | tail -3
+RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable 2>&1 | tail -3 \
+    && ln -sf "$(find /root/.cache/puppeteer -name 'chrome-headless-shell' -type f | head -1)" \
+              /usr/local/bin/chrome-headless-shell
+ENV HYPERFRAMES_BROWSER_PATH=/usr/local/bin/chrome-headless-shell
 
 # Hyperframes: use software rendering (no GPU on Railway)
 ENV PRODUCER_BROWSER_GPU_MODE=software
