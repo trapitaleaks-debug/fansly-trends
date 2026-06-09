@@ -44,14 +44,21 @@ async function renderWithHyperframes(
   tmpDir: string
 ): Promise<void> {
   const videoFile = path.basename(rawPath)
+
+  // Hyperframes render expects a directory containing index.html (not a bare HTML file)
+  const compDir = path.join(tmpDir, `comp_${slot}`)
+  fs.mkdirSync(compDir, { recursive: true })
+
+  // Symlink the raw video into the composition directory so index.html can reference it by filename
+  const videoLinkPath = path.join(compDir, videoFile)
+  if (!fs.existsSync(videoLinkPath)) fs.symlinkSync(rawPath, videoLinkPath)
+
   const compositionHtml = buildComposition({ videoFile, overlayText, duration, slot })
-  const compositionPath = path.join(tmpDir, `composition_${slot}.html`)
-  fs.writeFileSync(compositionPath, compositionHtml, 'utf8')
+  fs.writeFileSync(path.join(compDir, 'index.html'), compositionHtml, 'utf8')
 
   const bin = hyperframesBin()
   // --no-browser-gpu = SwiftShader software rendering (no GPU on Railway)
-  // --fps 30 = match source video framerate
-  run(`"${bin}" render "${compositionPath}" -o "${composedPath}" --no-browser-gpu --fps 30`)
+  run(`"${bin}" render "${compDir}" -o "${composedPath}" --no-browser-gpu --fps 30`)
 }
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
