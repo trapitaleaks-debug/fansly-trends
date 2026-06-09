@@ -29,7 +29,6 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [suggestionsLoading, setSuggestionsLoading] = useState(false)
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
-  const [sortBy, setSortBy] = useState<'score' | 'latest'>('score')
 
   // Branding file
   const [brandingFileName, setBrandingFileName] = useState<string | null>(null)
@@ -76,10 +75,9 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     }
   }
 
-  const fetchSuggestions = useCallback(async (status: SuggestionStatus, p: number, replace: boolean, sort?: string) => {
+  const fetchSuggestions = useCallback(async (status: SuggestionStatus, p: number, replace: boolean) => {
     setSuggestionsLoading(true)
-    const s = sort ?? sortBy
-    const res = await fetch(`/api/models/${username}/suggestions?status=${status}&page=${p}&sort=${s}`)
+    const res = await fetch(`/api/models/${username}/suggestions?status=${status}&page=${p}`)
     const data = await res.json()
     const items = data.suggestions ?? []
     setSuggestions(prev => replace ? items : [...prev, ...items])
@@ -90,8 +88,8 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   useEffect(() => {
     setPage(0)
     setSuggestions([])
-    fetchSuggestions(activeTab, 0, true, sortBy)
-  }, [activeTab, sortBy, fetchSuggestions])
+    fetchSuggestions(activeTab, 0, true)
+  }, [activeTab, fetchSuggestions])
 
   async function handleBrandingUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -176,8 +174,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
       setGenerateMsg(`Generated ${data.generated} new suggestions`)
       setActiveTab('pending')
       setPage(0)
-      fetchSuggestions('pending', 0, true)
-      fetchModel(true)
+      fetchSuggestions('pending', 0, true).then(() => fetchModel(true))
     } else {
       setGenerateMsg(data.error ?? 'Generation failed')
     }
@@ -195,12 +192,8 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     fetchModel(true)
   }
 
-  async function handleWhatToChangeEdit(id: string, whatToChange: string) {
-    await fetch(`/api/models/${username}/suggestions/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ what_to_change: whatToChange }),
-    })
+  function handleFieldsUpdate(id: string, fields: Partial<Suggestion>) {
+    setSuggestions(prev => prev.map(s => s.id === id ? { ...s, ...fields } : s))
   }
 
   async function handleDelete() {
@@ -451,20 +444,6 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                   {generateMsg}
                 </span>
               )}
-              <div className="flex text-xs border border-[#2a2a2a] rounded-lg overflow-hidden">
-                <button
-                  onClick={() => setSortBy('score')}
-                  className={`px-3 py-1.5 transition-colors ${sortBy === 'score' ? 'bg-[#1e1e1e] text-white' : 'text-[#555] hover:text-[#888]'}`}
-                >
-                  By score
-                </button>
-                <button
-                  onClick={() => setSortBy('latest')}
-                  className={`px-3 py-1.5 transition-colors ${sortBy === 'latest' ? 'bg-[#1e1e1e] text-white' : 'text-[#555] hover:text-[#888]'}`}
-                >
-                  Latest
-                </button>
-              </div>
               <button
                 onClick={handleGenerate}
                 disabled={generating || !model.branding_file_md}
@@ -510,8 +489,9 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
               <SuggestionCard
                 key={s.id}
                 suggestion={s}
+                username={username}
                 onStatusChange={handleStatusChange}
-                onWhatToChangeEdit={handleWhatToChangeEdit}
+                onFieldsUpdate={handleFieldsUpdate}
               />
             ))}
           </div>

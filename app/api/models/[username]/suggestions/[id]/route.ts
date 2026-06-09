@@ -13,9 +13,15 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   }
   if ('notes' in body) updates.notes = body.notes
   if ('dismiss_reason' in body) updates.dismiss_reason = body.dismiss_reason
-  if ('what_to_change' in body && typeof body.what_to_change === 'string') {
-    updates.what_to_change = body.what_to_change
+  if ('footage_type' in body && ['ai', 'own'].includes(body.footage_type)) {
+    updates.footage_type = body.footage_type
   }
+  if ('own_footage_r2_key' in body) updates.own_footage_r2_key = body.own_footage_r2_key
+  if ('own_footage_label' in body) updates.own_footage_label = body.own_footage_label
+  if ('text_mode' in body && ['original', 'none', 'custom'].includes(body.text_mode)) {
+    updates.text_mode = body.text_mode
+  }
+  if ('custom_text' in body) updates.custom_text = body.custom_text
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
