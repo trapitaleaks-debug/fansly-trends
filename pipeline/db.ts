@@ -474,9 +474,16 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
 
 // Mark a suggestion as 'done' (used after a brief is generated from it)
 export async function markSuggestionUsed(suggestionId: string): Promise<void> {
+  // Keep status as 'approved' so suggestions remain visible — just track usage count
+  const { data: row } = await supabaseAdmin
+    .from('trends_suggestions')
+    .select('times_used')
+    .eq('id', suggestionId)
+    .single()
+  const timesUsed = ((row as unknown as { times_used?: number })?.times_used ?? 0) + 1
   const { error } = await supabaseAdmin
     .from('trends_suggestions')
-    .update({ status: 'done' })
+    .update({ times_used: timesUsed, last_used_at: new Date().toISOString() })
     .eq('id', suggestionId)
   if (error) throw new Error(`markSuggestionUsed: ${error.message}`)
 }
