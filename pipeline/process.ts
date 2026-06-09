@@ -28,7 +28,16 @@ function fontPath() {
 }
 
 function run(cmd: string) {
-  execSync(cmd, { stdio: 'pipe', env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } })
+  try {
+    execSync(cmd, { stdio: 'pipe', env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } })
+  } catch (e) {
+    const err = e as Error & { stderr?: Buffer; stdout?: Buffer; status?: number }
+    const stderr = err.stderr?.toString().trim()
+    const stdout = err.stdout?.toString().trim()
+    if (stderr) console.error(`  [cmd stderr] ${stderr.slice(0, 600)}`)
+    if (stdout) console.error(`  [cmd stdout] ${stdout.slice(0, 200)}`)
+    throw e
+  }
 }
 
 function hyperframesBin() {
@@ -297,8 +306,11 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
         fs.renameSync(composedPath, finalPath)
       }
     } else {
-      // ffmpeg drawtext fallback
+      // ffmpeg drawtext fallback — log font existence so we can diagnose rendering failures
+      const fontFile = fontPath()
+      console.log(`  [drawtext] font exists: ${fs.existsSync(fontFile)} | path: ${fontFile}`)
       const drawtextFilter = (overlayText?.trim() ? buildDrawtextFilter(overlayText, tmpDir, video.slot) : '') || null
+      console.log(`  [drawtext] filter: ${drawtextFilter ? drawtextFilter.slice(0, 120) : '(none)'}`)
       const ffmpegCmd = hasAudio
         ? (drawtextFilter
           ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`
