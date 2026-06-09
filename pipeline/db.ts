@@ -427,7 +427,6 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
   id: string
   what_to_change: string
   post_id: string
-  reasoning: string
   fansly_post_id: string
   creator_username: string
   likes_current: number
@@ -451,7 +450,6 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
       id,
       what_to_change,
       post_id,
-      reasoning,
       text_mode,
       custom_text,
       footage_type,
@@ -472,7 +470,6 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
     id: row.id,
     what_to_change: row.what_to_change,
     post_id: row.post_id,
-    reasoning: row.reasoning,
     text_mode: row.text_mode ?? null,
     custom_text: row.custom_text ?? null,
     footage_type: row.footage_type ?? null,

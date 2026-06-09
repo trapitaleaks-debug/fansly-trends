@@ -214,7 +214,6 @@ export async function generateBriefs(model: PipelineModel): Promise<Brief[]> {
     const suggestionBlocks = suggestionsToProcess.map((s, i) => {
       return `### Suggestion ${i + 1} (slot ${i + 1})
 Source post: @${s.creator_username} | ${s.likes_current} likes | Fansly ID: ${s.fansly_post_id}
-Why it works (reasoning): ${s.reasoning}
 User's specific instructions: ${s.what_to_change}`
     }).join('\n\n')
 
