@@ -8,7 +8,7 @@ export async function PATCH(
   try {
     const { videoId } = await params
     const body = await request.json()
-    const { overlay_text, caption, selected_variant_id } = body
+    const { overlay_text, selected_variant_id } = body
 
     const { data: video, error: videoError } = await supabaseAdmin
       .from('pipeline_videos')
@@ -23,10 +23,9 @@ export async function PATCH(
 
     const { user_action, dismiss_reason, reprocess_feedback } = body
 
-    if (overlay_text !== undefined || caption !== undefined || user_action !== undefined || dismiss_reason !== undefined || reprocess_feedback !== undefined) {
+    if (overlay_text !== undefined || user_action !== undefined || dismiss_reason !== undefined || reprocess_feedback !== undefined) {
       const briefUpdate: Record<string, unknown> = { ...(video.brief ?? {}) }
       if (overlay_text !== undefined) briefUpdate.overlay_text = overlay_text
-      if (caption !== undefined) briefUpdate.caption = caption
       if (user_action !== undefined) briefUpdate.user_action = user_action
       if (dismiss_reason !== undefined) briefUpdate.dismiss_reason = dismiss_reason
       if (reprocess_feedback !== undefined) {

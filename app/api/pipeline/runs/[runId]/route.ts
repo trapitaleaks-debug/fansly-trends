@@ -75,7 +75,6 @@ export async function GET(
         // Flatten brief JSONB fields to top-level — pipeline_videos has no direct overlay_text column
         slot_number: v.slot,
         overlay_text: (brief?.overlay_text as string) ?? null,
-        caption: (brief?.caption as string) ?? null,
         content_format: (brief?.content_format as string) ?? null,
         error_note: (brief?.error_note as string) ?? null,
         concept: (brief?.concept as string) ?? null,

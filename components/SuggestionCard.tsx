@@ -8,13 +8,11 @@ interface Post {
   creator_fansly_url: string | null
   likes_current: number
   thumbnail_r2_key: string | null
-  caption: string
   hashtags: string[]
 }
 
 export interface Suggestion {
   id: string
-  reasoning: string
   status: 'pending' | 'done' | 'approved' | 'dismissed'
   notes: string | null
   dismiss_reason: string | null
@@ -46,10 +44,9 @@ function fmt(n: number) {
 }
 
 // Full-screen hyperframe video viewer
-function VideoHyperframe({ videoUrl, title, caption, onClose }: {
+function VideoHyperframe({ videoUrl, title, onClose }: {
   videoUrl: string
   title?: string
-  caption?: string
   onClose: () => void
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -88,20 +85,12 @@ function VideoHyperframe({ videoUrl, title, caption, onClose }: {
         </div>
 
         {/* Info panel */}
-        {(title || caption) && (
+        {title && (
           <div className="max-w-xs space-y-4 text-white">
-            {title && (
-              <div>
-                <p className="text-[10px] text-[#555] uppercase tracking-widest mb-1">Creator</p>
-                <p className="text-sm font-medium">{title}</p>
-              </div>
-            )}
-            {caption && (
-              <div>
-                <p className="text-[10px] text-[#555] uppercase tracking-widest mb-1">Caption</p>
-                <p className="text-sm text-[#aaa] leading-relaxed">{caption}</p>
-              </div>
-            )}
+            <div>
+              <p className="text-[10px] text-[#555] uppercase tracking-widest mb-1">Creator</p>
+              <p className="text-sm font-medium">{title}</p>
+            </div>
             <p className="text-[10px] text-[#444] mt-4">
               Space: play/pause · ← →: seek 2s · Esc: close
             </p>
@@ -368,7 +357,6 @@ export default function SuggestionCard({ suggestion, username, onStatusChange, o
         <VideoHyperframe
           videoUrl={videoUrl}
           title={`@${post.creator_username}`}
-          caption={post.caption}
           onClose={() => setVideoHyperframe(false)}
         />
       )}
@@ -509,11 +497,6 @@ export default function SuggestionCard({ suggestion, username, onStatusChange, o
                 )}
               </div>
             )}
-
-            {/* Why */}
-            <p className="text-xs text-white leading-relaxed">
-              <span className="text-[#555]">Why: </span>{suggestion.reasoning}
-            </p>
 
             {/* Approval form (pending → approve) */}
             {showApprovalForm && suggestion.status === 'pending' && (

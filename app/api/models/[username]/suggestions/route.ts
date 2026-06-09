@@ -22,9 +22,9 @@ export async function GET(request: NextRequest, { params }: Params) {
   const { data, error } = await supabaseAdmin
     .from('trends_suggestions')
     .select(`
-      id, reasoning, status, notes, dismiss_reason, generated_at,
+      id, status, notes, dismiss_reason, generated_at,
       footage_type, own_footage_r2_key, own_footage_label, text_mode, custom_text,
-      trends_posts(id, fansly_post_id, creator_username, creator_fansly_url, likes_current, thumbnail_r2_key, caption, hashtags)
+      trends_posts(id, fansly_post_id, creator_username, creator_fansly_url, likes_current, thumbnail_r2_key, hashtags)
     `)
     .eq('model_id', model.id)
     .eq('status', status)

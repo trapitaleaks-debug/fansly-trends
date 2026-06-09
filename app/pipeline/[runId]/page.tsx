@@ -26,7 +26,6 @@ interface VideoSlot {
   slot_number: number
   status: string
   overlay_text?: string | null
-  caption?: string | null
   content_format?: string | null
   error_note?: string | null
   concept?: string | null
@@ -419,7 +418,7 @@ function SlotCard({ slot, runHandle, onUpdate }: { slot: VideoSlot; runHandle: s
     return 'text-red-400'
   }
 
-  async function handleSaveField(field: 'overlay_text' | 'caption', val: string) {
+  async function handleSaveField(field: 'overlay_text', val: string) {
     const res = await fetch(`/api/pipeline/videos/${slot.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -477,7 +476,6 @@ function SlotCard({ slot, runHandle, onUpdate }: { slot: VideoSlot; runHandle: s
 
             {/* Editable fields */}
             <InlineEdit label="Overlay Text" value={slot.overlay_text} onSave={v => handleSaveField('overlay_text', v)} rows={1} />
-            <InlineEdit label="Caption" value={slot.caption} onSave={v => handleSaveField('caption', v)} rows={3} />
 
             {/* Download */}
             <button

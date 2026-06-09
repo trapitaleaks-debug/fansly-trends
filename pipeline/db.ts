@@ -101,7 +101,6 @@ export interface Brief {
   overlay_formula: OverlayFormula
   cta_type?: CtaType            // for cta format
   hashtags?: string[]            // populated at posting time, not during brief generation
-  caption: string               // with comment trigger or CTA
   quality_scores?: VideoScores | null  // set after video processing
   // Component alteration fields — vary per slot for visual diversity
   location?: string             // e.g. "candle-lit bathtub" or "LED-lit bedroom"

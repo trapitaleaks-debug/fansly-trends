@@ -156,13 +156,7 @@ If hook_description includes any version of "slowly", "begins to", "starts to", 
 - No explicit language — platform filters catch it
 - Confident first-person female perspective where applicable
 - Must be native to short-form video, never ad-like
-- End with an emoji for extra engagement
-
-## CAPTION RULES
-- 1–2 sentences max
-- Include either a divisive question OR a soft CTA
-- Tone: playful, direct, personal — like she's talking to one specific person
-- Comment-bait: ask something easy to answer or take a position viewers can agree/disagree with`
+- End with an emoji for extra engagement`
 
 export async function generateBriefs(model: PipelineModel): Promise<Brief[]> {
   console.log(`[research] Generating briefs for @${model.handle}`)
@@ -250,7 +244,6 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
     "overlay_text": "Text burned on video, max 55 chars, with emoji",
     "overlay_formula": "grammar_bait|celebrity_bait|trolling|controversial_opinion|identity_statement|vulnerability_bait|pov_frame",
     "cta_type": "comment|share|follow or null if not cta format",
-    "caption": "1-2 sentence post caption with comment trigger or soft CTA",
     "location": "specific background/setting for this slot",
     "props": "props in this slot, comma-separated, or empty string",
     "color_hint": "lighting/color direction for this slot",
@@ -258,6 +251,7 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
     "own_footage_label": "EXACT label from Available Own Footage list if this slot uses own footage, otherwise omit"
   }
 ]`
+
 
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
@@ -318,7 +312,6 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
         overlay_text,
         overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
         cta_type: b.cta_type ?? undefined,
-        caption: b.caption ?? '',
         location: b.location ?? undefined,
         props: b.props ?? undefined,
         color_hint: b.color_hint ?? undefined,
@@ -349,7 +342,6 @@ Return ONLY a JSON array, no other text:
     "overlay_text": "Text burned on video, max 55 chars, with emoji",
     "overlay_formula": "grammar_bait|celebrity_bait|trolling|controversial_opinion|identity_statement|vulnerability_bait|pov_frame",
     "cta_type": "comment|share|follow or null if not cta format",
-    "caption": "1-2 sentence post caption with comment trigger or soft CTA",
     "location": "specific background/setting for this slot",
     "props": "props in this slot, comma-separated, or empty string",
     "color_hint": "lighting/color direction for this slot",
@@ -357,6 +349,7 @@ Return ONLY a JSON array, no other text:
     "own_footage_label": "EXACT label from Available Own Footage list if this slot uses own footage, otherwise omit"
   }
 ]`
+
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -393,7 +386,6 @@ Return ONLY a JSON array, no other text:
       overlay_text: b.overlay_text ?? '',
       overlay_formula: (b.overlay_formula ?? 'trolling') as OverlayFormula,
       cta_type: b.cta_type ?? undefined,
-      caption: b.caption ?? '',
       location: b.location ?? undefined,
       props: b.props ?? undefined,
       color_hint: b.color_hint ?? undefined,

@@ -123,7 +123,6 @@ async function selectHashtags(video: PipelineVideo, model: PipelineModel): Promi
 VIDEO:
 - Format: ${brief.content_format}
 - Overlay: "${brief.overlay_text}"
-- Caption: "${brief.caption}"
 - Concept: "${brief.concept}"
 
 MODEL BRANDING:
@@ -252,7 +251,7 @@ export async function postBatch(runId: string, model: PipelineModel): Promise<vo
       await page.waitForTimeout(3000) // Wait for upload processing
 
       // Fill caption with hashtags selected just before posting
-      const caption = [video.brief!.caption, selectedHashtags.map(t => `#${t}`).join(' ')].join('\n\n')
+      const caption = selectedHashtags.map(t => `#${t}`).join(' ')
       const captionField = page.locator('textarea').first()
       await captionField.fill(caption)
 
