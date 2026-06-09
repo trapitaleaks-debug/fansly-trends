@@ -1,6 +1,8 @@
 /**
- * Phase 4 — Post-Processing (ffmpeg)
- * Burns text overlay + audio onto generated raw videos, generates thumbnails.
+ * Phase 4 — Post-Processing
+ * On Linux (Railway): Hyperframes renders HTML composition → MP4, then ffmpeg adds audio.
+ * On Mac (dev): ffmpeg drawtext as before.
+ * Both paths share: audio extraction, flash/hook post-processing, thumbnail, R2 upload.
  */
 
 import fs from 'fs'
@@ -12,6 +14,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { getRunVideos, updateVideo, type PipelineModel, type PipelineVideo } from './db'
 import { scoreVideo } from './score-video'
 import { supabaseAdmin } from '../lib/supabase'
+import { buildComposition } from './compose'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
@@ -26,6 +29,29 @@ function fontPath() {
 
 function run(cmd: string) {
   execSync(cmd, { stdio: 'pipe', env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } })
+}
+
+function hyperframesBin() {
+  return path.resolve(__dirname, '../node_modules/.bin/hyperframes')
+}
+
+async function renderWithHyperframes(
+  rawPath: string,
+  composedPath: string,
+  overlayText: string | null | undefined,
+  duration: number,
+  slot: number,
+  tmpDir: string
+): Promise<void> {
+  const videoFile = path.basename(rawPath)
+  const compositionHtml = buildComposition({ videoFile, overlayText, duration, slot })
+  const compositionPath = path.join(tmpDir, `composition_${slot}.html`)
+  fs.writeFileSync(compositionPath, compositionHtml, 'utf8')
+
+  const bin = hyperframesBin()
+  // --no-browser-gpu = SwiftShader software rendering (no GPU on Railway)
+  // --fps 30 = match source video framerate
+  run(`"${bin}" render "${compositionPath}" -o "${composedPath}" --no-browser-gpu --fps 30`)
 }
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
@@ -219,20 +245,33 @@ async function processVideo(video: PipelineVideo, tmpDir: string, handle: string
     }
   }
 
-  // Burn overlay + merge audio
-  const drawtextFilter = overlayText?.trim() ? buildDrawtextFilter(overlayText, tmpDir, video.slot) : null
-  // preset ultrafast + threads 2 keeps RAM under Railway's container limit (~512MB)
+  // Compose video with text overlay
+  // Linux (Railway): Hyperframes renders HTML → browser-quality text, emoji support
+  // Mac (dev): ffmpeg drawtext fallback
   const encodeFlags = `-c:v libx264 -preset ultrafast -threads 2 -crf 23`
-  const ffmpegCmd = hasAudio
-    ? (drawtextFilter
-      ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`
-      : `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`)
-    : (drawtextFilter
-      ? `${ffmpegBin()} -i "${rawPath}" -vf "${drawtextFilter}" ${encodeFlags} -an -y "${finalPath}"`
-      : `${ffmpegBin()} -i "${rawPath}" ${encodeFlags} -an -y "${finalPath}"`)
+  console.log(`  Composing overlay: "${overlayText || '(none)'}"`)
 
-  console.log(`  Burning overlay: "${overlayText || '(none)'}"`)
-  run(ffmpegCmd)
+  if (process.platform !== 'darwin') {
+    // Hyperframes path (Linux / Railway)
+    const composedPath = path.join(tmpDir, `slot${video.slot}_composed.mp4`)
+    await renderWithHyperframes(rawPath, composedPath, overlayText, duration, video.slot, tmpDir)
+    if (hasAudio) {
+      run(`${ffmpegBin()} -i "${composedPath}" -i "${audioPath}" -c:v copy -c:a aac -shortest -y "${finalPath}"`)
+    } else {
+      fs.renameSync(composedPath, finalPath)
+    }
+  } else {
+    // ffmpeg drawtext fallback (Mac dev)
+    const drawtextFilter = overlayText?.trim() ? buildDrawtextFilter(overlayText, tmpDir, video.slot) : null
+    const ffmpegCmd = hasAudio
+      ? (drawtextFilter
+        ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" -vf "${drawtextFilter}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`
+        : `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}" ${encodeFlags} -c:a aac -shortest -y "${finalPath}"`)
+      : (drawtextFilter
+        ? `${ffmpegBin()} -i "${rawPath}" -vf "${drawtextFilter}" ${encodeFlags} -an -y "${finalPath}"`
+        : `${ffmpegBin()} -i "${rawPath}" ${encodeFlags} -an -y "${finalPath}"`)
+    run(ffmpegCmd)
+  }
 
   // Format-specific post-processing
   const contentFormat = video.brief?.content_format
