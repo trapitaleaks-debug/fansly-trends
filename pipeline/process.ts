@@ -70,7 +70,8 @@ async function renderWithHyperframes(
 
   const bin = hyperframesBin()
   // --no-browser-gpu = SwiftShader software rendering (no GPU on Railway)
-  run(`"${bin}" render "${compDir}" -o "${composedPath}" --no-browser-gpu --fps 30`)
+  // --workers 1 = single Chrome process; default 'auto' spawns multiple (~256 MB each) → OOM on Railway
+  run(`"${bin}" render "${compDir}" -o "${composedPath}" --no-browser-gpu --fps 30 --workers 1`)
 }
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {

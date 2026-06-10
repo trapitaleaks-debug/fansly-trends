@@ -77,6 +77,23 @@ export async function extractOnScreenText(thumbnailR2Key: string | null | undefi
     })
     const out = (res.content.find(c => c.type === 'text') as { text: string } | undefined)?.text?.trim() ?? ''
     if (!out || out.toUpperCase() === 'NONE') return ''
+
+    // Detect Claude refusals on explicit thumbnails (returned as normal text, not exceptions)
+    const lower = out.toLowerCase()
+    const isRefusal =
+      lower.includes("i'm not able") ||
+      lower.includes("i cannot") ||
+      lower.includes("i can't") ||
+      lower.includes("i won't") ||
+      lower.includes("unable to help") ||
+      lower.includes("unable to assist") ||
+      (lower.includes('explicit') && lower.includes('content')) ||
+      out.length > 300  // overlay text is always short; long responses are explanations
+    if (isRefusal) {
+      console.log(`  [ocr] Claude refused explicit thumbnail — falling back to AI overlay`)
+      return ''
+    }
+
     return out
   } catch (e) {
     console.log(`  [ocr] vision OCR failed: ${(e as Error).message}`)
