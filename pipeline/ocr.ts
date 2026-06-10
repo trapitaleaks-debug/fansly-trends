@@ -35,17 +35,39 @@ function mediaType(key: string): 'image/jpeg' | 'image/png' | 'image/webp' | 'im
   return 'image/jpeg'
 }
 
-const OCR_PROMPT = `This is a single frame from a short-form vertical video.
-
-Read the large text overlay that the creator burned onto the video — the caption-style hook text sitting on top of the footage.
+const OCR_PROMPT = `You are a text-transcription tool. This is a single frame from a short-form vertical video. Transcribe ONLY the large text overlay the creator burned onto the video — the caption-style hook text sitting on top of the footage. This is pure OCR: you transcribe the words, you do not describe or comment on the imagery.
 
 IGNORE: watermarks, the creator's @username, platform logos/UI, view counts, timestamps, and any tiny corner text.
 
 Return the overlay text EXACTLY as written — preserve the wording, capitalization, punctuation and any emoji. Do not paraphrase, translate, or fix spelling.
 
-If the frame has no such overlay text, return exactly: NONE
+If the frame has no overlay text, OR you are unwilling to transcribe it for any reason, return exactly: NONE
 
-Return only the text (or NONE). No quotes, no explanation.`
+Return only the overlay text, or NONE. Never return a sentence about yourself, the request, or the image. No quotes, no explanation.`
+
+// Vision models return refusals as ordinary text (e.g. "I'm not going to help with
+// this request."), not exceptions — those must never become overlay text. Real
+// overlays are short, viewer-facing bait; refusals talk about the assistant, the
+// "request", or the "image"/"content", and pair a refusal verb with help/assist/etc.
+// We require that pairing so legit first-person bait ("I don't usually show this
+// side of me", "I'm not going to lie") is NOT false-flagged.
+function isRefusal(text: string): boolean {
+  const t = text.toLowerCase()
+  const signals: RegExp[] = [
+    /\bthis request\b/,
+    /\b(?:can'?t|cannot|can not|won'?t|will not|unable to|not able to|not going to|not willing to|refuse to)\s+(?:help|assist|engage|describe|provide|generate|create|transcribe|comply|complete|fulfill|do that|do this|with that|with this)\b/,
+    /\bi\s*(?:'m|am)\s+(?:sorry|unable|not comfortable|not able)\b/,
+    /\bi (?:don'?t|do not) feel comfortable\b/,
+    /\bi apologize\b/,
+    /\bi won'?t (?:engage|describe|be able)\b/,
+    /\bexplicit (?:sexual )?content\b/,
+    /\b(?:the|this) image (?:contains|shows|depicts|appears)\b/,
+  ]
+  if (signals.some(re => re.test(t))) return true
+  // Overlay hooks are short; a long paragraph is an explanation/refusal, not overlay text.
+  if (text.length > 220) return true
+  return false
+}
 
 /**
  * Reads the verbatim on-screen overlay text from a source video's thumbnail frame.
@@ -77,20 +99,8 @@ export async function extractOnScreenText(thumbnailR2Key: string | null | undefi
     })
     const out = (res.content.find(c => c.type === 'text') as { text: string } | undefined)?.text?.trim() ?? ''
     if (!out || out.toUpperCase() === 'NONE') return ''
-
-    // Detect Claude refusals on explicit thumbnails (returned as normal text, not exceptions)
-    const lower = out.toLowerCase()
-    const isRefusal =
-      lower.includes("i'm not able") ||
-      lower.includes("i cannot") ||
-      lower.includes("i can't") ||
-      lower.includes("i won't") ||
-      lower.includes("unable to help") ||
-      lower.includes("unable to assist") ||
-      (lower.includes('explicit') && lower.includes('content')) ||
-      out.length > 300  // overlay text is always short; long responses are explanations
-    if (isRefusal) {
-      console.log(`  [ocr] Claude refused explicit thumbnail — falling back to AI overlay`)
+    if (isRefusal(out)) {
+      console.log(`  [ocr] Claude refused / non-text response ("${out.slice(0, 60)}") — falling back to AI overlay`)
       return ''
     }
 
