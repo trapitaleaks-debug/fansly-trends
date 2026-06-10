@@ -4,7 +4,7 @@ dotenv.config({ path: path.join(__dirname, '../.env.local') })
 import { scrapeFYP, type AccountConfig, type FanslyPost } from './fansly'
 import { fetchTopHashtags, scrapeHashtagList } from './hashtag'
 import { uploadBuffer, downloadUrl } from './storage'
-import { upsertPost, getBlacklist, getExistingPostIds, batchUpdateLikes, getClient, enforceCreatorCap } from './db'
+import { upsertPost, getBlacklist, getExistingPostIds, getExistingMediaIds, batchUpdateLikes, getClient, enforceCreatorCap } from './db'
 import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
 
 const MIN_LIKES = 150
@@ -114,7 +114,7 @@ async function main() {
     }
 
     // Phase 3: Process and save qualifying posts
-    const allPosts = Array.from(postMap.values())
+    const qualifying = Array.from(postMap.values())
       .filter(p => {
         if (!p.id || !p.is_video || !p.video_url || p.likes < MIN_LIKES) return false
         if (blacklist.includes(p.creator_username.toLowerCase())) return false
@@ -123,11 +123,21 @@ async function main() {
       })
       .sort((a, b) => b.likes - a.likes)
 
-    console.log(`\n--- Phase 3: Processing ${allPosts.length} qualifying posts (≥${MIN_LIKES} likes, videos only) ---`)
+    // Collapse in-batch duplicates: the same video (media_id) is re-served under
+    // different post ids. List is sorted by likes desc, so keep the first (highest) copy.
+    const seenMedia = new Set<string>()
+    const allPosts = qualifying.filter(p => {
+      if (!p.media_id) return true
+      if (seenMedia.has(p.media_id)) return false
+      seenMedia.add(p.media_id)
+      return true
+    })
+    const inBatchDupes = qualifying.length - allPosts.length
 
-    const allPostIds = allPosts.map(p => p.id)
-    const existingIds = await getExistingPostIds(allPostIds)
-    console.log(`  📦 ${existingIds.size} already in DB, ${allPosts.length - existingIds.size} new`)
+    console.log(`\n--- Phase 3: Processing ${allPosts.length} qualifying posts (≥${MIN_LIKES} likes, videos only; collapsed ${inBatchDupes} in-batch dupes) ---`)
+
+    const existingIds = await getExistingPostIds(allPosts.map(p => p.id))
+    const existingMediaIds = await getExistingMediaIds(allPosts.map(p => p.media_id ?? '').filter(Boolean))
 
     const existingPosts = allPosts.filter(p => existingIds.has(p.id))
     if (existingPosts.length > 0) {
@@ -136,7 +146,14 @@ async function main() {
       console.log(`  🔄 Batch-updated likes for ${updated} existing posts`)
     }
 
-    const newPosts = allPosts.filter(p => !existingIds.has(p.id))
+    // New = unseen post id AND not an already-stored video (same media_id under a new post id)
+    const newPosts = allPosts.filter(p =>
+      !existingIds.has(p.id) && !(p.media_id && existingMediaIds.has(p.media_id))
+    )
+    const skippedDupVideos = allPosts.filter(p =>
+      !existingIds.has(p.id) && p.media_id && existingMediaIds.has(p.media_id)
+    ).length
+    console.log(`  📦 ${existingIds.size} already in DB, ${skippedDupVideos} skipped (same video, new post id), ${newPosts.length} new`)
     console.log(`\n  ✨ Downloading and saving ${newPosts.length} new posts...`)
 
     for (const post of newPosts) {
@@ -160,6 +177,7 @@ async function main() {
 
         await upsertPost({
           fansly_post_id: post.id,
+          fansly_media_id: post.media_id ?? null,
           creator_username: post.creator_username,
           creator_fansly_url: `https://fansly.com/${post.creator_username}`,
           caption: post.caption,

@@ -13,6 +13,7 @@ export function getClient(): SupabaseClient {
 
 export interface PostRecord {
   fansly_post_id: string
+  fansly_media_id: string | null
   creator_username: string
   creator_fansly_url: string
   caption: string
@@ -62,6 +63,27 @@ export async function getExistingPostIds(fanslyPostIds: string[]): Promise<Set<s
     .select('fansly_post_id')
     .in('fansly_post_id', fanslyPostIds)
   return new Set((data ?? []).map((r: { fansly_post_id: string }) => r.fansly_post_id))
+}
+
+// Returns the set of media_ids that already have an ACTIVE (non-archived) post in
+// the DB. Used to skip inserting the same video served under a new post id.
+export async function getExistingMediaIds(mediaIds: string[]): Promise<Set<string>> {
+  const ids = mediaIds.filter(Boolean)
+  if (ids.length === 0) return new Set()
+  const found = new Set<string>()
+  // Chunk to keep the IN() clause sane
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200)
+    const { data } = await getClient()
+      .from('trends_posts')
+      .select('fansly_media_id')
+      .is('archived_at', null)
+      .in('fansly_media_id', chunk)
+    for (const r of (data ?? []) as { fansly_media_id: string | null }[]) {
+      if (r.fansly_media_id) found.add(r.fansly_media_id)
+    }
+  }
+  return found
 }
 
 export async function batchUpdateLikes(updates: { fansly_post_id: string; likes_current: number }[]): Promise<void> {

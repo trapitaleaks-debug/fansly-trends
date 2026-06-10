@@ -93,6 +93,7 @@ function parseSuggestions(json: Record<string, unknown>): FanslyPost[] {
       duration,
       post_date: postDate,
       is_video: true,
+      media_id: String(innerMedia.id ?? '') || null,
     })
   }
 

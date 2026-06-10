@@ -24,6 +24,10 @@ export interface FanslyPost {
   duration: number
   post_date: string | null
   is_video: boolean
+  // Underlying Fansly media.id (the actual video file). Stable across re-serves,
+  // unlike `id` (correlationId / post id) which Fansly regenerates per impression —
+  // used to dedup the same video that gets wrapped in different posts over time.
+  media_id?: string | null
 }
 
 interface Cookie { name: string; value: string; [key: string]: unknown }
@@ -253,6 +257,7 @@ function parseContentDiscovery(json: Record<string, unknown>): FanslyPost[] {
       duration,
       post_date: postDate,
       is_video: true,
+      media_id: String(innerMedia.id ?? '') || null,
     })
   }
   return posts
