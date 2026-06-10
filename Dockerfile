@@ -32,9 +32,16 @@ RUN apt-get update && apt-get install -y \
 # Symlink to a fixed path and set HYPERFRAMES_BROWSER_PATH so Hyperframes finds it
 # instead of falling back to system /usr/bin/chromium.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable 2>&1 | tail -3 \
-    && ln -sf "$(find /root/.cache/puppeteer -name 'chrome-headless-shell' -type f | head -1)" \
-              /usr/local/bin/chrome-headless-shell
+# @puppeteer/browsers installs into the CURRENT WORKING DIR by default (here: /),
+# NOT ~/.cache/puppeteer. The old `find /root/.cache/puppeteer` therefore matched
+# nothing, so `ln -sf ""` failed and killed every build since — which is why the
+# pipeline fix never deployed. Pin the location with --path and verify the binary
+# actually runs, so any failure here is loud instead of a silent empty symlink.
+RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable --path /opt/chrome-headless-shell \
+    && CHS="$(find /opt/chrome-headless-shell -type f -name 'chrome-headless-shell' | head -1)" \
+    && test -n "$CHS" \
+    && ln -sf "$CHS" /usr/local/bin/chrome-headless-shell \
+    && /usr/local/bin/chrome-headless-shell --version
 ENV HYPERFRAMES_BROWSER_PATH=/usr/local/bin/chrome-headless-shell
 
 # Hyperframes: use software rendering (no GPU on Railway)
