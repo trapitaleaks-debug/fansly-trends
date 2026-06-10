@@ -434,6 +434,7 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
   custom_text: string | null
   footage_type: 'ai' | 'own' | null
   own_footage_r2_key: string | null
+  thumbnail_r2_key: string | null
 }>> {
   // trends_suggestions links to trends_models (not pipeline_models); look up model_id first
   const { data: trendModel } = await supabaseAdmin
@@ -457,7 +458,8 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
       trends_posts!inner (
         fansly_post_id,
         creator_username,
-        likes_current
+        likes_current,
+        thumbnail_r2_key
       )
     `)
     .eq('model_id', trendModel.id)
@@ -477,6 +479,7 @@ export async function getApprovedSuggestions(handle: string): Promise<Array<{
     fansly_post_id: row.trends_posts.fansly_post_id,
     creator_username: row.trends_posts.creator_username,
     likes_current: row.trends_posts.likes_current,
+    thumbnail_r2_key: row.trends_posts.thumbnail_r2_key ?? null,
   }))
 }
 

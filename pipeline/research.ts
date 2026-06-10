@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Brief, ContentFormat, OverlayFormula, PipelineModel } from './db'
 import { getTrendingPosts, getApprovedSuggestions, markSuggestionUsed, getContentBank } from './db'
+import { extractOnScreenText } from './ocr'
 import { supabaseAdmin } from '../lib/supabase'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -272,6 +273,15 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
     await Promise.all(suggestionsToProcess.map(s => markSuggestionUsed(s.id)))
     console.log(`  Marked ${suggestionsToProcess.length} suggestion(s) as done`)
 
+    // For text_mode='original', OCR the REAL on-screen text from the source video's
+    // thumbnail frame so we copy it verbatim instead of letting the brief AI guess.
+    // Runs in parallel; returns '' for non-original slots and on any failure.
+    const ocrTexts = await Promise.all(
+      suggestionsToProcess.map(s =>
+        s?.text_mode === 'original' ? extractOnScreenText(s.thumbnail_r2_key) : Promise.resolve('')
+      )
+    )
+
     return rawBriefs.map((b: Brief & { own_footage_label?: string }, i) => {
       const suggestion = suggestionsToProcess[i]
 
@@ -283,8 +293,15 @@ Return ONLY a JSON array with exactly ${suggestionsToProcess.length} element(s),
       } else if (suggestion?.text_mode === 'custom' && suggestion.custom_text) {
         overlay_text = suggestion.custom_text
         console.log(`  [slot ${i + 1}] text_mode=custom — overlay: "${overlay_text}"`)
+      } else if (suggestion?.text_mode === 'original') {
+        if (ocrTexts[i]) {
+          overlay_text = ocrTexts[i]
+          console.log(`  [slot ${i + 1}] text_mode=original — OCR'd on-screen text: "${overlay_text}"`)
+        } else {
+          console.log(`  [slot ${i + 1}] text_mode=original — no on-screen text found, keeping AI overlay: "${overlay_text}"`)
+        }
       }
-      // text_mode='original' or null → keep AI-generated overlay_text
+      // text_mode=null → keep AI-generated overlay_text
 
       // Apply footage_type override from suggestion approval
       let own_footage_r2_key: string | undefined
