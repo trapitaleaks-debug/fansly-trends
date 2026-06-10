@@ -273,11 +273,19 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
 
   let capturedHeaders: Record<string, string> = {}
 
-  // Capture auth headers from ANY apiv3.fansly.com request — no endpoint filter
+  // Capture auth headers from apiv3.fansly.com requests.
+  // IMPORTANT: only accept a request that actually carries the auth token AND the
+  // anti-bot signature. The FIRST apiv3 request often fires pre-login (during the
+  // initial fansly.com page load) and carries only cookie/user-agent. Capturing it
+  // leaves the scraper unauthenticated — and Fansly then returns `success:true` with
+  // an EMPTY feed (not a 401), silently yielding 0 posts every run. Keep updating to
+  // the latest authenticated request so we always end up with a usable header set.
   page.on('request', async (request) => {
     if (!request.url().includes('apiv3.fansly.com')) return
-    if (Object.keys(capturedHeaders).length > 0) return
-    try { capturedHeaders = await request.allHeaders() } catch { /* */ }
+    try {
+      const h = await request.allHeaders()
+      if (h['authorization'] && h['fansly-client-check']) capturedHeaders = h
+    } catch { /* */ }
   })
 
   // Try saved session
