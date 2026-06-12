@@ -6,6 +6,7 @@ interface DetailPost extends Post {
   videoUrl?: string
   video_duration?: number
   post_date?: string
+  text_template?: string | null
 }
 
 interface Props {
@@ -17,11 +18,14 @@ interface Props {
 export default function PostModal({ postId, onClose, onBookmarkChange }: Props) {
   const [post, setPost] = useState<DetailPost | null>(null)
   const [notes, setNotes] = useState('')
+  const [textTemplate, setTextTemplate] = useState('')
   const [saving, setSaving] = useState(false)
+  const [savingTemplate, setSavingTemplate] = useState(false)
   const [showBookmarkMenu, setShowBookmarkMenu] = useState(false)
   const [folder, setFolder] = useState('')
   const [folders, setFolders] = useState<string[]>([])
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const templateTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     fetch(`/api/posts/${postId}`)
@@ -29,6 +33,7 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
       .then(({ post }) => {
         setPost(post)
         setNotes(post?.trends_ideas?.[0]?.notes ?? '')
+        setTextTemplate(post?.text_template ?? '')
       })
     fetch('/api/ideas')
       .then(r => r.json())
@@ -42,6 +47,20 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [postId, onClose])
+
+  function handleTemplateChange(val: string) {
+    setTextTemplate(val)
+    if (templateTimer.current) clearTimeout(templateTimer.current)
+    templateTimer.current = setTimeout(async () => {
+      setSavingTemplate(true)
+      await fetch(`/api/posts/${postId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text_template: val || null }),
+      })
+      setSavingTemplate(false)
+    }, 800)
+  }
 
   function handleNotesChange(val: string) {
     setNotes(val)
@@ -152,6 +171,22 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
               ))}
             </div>
           )}
+
+          {/* Text Template */}
+          <div>
+            <label className="text-xs text-[#555] mb-1 block flex items-center justify-between">
+              <span>Text template <span className="text-[#3a3a3a]">— one line per overlay</span></span>
+              {savingTemplate && <span className="text-[#3a3a3a]">saving...</span>}
+              {textTemplate && !savingTemplate && <span className="text-[#D41020] text-[10px] font-medium">● saved</span>}
+            </label>
+            <textarea
+              value={textTemplate}
+              onChange={e => handleTemplateChange(e.target.value)}
+              placeholder={"POV you found a nice girl\nwho actually likes you back"}
+              rows={3}
+              className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-white placeholder-[#2e2e2e] focus:outline-none focus:border-[#D41020]/40 resize-none font-mono leading-relaxed"
+            />
+          </div>
 
           {/* Notes */}
           <div>
