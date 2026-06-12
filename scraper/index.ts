@@ -16,10 +16,23 @@ const MIN_POSTS_PER_ACCOUNT = 500   // each account targets this many raw posts 
 const MAX_POSTS_PER_CREATOR = 20    // max posts per creator in DB at any time
 
 const BANNED_HASHTAGS = new Set([
-  'deepthroat','porn','creampie','hotwife','bigdick','breeding','analcreampie',
-  'sex','bbc','bwc','bigcock','hugecock','hugedick','swingers','couple','couples',
-  'wifesharing','wifeswap','blacked','monstercock','gangbang',
-  'cumslut','analsex','cumeating','fuck','bg','sextape','standingfuck',
+  // explicit acts
+  'anal','analsex','analcreampie','deepthroat','blowjob','bj','handjob','rimjob','rimming','fisting',
+  'fuck','hardfuck','standingfuck','dp','doublepenetration','hardcore',
+  // body fluids / finishing
+  'cum','cumshot','cumslut','cumeating','creampie','facial','squirt','squirting',
+  // body parts / size
+  'bigdick','hugedick','bigcock','hugecock','monstercock','bbc','bwc',
+  // scenarios / categories
+  'porn','sex','sextape','hotwife','swingers','wifesharing','wifeswap','blacked','breeding',
+  'gangbang','couple','couples','bg','taboo','incest',
+  'stepsister','stepbrother','stepmom','stepdad','stepfamily',
+  // nudity
+  'nude','naked','xxx',
+  // fetish / niche
+  'bdsm','bondage','dominatrix','cuckold','feet','footfetish',
+  'scat','piss','pissing','watersports','futa','futanari',
+  'furry','hentai','femboy','ladyboy','shemale','trans',
 ])
 
 function loadAccounts(): AccountConfig[] {

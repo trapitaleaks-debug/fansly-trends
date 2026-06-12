@@ -79,9 +79,22 @@ function getScheduledTime(slot: number, bestTimes: { morning: string; evening: s
 }
 
 const BANNED_HASHTAGS = new Set([
-  'anal', 'trans', 'deepthroat', 'creampie', 'gangbang', 'squirt', 'bdsm',
-  'dominatrix', 'cuckold', 'feet', 'footfetish', 'scat', 'furry', 'hentai',
-  'femboy', 'ladyboy', 'shemale',
+  // explicit acts
+  'anal','analsex','deepthroat','blowjob','bj','handjob','rimjob','rimming','fisting',
+  'fuck','hardfuck','standingfuck','dp','doublepenetration','hardcore',
+  // body fluids / finishing
+  'cum','cumshot','creampie','facial','squirt','squirting',
+  // body parts / size
+  'bigdick','hugedick','bigcock','hugecock','monstercock','bbc','bwc',
+  // scenarios / categories
+  'porn','sex','sextape','hotwife','swingers','wifesharing','wifeswap','blacked','breeding',
+  'gangbang','taboo','incest','stepsister','stepbrother','stepmom','stepdad',
+  // nudity
+  'nude','naked','xxx',
+  // fetish / niche
+  'bdsm','bondage','dominatrix','cuckold','feet','footfetish',
+  'scat','piss','pissing','futa','futanari',
+  'furry','hentai','femboy','ladyboy','shemale','trans',
 ])
 
 async function selectHashtags(video: PipelineVideo, model: PipelineModel): Promise<string[]> {
