@@ -8,12 +8,15 @@ export async function GET(request: NextRequest) {
   const minLikes = parseInt(searchParams.get('minLikes') ?? '0')
   const hashtag = searchParams.get('hashtag') ?? ''
   const type = searchParams.get('type') ?? 'all' // all | explicit | sfw
+  const niche = searchParams.get('niche') ?? '' // e.g. 'asian', 'general', 'teen'
+  const tagged = searchParams.get('tagged') // 'yes' = only tagged posts
+  const hideBookmarked = searchParams.get('hide_bookmarked') === 'yes'
   const page = parseInt(searchParams.get('page') ?? '0')
   const limit = 30
 
   let query = supabaseAdmin
     .from('trends_posts')
-    .select('*, trends_ideas(id, folder, tags, notes)')
+    .select('*, trends_ideas(id, niches, tags, notes)')
     .is('archived_at', null)
     .gte('likes_current', 150) // always enforce minimum quality floor
     .not('video_r2_key', 'is', null)
@@ -28,6 +31,13 @@ export async function GET(request: NextRequest) {
   if (hashtag) query = query.contains('hashtags', [hashtag.replace('#', '')])
   if (type === 'explicit') query = query.eq('is_explicit', true)
   if (type === 'sfw') query = query.eq('is_explicit', false)
+  if (niche) query = query.contains('niche_tags', [niche])
+  if (tagged === 'yes') query = query.not('niche_tags', 'eq', '{}')
+  if (hideBookmarked) {
+    const { data: bookmarked } = await supabaseAdmin.from('trends_ideas').select('post_id')
+    const ids = bookmarked?.map(b => b.post_id) ?? []
+    if (ids.length > 0) query = query.not('id', 'in', `(${ids.join(',')})`)
+  }
 
   if (sort === 'trending') query = query.order('likes_current', { ascending: false })
   else if (sort === 'liked') query = query.order('likes_current', { ascending: false })

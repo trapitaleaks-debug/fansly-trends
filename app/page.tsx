@@ -12,6 +12,9 @@ const DEFAULT_FILTERS: Filters = {
   minLikes: 0,
   hashtag: '',
   type: 'all',
+  niche: '',
+  tagged: false,
+  hideBookmarked: true,
 }
 
 export default function FeedPage() {
@@ -30,6 +33,9 @@ export default function FeedPage() {
       minLikes: String(f.minLikes),
       hashtag: f.hashtag,
       type: f.type,
+      niche: f.niche,
+      tagged: f.tagged ? 'yes' : '',
+      hide_bookmarked: f.hideBookmarked ? 'yes' : '',
       page: String(p),
     })
     const res = await fetch(`/api/posts?${params}`)
@@ -66,6 +72,7 @@ export default function FeedPage() {
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           
           <Link href="/pipeline" className="hover:text-white transition-colors">Pipeline</Link>
+          <Link href="/templates" className="hover:text-white transition-colors">Templates</Link>
         </div>
       </nav>
 

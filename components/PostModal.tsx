@@ -1,12 +1,14 @@
 'use client'
 import { useEffect, useState, useRef } from 'react'
 import type { Post } from './PostCard'
+import { NICHES, NICHE_COLORS } from './PostCard'
 
 interface DetailPost extends Post {
   videoUrl?: string
   video_duration?: number
   post_date?: string
   text_template?: string | null
+  niche_tags?: string[]
 }
 
 interface Props {
@@ -19,11 +21,13 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
   const [post, setPost] = useState<DetailPost | null>(null)
   const [notes, setNotes] = useState('')
   const [textTemplate, setTextTemplate] = useState('')
+  const [nicheTags, setNicheTags] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [savingTemplate, setSavingTemplate] = useState(false)
-  const [showBookmarkMenu, setShowBookmarkMenu] = useState(false)
-  const [folder, setFolder] = useState('')
-  const [folders, setFolders] = useState<string[]>([])
+  const [ideaId, setIdeaId] = useState<string | null>(null)
+  const [ideaNiches, setIdeaNiches] = useState<string[]>([])
+  const [showNichePicker, setShowNichePicker] = useState(false)
+  const [bookmarking, setBookmarking] = useState(false)
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const templateTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -34,19 +38,29 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
         setPost(post)
         setNotes(post?.trends_ideas?.[0]?.notes ?? '')
         setTextTemplate(post?.text_template ?? '')
-      })
-    fetch('/api/ideas')
-      .then(r => r.json())
-      .then(({ ideas }) => {
-        const unique = [...new Set((ideas ?? []).map((i: { folder: string }) => i.folder).filter(Boolean))] as string[]
-        setFolders(unique)
+        setNicheTags(post?.niche_tags ?? [])
+        if (post?.trends_ideas?.[0]) {
+          setIdeaId(post.trends_ideas[0].id)
+          setIdeaNiches(post.trends_ideas[0].niches ?? [])
+        }
       })
 
-    // close on escape
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [postId, onClose])
+
+  async function handleNicheToggle(niche: string) {
+    const next = nicheTags.includes(niche)
+      ? nicheTags.filter(t => t !== niche)
+      : [...nicheTags, niche]
+    setNicheTags(next)
+    await fetch(`/api/posts/${postId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ niche_tags: next }),
+    })
+  }
 
   function handleTemplateChange(val: string) {
     setTextTemplate(val)
@@ -64,10 +78,11 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
 
   function handleNotesChange(val: string) {
     setNotes(val)
+    if (!ideaId) return
     if (notesTimer.current) clearTimeout(notesTimer.current)
     notesTimer.current = setTimeout(async () => {
       setSaving(true)
-      await fetch(`/api/posts/${postId}`, {
+      await fetch(`/api/ideas/${ideaId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notes: val }),
@@ -76,15 +91,37 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
     }, 800)
   }
 
+  function toggleIdeaNiche(niche: string) {
+    setIdeaNiches(prev =>
+      prev.includes(niche) ? prev.filter(n => n !== niche) : [...prev, niche]
+    )
+  }
+
   async function handleBookmark() {
-    await fetch('/api/ideas', {
+    setBookmarking(true)
+    const res = await fetch('/api/ideas', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ post_id: postId, folder: folder || null, notes }),
+      body: JSON.stringify({ post_id: postId, niches: ideaNiches, notes }),
     })
-    setShowBookmarkMenu(false)
+    const data = await res.json()
+    setIdeaId(data.idea?.id ?? ideaId)
+    setShowNichePicker(false)
+    setBookmarking(false)
+    setPost(p => p ? {
+      ...p,
+      trends_ideas: [{ id: data.idea?.id ?? 'new', niches: ideaNiches, tags: [], notes }],
+    } : p)
     onBookmarkChange()
-    setPost(p => p ? { ...p, trends_ideas: [{ id: 'new', folder, tags: [], notes }] } : p)
+  }
+
+  async function handleRemoveBookmark() {
+    if (!ideaId) return
+    await fetch(`/api/ideas/${ideaId}`, { method: 'DELETE' })
+    setIdeaId(null)
+    setIdeaNiches([])
+    setPost(p => p ? { ...p, trends_ideas: [] } : p)
+    onBookmarkChange()
   }
 
   if (!post) {
@@ -95,7 +132,7 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
     )
   }
 
-  const isBookmarked = (post.trends_ideas?.length ?? 0) > 0
+  const isBookmarked = ideaId !== null
   const growth = post.growth_24h_pct
   const growthLabel = growth !== null && growth !== undefined
     ? `${growth >= 0 ? '+' : ''}${growth.toFixed(1)}% 24h`
@@ -172,6 +209,25 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
             </div>
           )}
 
+          {/* Niche Tags (content tags for feed filter) */}
+          <div>
+            <label className="text-xs text-[#555] mb-2 block">Niche tags <span className="text-[#333]">— for feed filter</span></label>
+            <div className="flex flex-wrap gap-1.5">
+              {NICHES.map(niche => {
+                const active = nicheTags.includes(niche)
+                return (
+                  <button
+                    key={niche}
+                    onClick={() => handleNicheToggle(niche)}
+                    className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${active ? NICHE_COLORS[niche] : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
+                  >
+                    {niche}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
           {/* Text Template */}
           <div>
             <label className="text-xs text-[#555] mb-1 block flex items-center justify-between">
@@ -202,34 +258,97 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
             />
           </div>
 
-          {/* Bookmark */}
-          <div className="relative">
-            <button
-              onClick={() => setShowBookmarkMenu(!showBookmarkMenu)}
-              className={`text-sm px-4 py-2 rounded-lg font-medium transition-colors ${isBookmarked ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' : 'bg-[#1a1a1a] text-[#999] border border-[#2a2a2a] hover:border-[#444]'}`}
-            >
-              {isBookmarked ? '★ Saved to Ideas' : '☆ Save to Ideas'}
-            </button>
-
-            {showBookmarkMenu && (
-              <div className="absolute bottom-full left-0 mb-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-4 w-64 shadow-2xl z-10">
-                <p className="text-xs text-[#666] mb-2">Save to folder</p>
-                <input
-                  list="folders"
-                  value={folder}
-                  onChange={e => setFolder(e.target.value)}
-                  placeholder="Folder name (optional)"
-                  className="w-full bg-[#111] border border-[#333] rounded-lg px-3 py-2 text-sm text-white placeholder-[#444] focus:outline-none mb-2"
-                />
-                <datalist id="folders">
-                  {folders.map(f => <option key={f} value={f} />)}
-                </datalist>
+          {/* Bookmark section */}
+          <div className="space-y-3">
+            {isBookmarked ? (
+              <div className="space-y-2">
+                {/* Saved indicator + niche chips */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-yellow-400 font-medium">★ Saved to Ideas</span>
+                  {ideaNiches.map(n => (
+                    <span key={n} className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${NICHE_COLORS[n] ?? 'bg-[#1a1a1a] border-[#2a2a2a] text-[#666]'}`}>
+                      {n}
+                    </span>
+                  ))}
+                </div>
+                {/* Edit niches */}
+                <div>
+                  <button
+                    onClick={() => setShowNichePicker(v => !v)}
+                    className="text-xs text-[#555] hover:text-white transition-colors"
+                  >
+                    {showNichePicker ? '− Hide niche picker' : '+ Change niches'}
+                  </button>
+                  {showNichePicker && (
+                    <div className="mt-2 space-y-2">
+                      <div className="flex flex-wrap gap-1.5">
+                        {NICHES.map(niche => (
+                          <button
+                            key={niche}
+                            onClick={() => toggleIdeaNiche(niche)}
+                            className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${ideaNiches.includes(niche) ? NICHE_COLORS[niche] : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
+                          >
+                            {niche}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        onClick={handleBookmark}
+                        disabled={bookmarking}
+                        className="text-xs bg-yellow-500 text-black font-semibold px-4 py-1.5 rounded-lg hover:bg-yellow-400 disabled:opacity-50 transition-colors"
+                      >
+                        {bookmarking ? 'Saving...' : 'Save changes'}
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <button
-                  onClick={handleBookmark}
-                  className="w-full bg-yellow-500 text-black font-semibold py-2 rounded-lg text-sm hover:bg-yellow-400 transition-colors"
+                  onClick={handleRemoveBookmark}
+                  className="text-xs text-[#444] hover:text-red-400 transition-colors"
                 >
-                  Save
+                  Remove bookmark
                 </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {showNichePicker ? (
+                  <div className="space-y-2">
+                    <p className="text-xs text-[#555]">Save to niches:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {NICHES.map(niche => (
+                        <button
+                          key={niche}
+                          onClick={() => toggleIdeaNiche(niche)}
+                          className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${ideaNiches.includes(niche) ? NICHE_COLORS[niche] : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
+                        >
+                          {niche}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleBookmark}
+                        disabled={bookmarking}
+                        className="text-xs bg-yellow-500 text-black font-semibold px-4 py-1.5 rounded-lg hover:bg-yellow-400 disabled:opacity-50 transition-colors"
+                      >
+                        {bookmarking ? 'Saving...' : 'Save to Ideas'}
+                      </button>
+                      <button
+                        onClick={() => { setShowNichePicker(false); setIdeaNiches([]) }}
+                        className="text-xs text-[#555] hover:text-white transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowNichePicker(true)}
+                    className="text-sm px-4 py-2 rounded-lg font-medium bg-[#1a1a1a] text-[#999] border border-[#2a2a2a] hover:border-[#444] transition-colors"
+                  >
+                    ☆ Save to Ideas
+                  </button>
+                )}
               </div>
             )}
           </div>

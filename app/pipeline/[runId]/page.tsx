@@ -452,28 +452,6 @@ function SlotCard({ slot, runHandle, onUpdate }: { slot: VideoSlot; runHandle: s
               className="w-full rounded-lg bg-black aspect-[9/16] object-contain"
             />
 
-            {/* Quality scores */}
-            {scores && (
-              <div className="grid grid-cols-3 gap-2">
-                {scoreKeys.map(key => {
-                  const val = scores[key]
-                  if (val == null) return null
-                  return (
-                    <div key={key} className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg p-2 text-center">
-                      <p className="text-[10px] text-[#333] truncate">{key.replace(/_/g, ' ')}</p>
-                      <p className={`text-sm font-semibold mt-0.5 ${scoreColor(val)}`}>{val}</p>
-                    </div>
-                  )
-                })}
-                {scores.total != null && (
-                  <div className="bg-[#0a0a0a] border border-violet-500/20 rounded-lg p-2 text-center">
-                    <p className="text-[10px] text-[#333]">total /90</p>
-                    <p className={`text-sm font-semibold mt-0.5 ${scoreColor(scores.total / 9)}`}>{scores.total}</p>
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* Editable fields */}
             <InlineEdit label="Overlay Text" value={slot.overlay_text} onSave={v => handleSaveField('overlay_text', v)} rows={1} />
 

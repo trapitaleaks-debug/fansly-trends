@@ -1,4 +1,5 @@
 'use client'
+import { NICHES } from './PostCard'
 
 export interface Filters {
   sort: 'trending' | 'liked' | 'newest'
@@ -6,6 +7,9 @@ export interface Filters {
   minLikes: number
   hashtag: string
   type: 'all' | 'explicit' | 'sfw'
+  niche: string
+  tagged: boolean
+  hideBookmarked: boolean
 }
 
 interface Props {
@@ -70,6 +74,36 @@ export default function FilterBar({ filters, onChange }: Props) {
         <option value="explicit">Explicit only</option>
         <option value="sfw">SFW only</option>
       </select>
+
+      {/* Niche */}
+      <select
+        value={filters.niche}
+        onChange={e => set({ niche: e.target.value, tagged: e.target.value !== '' })}
+        className="bg-[#1a1a1a] border border-[#2a2a2a] text-[#ccc] rounded-md px-2 py-1.5 focus:outline-none"
+      >
+        <option value="">All niches</option>
+        {NICHES.map(n => (
+          <option key={n} value={n}>{n.charAt(0).toUpperCase() + n.slice(1)}</option>
+        ))}
+      </select>
+
+      {/* Tagged only toggle */}
+      {!filters.niche && (
+        <button
+          onClick={() => set({ tagged: !filters.tagged })}
+          className={`px-3 py-1.5 rounded-md border text-xs transition-colors ${filters.tagged ? 'bg-[#D41020]/20 border-[#D41020]/40 text-[#D41020]' : 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-[#888]'}`}
+        >
+          Tagged only
+        </button>
+      )}
+
+      {/* Hide bookmarked toggle */}
+      <button
+        onClick={() => set({ hideBookmarked: !filters.hideBookmarked })}
+        className={`px-3 py-1.5 rounded-md border text-xs transition-colors ${!filters.hideBookmarked ? 'bg-yellow-500/20 border-yellow-500/40 text-yellow-400' : 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-[#888]'}`}
+      >
+        {filters.hideBookmarked ? 'Show bookmarks' : 'Hide bookmarks'}
+      </button>
     </div>
   )
 }
