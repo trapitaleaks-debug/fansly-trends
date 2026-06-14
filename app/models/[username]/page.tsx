@@ -2,8 +2,9 @@
 import { useState, useEffect, useCallback, use } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import PostCard, { type Post, NICHES, NICHE_COLORS } from '@/components/PostCard'
+import PostCard, { type Post } from '@/components/PostCard'
 import PostModal from '@/components/PostModal'
+import { useNiches } from '@/components/NichesProvider'
 
 interface Model {
   id: string
@@ -56,6 +57,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
   // Delete
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const { niches: allNiches, badgeClass, nicheEmoji } = useNiches()
 
   useEffect(() => {
     fetchModel()
@@ -235,13 +237,13 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
             </button>
           </div>
           <div className="flex flex-wrap gap-2">
-            {NICHES.map(niche => (
+            {allNiches.map(n => (
               <button
-                key={niche}
-                onClick={() => toggleNiche(niche)}
-                className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${niches.includes(niche) ? NICHE_COLORS[niche] : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
+                key={n.name}
+                onClick={() => toggleNiche(n.name)}
+                className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${niches.includes(n.name) ? badgeClass(n.name) : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
               >
-                {niche}
+                {n.emoji} {n.name}
               </button>
             ))}
           </div>

@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { useNiches } from './NichesProvider'
 
 export interface Post {
   id: string
@@ -31,6 +32,7 @@ function fmt(n: number) {
 
 export default function PostCard({ post, onClick, onBookmark }: Props) {
   const [revealed, setRevealed] = useState(false)
+  const { badgeClass, nicheEmoji } = useNiches()
   const isBookmarked = (post.trends_ideas?.length ?? 0) > 0
   const ideaNiches = post.trends_ideas?.[0]?.niches ?? []
   const hasNote = post.trends_ideas?.[0]?.notes
@@ -104,8 +106,8 @@ export default function PostCard({ post, onClick, onBookmark }: Props) {
         {ideaNiches.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-0.5">
             {ideaNiches.map(tag => (
-              <span key={tag} className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full border ${NICHE_COLORS[tag] ?? 'bg-[#1a1a1a] border-[#2a2a2a] text-[#666]'}`}>
-                {tag}
+              <span key={tag} className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full border ${badgeClass(tag)}`}>
+                {nicheEmoji(tag)} {tag}
               </span>
             ))}
           </div>
@@ -116,21 +118,4 @@ export default function PostCard({ post, onClick, onBookmark }: Props) {
       </div>
     </div>
   )
-}
-
-export const NICHES = ['general', 'asian', 'teen', 'latina', 'european', 'milf', 'ebony', 'petite', 'bbw', 'gfe', 'muslim', 'trans'] as const
-
-export const NICHE_COLORS: Record<string, string> = {
-  general:   'bg-blue-500/10 border-blue-500/20 text-blue-400',
-  asian:     'bg-pink-500/10 border-pink-500/20 text-pink-400',
-  teen:      'bg-purple-500/10 border-purple-500/20 text-purple-400',
-  latina:    'bg-orange-500/10 border-orange-500/20 text-orange-400',
-  european:  'bg-sky-500/10 border-sky-500/20 text-sky-400',
-  milf:      'bg-rose-500/10 border-rose-500/20 text-rose-400',
-  ebony:     'bg-amber-500/10 border-amber-500/20 text-amber-400',
-  petite:    'bg-teal-500/10 border-teal-500/20 text-teal-400',
-  bbw:       'bg-lime-500/10 border-lime-500/20 text-lime-400',
-  gfe:       'bg-red-500/10 border-red-500/20 text-red-400',
-  muslim:    'bg-emerald-500/10 border-emerald-500/20 text-emerald-400',
-  trans:     'bg-violet-500/10 border-violet-500/20 text-violet-400',
 }

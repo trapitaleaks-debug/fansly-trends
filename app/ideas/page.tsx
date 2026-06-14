@@ -1,8 +1,9 @@
 'use client'
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import PostCard, { type Post, NICHES, NICHE_COLORS } from '@/components/PostCard'
+import PostCard, { type Post } from '@/components/PostCard'
 import PostModal from '@/components/PostModal'
+import { useNiches } from '@/components/NichesProvider'
 
 interface Idea {
   id: string
@@ -18,6 +19,11 @@ export default function IdeasPage() {
   const [activeNiche, setActiveNiche] = useState<string | null>(null)
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [showAddNiche, setShowAddNiche] = useState(false)
+  const [newNicheName, setNewNicheName] = useState('')
+  const [newNicheEmoji, setNewNicheEmoji] = useState('')
+  const [addingNiche, setAddingNiche] = useState(false)
+  const { niches, badgeClass, dotClass, nicheEmoji, addNiche, deleteNiche } = useNiches()
 
   async function loadIdeas(niche?: string | null) {
     setLoading(true)
@@ -33,7 +39,6 @@ export default function IdeasPage() {
       .then(r => r.json())
       .then(({ ideas }) => {
         const all: Idea[] = ideas ?? []
-        // Compute per-niche counts from all ideas
         const counts: Record<string, number> = {}
         for (const idea of all) {
           for (const n of (idea.niches ?? [])) {
@@ -52,7 +57,6 @@ export default function IdeasPage() {
   }
 
   function handleBookmarkChange() {
-    // Reload all to update counts
     fetch('/api/ideas')
       .then(r => r.json())
       .then(({ ideas }) => {
@@ -72,7 +76,22 @@ export default function IdeasPage() {
       })
   }
 
-  const totalCount = Object.values(nicheCounts).reduce((a, b) => a + b, 0)
+  async function handleAddNiche() {
+    if (!newNicheName.trim() || !newNicheEmoji.trim()) return
+    setAddingNiche(true)
+    await addNiche(newNicheName, newNicheEmoji)
+    setNewNicheName('')
+    setNewNicheEmoji('')
+    setShowAddNiche(false)
+    setAddingNiche(false)
+  }
+
+  async function handleDeleteNiche(name: string) {
+    if (activeNiche === name) setActiveNiche(null)
+    await deleteNiche(name)
+    // Reload ideas if the deleted niche was the active filter
+    if (activeNiche === name) loadIdeas(null)
+  }
 
   const displayPosts = ideas.map(i => ({
     ...i.trends_posts,
@@ -106,23 +125,80 @@ export default function IdeasPage() {
             <span className="text-[10px] text-[#444]">{ideas.length}</span>
           </button>
 
-          {NICHES.map(niche => {
-            const count = nicheCounts[niche] ?? 0
-            const isActive = activeNiche === niche
+          {niches.map(niche => {
+            const count = nicheCounts[niche.name] ?? 0
+            const isActive = activeNiche === niche.name
             return (
-              <button
-                key={niche}
-                onClick={() => handleNicheClick(niche)}
-                className={`text-left text-xs px-3 py-2 rounded-lg transition-colors flex items-center justify-between group ${isActive ? 'bg-[#1e1e1e] text-white' : count > 0 ? 'text-[#888] hover:text-white' : 'text-[#3a3a3a] hover:text-[#555]'}`}
-              >
-                <span className="flex items-center gap-2">
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${count > 0 ? (NICHE_COLORS[niche]?.match(/text-(\S+)-\d+/)?.[0]?.replace('text-', 'bg-') ?? 'bg-[#444]') : 'bg-[#2a2a2a]'}`} />
-                  {niche}
-                </span>
-                {count > 0 && <span className="text-[10px] text-[#444]">{count}</span>}
-              </button>
+              <div key={niche.name} className="flex items-center group">
+                <button
+                  onClick={() => handleNicheClick(niche.name)}
+                  className={`flex-1 text-left text-xs px-3 py-2 rounded-lg transition-colors flex items-center justify-between ${isActive ? 'bg-[#1e1e1e] text-white' : count > 0 ? 'text-[#888] hover:text-white' : 'text-[#3a3a3a] hover:text-[#555]'}`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${count > 0 ? dotClass(niche.name) : 'bg-[#2a2a2a]'}`} />
+                    <span>{niche.emoji} {niche.name}</span>
+                  </span>
+                  {count > 0 && <span className="text-[10px] text-[#444]">{count}</span>}
+                </button>
+                <button
+                  onClick={() => handleDeleteNiche(niche.name)}
+                  className="opacity-0 group-hover:opacity-100 text-[#444] hover:text-red-400 transition-all px-1 text-xs flex-shrink-0"
+                  title={`Remove ${niche.name}`}
+                >
+                  ✕
+                </button>
+              </div>
             )
           })}
+
+          {/* Add niche */}
+          <div className="mt-2 px-1">
+            {showAddNiche ? (
+              <div className="space-y-1.5">
+                <div className="flex gap-1">
+                  <input
+                    type="text"
+                    value={newNicheEmoji}
+                    onChange={e => setNewNicheEmoji(e.target.value)}
+                    placeholder="😀"
+                    className="w-10 bg-[#1a1a1a] border border-[#2a2a2a] rounded-md px-1.5 py-1 text-xs text-white placeholder-[#444] focus:outline-none focus:border-[#444] text-center"
+                    maxLength={2}
+                  />
+                  <input
+                    type="text"
+                    value={newNicheName}
+                    onChange={e => setNewNicheName(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleAddNiche()}
+                    placeholder="niche name"
+                    className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-md px-2 py-1 text-xs text-white placeholder-[#444] focus:outline-none focus:border-[#444]"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    onClick={handleAddNiche}
+                    disabled={addingNiche || !newNicheName.trim() || !newNicheEmoji.trim()}
+                    className="flex-1 text-[10px] bg-[#D41020] text-white font-medium px-2 py-1 rounded-md disabled:opacity-40 hover:bg-[#e01a24] transition-colors"
+                  >
+                    {addingNiche ? '...' : 'Add'}
+                  </button>
+                  <button
+                    onClick={() => { setShowAddNiche(false); setNewNicheName(''); setNewNicheEmoji('') }}
+                    className="text-[10px] text-[#555] hover:text-white px-2 py-1"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowAddNiche(true)}
+                className="text-[10px] text-[#444] hover:text-white transition-colors px-2 py-1 flex items-center gap-1"
+              >
+                <span>＋</span> Add niche
+              </button>
+            )}
+          </div>
         </aside>
 
         {/* Content */}

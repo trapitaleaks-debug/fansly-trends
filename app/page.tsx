@@ -11,9 +11,7 @@ const DEFAULT_FILTERS: Filters = {
   days: 7,
   minLikes: 0,
   hashtag: '',
-  type: 'all',
   niche: '',
-  tagged: false,
   hideBookmarked: true,
 }
 
@@ -32,9 +30,7 @@ export default function FeedPage() {
       days: String(f.days),
       minLikes: String(f.minLikes),
       hashtag: f.hashtag,
-      type: f.type,
       niche: f.niche,
-      tagged: f.tagged ? 'yes' : '',
       hide_bookmarked: f.hideBookmarked ? 'yes' : '',
       page: String(p),
     })

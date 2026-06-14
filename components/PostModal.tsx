@@ -1,14 +1,13 @@
 'use client'
 import { useEffect, useState, useRef } from 'react'
 import type { Post } from './PostCard'
-import { NICHES, NICHE_COLORS } from './PostCard'
+import { useNiches } from './NichesProvider'
 
 interface DetailPost extends Post {
   videoUrl?: string
   video_duration?: number
   post_date?: string
   text_template?: string | null
-  niche_tags?: string[]
 }
 
 interface Props {
@@ -21,7 +20,6 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
   const [post, setPost] = useState<DetailPost | null>(null)
   const [notes, setNotes] = useState('')
   const [textTemplate, setTextTemplate] = useState('')
-  const [nicheTags, setNicheTags] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [savingTemplate, setSavingTemplate] = useState(false)
   const [ideaId, setIdeaId] = useState<string | null>(null)
@@ -30,6 +28,7 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
   const [bookmarking, setBookmarking] = useState(false)
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const templateTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const { niches, badgeClass, nicheEmoji } = useNiches()
 
   useEffect(() => {
     fetch(`/api/posts/${postId}`)
@@ -38,7 +37,6 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
         setPost(post)
         setNotes(post?.trends_ideas?.[0]?.notes ?? '')
         setTextTemplate(post?.text_template ?? '')
-        setNicheTags(post?.niche_tags ?? [])
         if (post?.trends_ideas?.[0]) {
           setIdeaId(post.trends_ideas[0].id)
           setIdeaNiches(post.trends_ideas[0].niches ?? [])
@@ -49,18 +47,6 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [postId, onClose])
-
-  async function handleNicheToggle(niche: string) {
-    const next = nicheTags.includes(niche)
-      ? nicheTags.filter(t => t !== niche)
-      : [...nicheTags, niche]
-    setNicheTags(next)
-    await fetch(`/api/posts/${postId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ niche_tags: next }),
-    })
-  }
 
   function handleTemplateChange(val: string) {
     setTextTemplate(val)
@@ -91,10 +77,26 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
     }, 800)
   }
 
-  function toggleIdeaNiche(niche: string) {
-    setIdeaNiches(prev =>
-      prev.includes(niche) ? prev.filter(n => n !== niche) : [...prev, niche]
-    )
+  async function toggleIdeaNiche(niche: string) {
+    const next = ideaNiches.includes(niche)
+      ? ideaNiches.filter(n => n !== niche)
+      : [...ideaNiches, niche]
+    setIdeaNiches(next)
+
+    if (ideaId) {
+      // Auto-save when already bookmarked
+      const res = await fetch('/api/ideas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post_id: postId, niches: next, notes }),
+      })
+      const data = await res.json()
+      setPost(p => p ? {
+        ...p,
+        trends_ideas: [{ id: data.idea?.id ?? ideaId, niches: next, tags: [], notes }],
+      } : p)
+      onBookmarkChange()
+    }
   }
 
   async function handleBookmark() {
@@ -209,25 +211,6 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
             </div>
           )}
 
-          {/* Niche Tags (content tags for feed filter) */}
-          <div>
-            <label className="text-xs text-[#555] mb-2 block">Niche tags <span className="text-[#333]">— for feed filter</span></label>
-            <div className="flex flex-wrap gap-1.5">
-              {NICHES.map(niche => {
-                const active = nicheTags.includes(niche)
-                return (
-                  <button
-                    key={niche}
-                    onClick={() => handleNicheToggle(niche)}
-                    className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${active ? NICHE_COLORS[niche] : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
-                  >
-                    {niche}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
           {/* Text Template */}
           <div>
             <label className="text-xs text-[#555] mb-1 block flex items-center justify-between">
@@ -262,45 +245,21 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
           <div className="space-y-3">
             {isBookmarked ? (
               <div className="space-y-2">
-                {/* Saved indicator + niche chips */}
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
                   <span className="text-xs text-yellow-400 font-medium">★ Saved to Ideas</span>
-                  {ideaNiches.map(n => (
-                    <span key={n} className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${NICHE_COLORS[n] ?? 'bg-[#1a1a1a] border-[#2a2a2a] text-[#666]'}`}>
-                      {n}
-                    </span>
-                  ))}
+                  <span className="text-[10px] text-[#444]">— tap niches to update</span>
                 </div>
-                {/* Edit niches */}
-                <div>
-                  <button
-                    onClick={() => setShowNichePicker(v => !v)}
-                    className="text-xs text-[#555] hover:text-white transition-colors"
-                  >
-                    {showNichePicker ? '− Hide niche picker' : '+ Change niches'}
-                  </button>
-                  {showNichePicker && (
-                    <div className="mt-2 space-y-2">
-                      <div className="flex flex-wrap gap-1.5">
-                        {NICHES.map(niche => (
-                          <button
-                            key={niche}
-                            onClick={() => toggleIdeaNiche(niche)}
-                            className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${ideaNiches.includes(niche) ? NICHE_COLORS[niche] : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
-                          >
-                            {niche}
-                          </button>
-                        ))}
-                      </div>
-                      <button
-                        onClick={handleBookmark}
-                        disabled={bookmarking}
-                        className="text-xs bg-yellow-500 text-black font-semibold px-4 py-1.5 rounded-lg hover:bg-yellow-400 disabled:opacity-50 transition-colors"
-                      >
-                        {bookmarking ? 'Saving...' : 'Save changes'}
-                      </button>
-                    </div>
-                  )}
+                {/* Niche picker — always visible, auto-saves on toggle */}
+                <div className="flex flex-wrap gap-1.5">
+                  {niches.map(n => (
+                    <button
+                      key={n.name}
+                      onClick={() => toggleIdeaNiche(n.name)}
+                      className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${ideaNiches.includes(n.name) ? badgeClass(n.name) : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
+                    >
+                      {n.emoji} {n.name}
+                    </button>
+                  ))}
                 </div>
                 <button
                   onClick={handleRemoveBookmark}
@@ -315,13 +274,18 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
                   <div className="space-y-2">
                     <p className="text-xs text-[#555]">Save to niches:</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {NICHES.map(niche => (
+                      {niches.map(n => (
                         <button
-                          key={niche}
-                          onClick={() => toggleIdeaNiche(niche)}
-                          className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${ideaNiches.includes(niche) ? NICHE_COLORS[niche] : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
+                          key={n.name}
+                          onClick={() => {
+                            const next = ideaNiches.includes(n.name)
+                              ? ideaNiches.filter(x => x !== n.name)
+                              : [...ideaNiches, n.name]
+                            setIdeaNiches(next)
+                          }}
+                          className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${ideaNiches.includes(n.name) ? badgeClass(n.name) : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
                         >
-                          {niche}
+                          {n.emoji} {n.name}
                         </button>
                       ))}
                     </div>

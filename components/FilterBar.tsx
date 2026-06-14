@@ -1,14 +1,12 @@
 'use client'
-import { NICHES } from './PostCard'
+import { useNiches } from './NichesProvider'
 
 export interface Filters {
   sort: 'trending' | 'liked' | 'newest'
   days: number
   minLikes: number
   hashtag: string
-  type: 'all' | 'explicit' | 'sfw'
   niche: string
-  tagged: boolean
   hideBookmarked: boolean
 }
 
@@ -19,6 +17,7 @@ interface Props {
 
 export default function FilterBar({ filters, onChange }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch })
+  const { niches, nicheEmoji } = useNiches()
 
   return (
     <div className="flex flex-wrap gap-2 px-4 py-3 bg-[#0f0f0f] border-b border-[#1e1e1e] text-xs">
@@ -64,38 +63,17 @@ export default function FilterBar({ filters, onChange }: Props) {
         className="bg-[#1a1a1a] border border-[#2a2a2a] text-[#ccc] rounded-md px-2 py-1.5 w-28 focus:outline-none placeholder-[#444]"
       />
 
-      {/* Type */}
-      <select
-        value={filters.type}
-        onChange={e => set({ type: e.target.value as Filters['type'] })}
-        className="bg-[#1a1a1a] border border-[#2a2a2a] text-[#ccc] rounded-md px-2 py-1.5 focus:outline-none"
-      >
-        <option value="all">All content</option>
-        <option value="explicit">Explicit only</option>
-        <option value="sfw">SFW only</option>
-      </select>
-
       {/* Niche */}
       <select
         value={filters.niche}
-        onChange={e => set({ niche: e.target.value, tagged: e.target.value !== '' })}
+        onChange={e => set({ niche: e.target.value })}
         className="bg-[#1a1a1a] border border-[#2a2a2a] text-[#ccc] rounded-md px-2 py-1.5 focus:outline-none"
       >
         <option value="">All niches</option>
-        {NICHES.map(n => (
-          <option key={n} value={n}>{n.charAt(0).toUpperCase() + n.slice(1)}</option>
+        {niches.map(n => (
+          <option key={n.name} value={n.name}>{n.emoji} {n.name.charAt(0).toUpperCase() + n.name.slice(1)}</option>
         ))}
       </select>
-
-      {/* Tagged only toggle */}
-      {!filters.niche && (
-        <button
-          onClick={() => set({ tagged: !filters.tagged })}
-          className={`px-3 py-1.5 rounded-md border text-xs transition-colors ${filters.tagged ? 'bg-[#D41020]/20 border-[#D41020]/40 text-[#D41020]' : 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-[#888]'}`}
-        >
-          Tagged only
-        </button>
-      )}
 
       {/* Hide bookmarked toggle */}
       <button
