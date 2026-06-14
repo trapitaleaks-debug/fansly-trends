@@ -104,6 +104,19 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
   useEffect(() => { if (!loading) fetchMatchedIdeas() }, [loading, fetchMatchedIdeas])
 
+  // Auto-poll when any job for this model is pending/processing
+  useEffect(() => {
+    if (!model) return
+    const hasActive = matchedIdeas.some(idea =>
+      (idea.trends_posts.video_jobs ?? []).some(j =>
+        j.model_id === model.id && (j.status === 'pending' || j.status === 'processing')
+      )
+    )
+    if (!hasActive) return
+    const t = setInterval(() => fetchMatchedIdeas(), 5000)
+    return () => clearInterval(t)
+  }, [matchedIdeas, model, fetchMatchedIdeas])
+
   async function toggleNiche(niche: string) {
     const next = niches.includes(niche) ? niches.filter(n => n !== niche) : [...niches, niche]
     setNiches(next)

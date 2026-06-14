@@ -107,15 +107,25 @@ function emojiToNotoCP(emoji: string): string {
   return cps.map(cp => cp.toString(16)).join('_')
 }
 
-function downloadEmojiPng(emoji: string, dest: string): boolean {
+async function downloadEmojiPng(emoji: string, dest: string): Promise<boolean> {
   const cp = emojiToNotoCP(emoji)
   // Google Noto Emoji — actively maintained, covers Unicode 15.1+
-  // Twemoji (twitter) was abandoned in 2022 and frozen at Unicode 14
   const url = `https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u${cp}.png`
   try {
-    execSync(`curl -sL --max-time 8 --fail "${url}" -o "${dest}"`, { stdio: 'pipe', env: process.env })
-    return fs.existsSync(dest) && fs.statSync(dest).size > 200
-  } catch {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
+    if (!res.ok) {
+      console.log(`  [emoji] HTTP ${res.status} for ${emoji} (${url})`)
+      return false
+    }
+    const buf = Buffer.from(await res.arrayBuffer())
+    if (buf.length <= 200) {
+      console.log(`  [emoji] too small (${buf.length}B) for ${emoji}`)
+      return false
+    }
+    fs.writeFileSync(dest, buf)
+    return true
+  } catch (e) {
+    console.log(`  [emoji] download failed for ${emoji}: ${(e as Error).message}`)
     return false
   }
 }
@@ -198,14 +208,15 @@ export async function processVideoJob(jobId: string): Promise<void> {
     // Text drawtext filter (strips emoji internally, uses system Liberation/Helvetica)
     const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
 
-    // Download Twemoji PNGs for each unique emoji in the text
+    // Download Noto Emoji PNGs for each unique emoji in the text
     const emojis = extractEmoji(overlayText)
+    console.log(`  Found ${emojis.length} emoji(s): ${JSON.stringify(emojis)}`)
     const emojiPngs: string[] = []
     for (let i = 0; i < emojis.length; i++) {
       const dest = path.join(tmpDir, `emoji_${i}.png`)
-      if (downloadEmojiPng(emojis[i], dest)) {
+      if (await downloadEmojiPng(emojis[i], dest)) {
         emojiPngs.push(dest)
-        console.log(`  Emoji sticker: ${emojis[i]}`)
+        console.log(`  Emoji sticker downloaded: ${emojis[i]}`)
       }
     }
 
