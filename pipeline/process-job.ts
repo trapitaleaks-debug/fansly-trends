@@ -12,7 +12,7 @@ import { execSync } from 'child_process'
 import { uploadToR2, r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
-import { buildComposition, adaptBrandHtmlForRender, buildCompositionFromBrandConfig, type BrandConfig } from './compose'
+import { buildComposition, type BrandConfig } from './compose'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
@@ -90,6 +90,82 @@ function buildDrawtextFilter(overlayText: string, tmpDir: string): string {
 }
 
 const FONTS_DIR = path.resolve(__dirname, '../pipeline/fonts')
+
+function stripEmojiForDrawtext(text: string): string {
+  return text
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+    .replace(/[\u{2600}-\u{27BF}]/gu, '')
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')
+    .replace(/‍/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function splitBrandLines(text: string): Array<{ text: string; size: 'lg' | 'sm' | 'xs' }> {
+  const byNewline = text.split(/\n/).map(p => p.trim()).filter(Boolean)
+  if (byNewline.length >= 2) {
+    if (byNewline.length === 2) return [{ text: byNewline[0], size: 'sm' }, { text: byNewline[1], size: 'lg' }]
+    return byNewline.map((p, i) => ({ text: p, size: (i === 0 || i === byNewline.length - 1 ? 'sm' : 'lg') as 'lg' | 'sm' | 'xs' }))
+  }
+  const p = text.trim()
+  const m = p.match(/^(.+?[.!?,…])\s+(.+)$/)
+  if (m && m[1].length > 4 && m[2].length > 3) {
+    return [{ text: m[1], size: 'sm' }, { text: m[2], size: 'lg' }]
+  }
+  return [{ text: p, size: 'lg' }]
+}
+
+function buildBrandDrawtextFilter(overlayText: string, config: BrandConfig, tmpDir: string): string {
+  const text = stripEmojiForDrawtext(overlayText.trim())
+  if (!text) return ''
+
+  const fontTtf = path.join(FONTS_DIR, 'CormorantGaramond-BoldItalic.ttf')
+  if (!fs.existsSync(fontTtf)) {
+    console.log('  Brand TTF not found, falling back to default drawtext')
+    return buildDrawtextFilter(overlayText, tmpDir)
+  }
+
+  const lines = splitBrandLines(text)
+  const SIZE: Record<string, number> = { lg: 90, sm: 61, xs: 46 }
+  const lineSpacing = 12
+
+  const heights = lines.map(l => SIZE[l.size])
+  const totalH = heights.reduce((a, b) => a + b, 0) + lineSpacing * (lines.length - 1)
+
+  // ffmpeg color format: 0xRRGGBBAA
+  const textColor = config.color_text.replace('#', '0x') + 'FF'
+  const shadowColor = (config.color_shadow ?? '#0A0A0A').replace('#', '0x') + 'AA'
+
+  const filters: string[] = []
+  let yAccum = 0
+
+  lines.forEach((line, i) => {
+    const fontSize = SIZE[line.size]
+    const yExpr = `(h-${totalH})/2+${yAccum}`
+
+    // Write text to file to avoid all shell/ffmpeg escaping issues
+    const textFile = path.join(tmpDir, `brand_l${i}.txt`)
+    fs.writeFileSync(textFile, line.text, 'utf8')
+
+    filters.push([
+      `drawtext=fontfile='${fontTtf}'`,
+      `textfile='${textFile}'`,
+      `fontsize=${fontSize}`,
+      `fontcolor=${textColor}`,
+      `bordercolor=white@1.0`,
+      `borderw=2`,
+      `shadowcolor=${shadowColor}`,
+      `shadowx=3`,
+      `shadowy=3`,
+      `x=(w-text_w)/2`,
+      `y=${yExpr}`,
+    ].join(':'))
+
+    yAccum += fontSize + lineSpacing
+  })
+
+  return filters.join(',')
+}
 
 async function renderWithHyperframes(rawPath: string, composedPath: string, compositionHtml: string, tmpDir: string): Promise<void> {
   const normPath = path.join(tmpDir, 'hf_norm.mp4')
@@ -187,23 +263,24 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const encodeFlags = `-c:v libx264 -preset ultrafast -threads 2 -crf 23`
     console.log(`  Rendering overlay: "${overlayText}"`)
 
-    if (process.platform !== 'darwin') {
-      // Hyperframes (Linux/Railway)
+    const base = (extra?: string) =>
+      hasAudio
+        ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}"${extra ? ' ' + extra : ''}`
+        : `${ffmpegBin()} -i "${rawPath}"${extra ? ' ' + extra : ''}`
+    const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
+
+    if (brandConfig && overlayText.trim()) {
+      // Brand config: ffmpeg drawtext with bundled TTF — no Hyperframes, no Chrome, works everywhere
+      console.log(`  Brand drawtext: ${brandConfig.font_primary} ${brandConfig.color_text}`)
+      const dtFilter = buildBrandDrawtextFilter(overlayText, brandConfig, tmpDir)
+      const vf = dtFilter ? `-vf "${dtFilter}"` : ''
+      run(`${base()} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
+    } else if (process.platform !== 'darwin') {
+      // Linux/Railway: Hyperframes for default Arial Black style
       const composedPath = path.join(tmpDir, 'composed.mp4')
       let hfOk = false
       try {
-        // Build composition HTML — brand config JSON > brand HTML file > default
-        let compositionHtml: string
-        if (brandConfig) {
-          console.log(`  Using brand config: ${brandConfig.font_primary}, ${brandConfig.color_text}`)
-          compositionHtml = buildCompositionFromBrandConfig(brandConfig, 'video.mp4', overlayText, duration, 1)
-        } else if (brandHtmlKey) {
-          console.log(`  Using brand HTML: ${brandHtmlKey}`)
-          const brandHtmlBuf = await downloadBufferFromR2(brandHtmlKey)
-          compositionHtml = adaptBrandHtmlForRender(brandHtmlBuf.toString('utf8'), 'video.mp4', overlayText, duration, 1)
-        } else {
-          compositionHtml = buildComposition({ videoFile: 'video.mp4', overlayText, duration, slot: 1 })
-        }
+        const compositionHtml = buildComposition({ videoFile: 'video.mp4', overlayText, duration, slot: 1 })
         await renderWithHyperframes(rawPath, composedPath, compositionHtml, tmpDir)
         hfOk = true
       } catch (e) {
@@ -218,18 +295,14 @@ export async function processVideoJob(jobId: string): Promise<void> {
         }
       } else {
         const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
-        const base = hasAudio ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}"` : `${ffmpegBin()} -i "${rawPath}"`
-        const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
         const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-        run(`${base} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
+        run(`${base()} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
       }
     } else {
-      // Mac dev: ffmpeg drawtext
+      // Mac dev: default ffmpeg drawtext
       const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
-      const base = hasAudio ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}"` : `${ffmpegBin()} -i "${rawPath}"`
-      const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
       const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-      run(`${base} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
+      run(`${base()} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
     }
 
     // 5. Thumbnail at 1s
