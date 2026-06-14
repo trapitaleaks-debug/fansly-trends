@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 
 const KEY = 'content_tags'
-const DEFAULT_TAGS = ['masturbation', 'dildo', 'blowjob', 'girl/girl', 'all']
+const DEFAULT_TAGS = ['masturbation', 'dildo', 'blowjob', 'girl/girl']
 
 export async function GET() {
   const { data } = await supabaseAdmin
