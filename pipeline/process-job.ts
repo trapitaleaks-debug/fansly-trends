@@ -89,6 +89,8 @@ function buildDrawtextFilter(overlayText: string, tmpDir: string): string {
   return `drawtext=textfile='${textFile1}':${baseStyle}:x=(w-text_w)/2:y=h*0.65,drawtext=textfile='${textFile2}':${baseStyle}:x=(w-text_w)/2:y=h*0.73`
 }
 
+const FONTS_DIR = path.resolve(__dirname, '../pipeline/fonts')
+
 async function renderWithHyperframes(rawPath: string, composedPath: string, compositionHtml: string, tmpDir: string): Promise<void> {
   const normPath = path.join(tmpDir, 'hf_norm.mp4')
   run(`${ffmpegBin()} -i "${rawPath}" -c:v libx264 -preset ultrafast -threads 2 -crf 18 -an -y "${normPath}"`)
@@ -96,6 +98,14 @@ async function renderWithHyperframes(rawPath: string, composedPath: string, comp
   const compDir = path.join(tmpDir, 'comp')
   fs.mkdirSync(compDir, { recursive: true })
   fs.symlinkSync(normPath, path.join(compDir, 'video.mp4'))
+
+  // Copy bundled fonts so Chrome can load them from disk (no network needed)
+  if (fs.existsSync(FONTS_DIR)) {
+    for (const f of fs.readdirSync(FONTS_DIR)) {
+      fs.copyFileSync(path.join(FONTS_DIR, f), path.join(compDir, f))
+    }
+  }
+
   fs.writeFileSync(path.join(compDir, 'index.html'), compositionHtml, 'utf8')
 
   const bin = hyperframesBin()

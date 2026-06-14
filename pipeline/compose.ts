@@ -165,14 +165,9 @@ export function buildCompositionFromBrandConfig(
   const textShadowCss = shadows.length > 0 ? `text-shadow: ${shadows.join(', ')};` : ''
   const textStrokeCss = effects.includes('outline') ? `-webkit-text-stroke: 2px ${colorAccent}; paint-order: stroke fill;` : ''
 
-  // Google Fonts URL
-  const isItalic = fontStyle === 'italic'
-  const encodedFamily = config.font_primary.replace(/ /g, '+')
-  const fontsUrl = `https://fonts.googleapis.com/css2?family=${encodedFamily}:${isItalic ? 'ital,' : ''}wght@${isItalic ? '1,' : ''}${fontWeight}&display=swap`
-  const fallbackFamily = config.font_fallback?.replace(/ /g, '+')
-  const fallbackUrl = fallbackFamily
-    ? `https://fonts.googleapis.com/css2?family=${fallbackFamily}:wght@${fontWeight}&display=swap`
-    : null
+  // Local font filename — bundled in pipeline/fonts/ and copied to comp dir at render time
+  // Naming convention: lowercase-hyphenated-font-name-style-weight.woff2
+  const localFontFile = `${config.font_primary.toLowerCase().replace(/ /g, '-')}-${fontStyle === 'italic' ? 'italic-' : ''}${fontWeight}.woff2`
 
   // Word spans
   const words = text.split(/\s+/).filter(Boolean)
@@ -191,11 +186,14 @@ export function buildCompositionFromBrandConfig(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=${width}, height=${height}">
-  <link rel="preload" href="${fontsUrl}" as="style">
-  <link href="${fontsUrl}" rel="stylesheet">
-  ${fallbackUrl ? `<link href="${fallbackUrl}" rel="stylesheet">` : ''}
   <script src="${GSAP_CDN}"></script>
   <style>
+    @font-face {
+      font-family: '${config.font_primary}';
+      font-style: ${fontStyle};
+      font-weight: ${fontWeight};
+      src: url('${localFontFile}') format('woff2');
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: ${width}px; height: ${height}px; overflow: hidden; background: #000; }
     .clip { position: absolute; top: 0; left: 0; visibility: hidden; }
