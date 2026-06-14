@@ -12,7 +12,7 @@ import { execSync } from 'child_process'
 import { uploadToR2, r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
-import { buildComposition, type BrandConfig } from './compose'
+import { type BrandConfig } from './compose'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
@@ -89,103 +89,37 @@ function buildDrawtextFilter(overlayText: string, tmpDir: string): string {
   return `drawtext=textfile='${textFile1}':${baseStyle}:x=(w-text_w)/2:y=h*0.65,drawtext=textfile='${textFile2}':${baseStyle}:x=(w-text_w)/2:y=h*0.73`
 }
 
-const FONTS_DIR = path.resolve(__dirname, '../pipeline/fonts')
+// ─── Twemoji emoji sticker helpers ────────────────────────────────────────────
 
-function stripEmojiForDrawtext(text: string): string {
-  return text
-    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
-    .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')
-    .replace(/‍/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+function extractEmoji(text: string): string[] {
+  // Match emoji sequences: base glyph + optional ZWJ/variation-selector chains
+  const re = /\p{Extended_Pictographic}(?:️?(?:‍\p{Extended_Pictographic}️?)*)?️?/gu
+  const seen = new Set<string>()
+  for (const m of text.matchAll(re)) {
+    if (m[0].trim()) seen.add(m[0])
+  }
+  return [...seen]
 }
 
-function splitBrandLines(text: string): Array<{ text: string; size: 'lg' | 'sm' | 'xs' }> {
-  const byNewline = text.split(/\n/).map(p => p.trim()).filter(Boolean)
-  if (byNewline.length >= 2) {
-    if (byNewline.length === 2) return [{ text: byNewline[0], size: 'sm' }, { text: byNewline[1], size: 'lg' }]
-    return byNewline.map((p, i) => ({ text: p, size: (i === 0 || i === byNewline.length - 1 ? 'sm' : 'lg') as 'lg' | 'sm' | 'xs' }))
-  }
-  const p = text.trim()
-  const m = p.match(/^(.+?[.!?,…])\s+(.+)$/)
-  if (m && m[1].length > 4 && m[2].length > 3) {
-    return [{ text: m[1], size: 'sm' }, { text: m[2], size: 'lg' }]
-  }
-  return [{ text: p, size: 'lg' }]
+function emojiToTwemojiCP(emoji: string): string {
+  // Twemoji filenames: hex codepoints joined by '-', FE0F stripped for simple emoji
+  const cps = [...emoji].map(c => c.codePointAt(0)!)
+  const hasZWJ = cps.includes(0x200D)
+  // Keep FE0F in ZWJ sequences, strip for simple emoji
+  const filtered = hasZWJ ? cps : cps.filter(cp => cp !== 0xFE0F)
+  return filtered.map(cp => cp.toString(16)).join('-')
 }
 
-function buildBrandDrawtextFilter(overlayText: string, config: BrandConfig, tmpDir: string): string {
-  const text = stripEmojiForDrawtext(overlayText.trim())
-  if (!text) return ''
-
-  const fontTtf = path.join(FONTS_DIR, 'CormorantGaramond-BoldItalic.ttf')
-  if (!fs.existsSync(fontTtf)) {
-    console.log('  Brand TTF not found, falling back to default drawtext')
-    return buildDrawtextFilter(overlayText, tmpDir)
+function downloadTwemojiPng(emoji: string, dest: string): boolean {
+  const cp = emojiToTwemojiCP(emoji)
+  const url = `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${cp}.png`
+  try {
+    execSync(`curl -sL --max-time 6 --fail "${url}" -o "${dest}"`, { stdio: 'pipe', env: process.env })
+    return fs.existsSync(dest) && fs.statSync(dest).size > 200
+  } catch {
+    // Emoji may be newer than Twemoji v14.0.2 (Unicode 14) — skip silently
+    return false
   }
-
-  const lines = splitBrandLines(text)
-  const SIZE: Record<string, number> = { lg: 90, sm: 61, xs: 46 }
-  const lineSpacing = 12
-
-  const heights = lines.map(l => SIZE[l.size])
-  const totalH = heights.reduce((a, b) => a + b, 0) + lineSpacing * (lines.length - 1)
-
-  // ffmpeg color format: 0xRRGGBBAA
-  const textColor = config.color_text.replace('#', '0x') + 'FF'
-  const shadowColor = (config.color_shadow ?? '#0A0A0A').replace('#', '0x') + 'AA'
-
-  const filters: string[] = []
-  let yAccum = 0
-
-  lines.forEach((line, i) => {
-    const fontSize = SIZE[line.size]
-    const yExpr = `(h-${totalH})/2+${yAccum}`
-
-    // Write text to file to avoid all shell/ffmpeg escaping issues
-    const textFile = path.join(tmpDir, `brand_l${i}.txt`)
-    fs.writeFileSync(textFile, line.text, 'utf8')
-
-    filters.push([
-      `drawtext=fontfile='${fontTtf}'`,
-      `textfile='${textFile}'`,
-      `fontsize=${fontSize}`,
-      `fontcolor=${textColor}`,
-      `bordercolor=white@1.0`,
-      `borderw=2`,
-      `shadowcolor=${shadowColor}`,
-      `shadowx=3`,
-      `shadowy=3`,
-      `x=(w-text_w)/2`,
-      `y=${yExpr}`,
-    ].join(':'))
-
-    yAccum += fontSize + lineSpacing
-  })
-
-  return filters.join(',')
-}
-
-async function renderWithHyperframes(rawPath: string, composedPath: string, compositionHtml: string, tmpDir: string): Promise<void> {
-  const normPath = path.join(tmpDir, 'hf_norm.mp4')
-  run(`${ffmpegBin()} -i "${rawPath}" -c:v libx264 -preset ultrafast -threads 2 -crf 18 -an -y "${normPath}"`)
-
-  const compDir = path.join(tmpDir, 'comp')
-  fs.mkdirSync(compDir, { recursive: true })
-  fs.symlinkSync(normPath, path.join(compDir, 'video.mp4'))
-
-  // Copy bundled fonts so Chrome can load them from disk (no network needed)
-  if (fs.existsSync(FONTS_DIR)) {
-    for (const f of fs.readdirSync(FONTS_DIR)) {
-      fs.copyFileSync(path.join(FONTS_DIR, f), path.join(compDir, f))
-    }
-  }
-
-  fs.writeFileSync(path.join(compDir, 'index.html'), compositionHtml, 'utf8')
-
-  const bin = hyperframesBin()
-  run(`"${bin}" render "${compDir}" -o "${composedPath}" --no-browser-gpu --fps 30 --workers 1`)
 }
 
 export async function processVideoJob(jobId: string): Promise<void> {
@@ -259,50 +193,66 @@ export async function processVideoJob(jobId: string): Promise<void> {
       }
     }
 
-    // 4. Render overlay text
+    // 4. Render overlay — white Arial text + black border + Twemoji emoji stickers
     const encodeFlags = `-c:v libx264 -preset ultrafast -threads 2 -crf 23`
     console.log(`  Rendering overlay: "${overlayText}"`)
 
-    const base = (extra?: string) =>
-      hasAudio
-        ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}"${extra ? ' ' + extra : ''}`
-        : `${ffmpegBin()} -i "${rawPath}"${extra ? ' ' + extra : ''}`
-    const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
+    // Text drawtext filter (strips emoji internally, uses system Liberation/Helvetica)
+    const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
 
-    if (brandConfig && overlayText.trim()) {
-      // Brand config: ffmpeg drawtext with bundled TTF — no Hyperframes, no Chrome, works everywhere
-      console.log(`  Brand drawtext: ${brandConfig.font_primary} ${brandConfig.color_text}`)
-      const dtFilter = buildBrandDrawtextFilter(overlayText, brandConfig, tmpDir)
+    // Download Twemoji PNGs for each unique emoji in the text
+    const emojis = extractEmoji(overlayText)
+    const emojiPngs: string[] = []
+    for (let i = 0; i < emojis.length; i++) {
+      const dest = path.join(tmpDir, `emoji_${i}.png`)
+      if (downloadTwemojiPng(emojis[i], dest)) {
+        emojiPngs.push(dest)
+        console.log(`  Emoji sticker: ${emojis[i]}`)
+      }
+    }
+
+    if (emojiPngs.length === 0) {
+      // No emoji or all failed to download — simple drawtext
       const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-      run(`${base()} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
-    } else if (process.platform !== 'darwin') {
-      // Linux/Railway: Hyperframes for default Arial Black style
-      const composedPath = path.join(tmpDir, 'composed.mp4')
-      let hfOk = false
-      try {
-        const compositionHtml = buildComposition({ videoFile: 'video.mp4', overlayText, duration, slot: 1 })
-        await renderWithHyperframes(rawPath, composedPath, compositionHtml, tmpDir)
-        hfOk = true
-      } catch (e) {
-        console.log(`  Hyperframes failed — falling back to ffmpeg: ${(e as Error).message}`)
-      }
-
-      if (hfOk) {
-        if (hasAudio) {
-          run(`${ffmpegBin()} -i "${composedPath}" -i "${audioPath}" -c:v copy -c:a aac -shortest -y "${finalPath}"`)
-        } else {
-          fs.renameSync(composedPath, finalPath)
-        }
-      } else {
-        const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
-        const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-        run(`${base()} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
-      }
+      const videoIn = hasAudio ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}"` : `${ffmpegBin()} -i "${rawPath}"`
+      const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
+      run(`${videoIn} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
     } else {
-      // Mac dev: default ffmpeg drawtext
-      const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
-      const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-      run(`${base()} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
+      // Build filter_complex: drawtext on video → overlay each emoji PNG centered below text
+      const EMOJI_SIZE = 100
+      const EMOJI_GAP = 8
+      const totalEmojiW = emojiPngs.length * EMOJI_SIZE + (emojiPngs.length - 1) * EMOJI_GAP
+
+      const fcParts: string[] = []
+      let curLabel = '0:v'
+
+      if (dtFilter) {
+        fcParts.push(`[0:v]${dtFilter}[vt]`)
+        curLabel = 'vt'
+      }
+
+      // Scale each emoji input (inputs 1..N are emoji PNGs)
+      emojiPngs.forEach((_, i) => fcParts.push(`[${i + 1}:v]scale=${EMOJI_SIZE}:${EMOJI_SIZE}[e${i}]`))
+
+      // Chain overlays: emoji row centered horizontally, just below text block
+      emojiPngs.forEach((_, i) => {
+        const xPos = `(W-${totalEmojiW})/2+${i * (EMOJI_SIZE + EMOJI_GAP)}`
+        const outLabel = i === emojiPngs.length - 1 ? 'vout' : `vm${i}`
+        fcParts.push(`[${curLabel}][e${i}]overlay=x=${xPos}:y=H*0.83[${outLabel}]`)
+        curLabel = outLabel
+      })
+
+      const fc = fcParts.join(';')
+      const emojiInputs = emojiPngs.map(p => `-i "${p}"`).join(' ')
+      const audioInputIdx = 1 + emojiPngs.length
+      const allInputs = hasAudio
+        ? `${ffmpegBin()} -i "${rawPath}" ${emojiInputs} -i "${audioPath}"`
+        : `${ffmpegBin()} -i "${rawPath}" ${emojiInputs}`
+      const audioMap = hasAudio
+        ? `-map "[vout]" -map ${audioInputIdx}:a -c:a aac -shortest`
+        : `-map "[vout]" -an`
+
+      run(`${allInputs} -filter_complex "${fc}" ${audioMap} ${encodeFlags} -y "${finalPath}"`)
     }
 
     // 5. Thumbnail at 1s
