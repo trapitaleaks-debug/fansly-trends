@@ -123,6 +123,15 @@ export interface BrandConfig {
 
 type LineSize = 'lg' | 'sm' | 'xs'
 
+function stripEmojiFromText(text: string): string {
+  return text
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+    .replace(/[\u{2600}-\u{27BF}]/gu, '')
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 function splitIntoHookLines(text: string): Array<{ text: string; size: LineSize }> {
   // Split on explicit newlines first
   const byNewline = text.split(/\n/).map(p => p.trim()).filter(Boolean)
@@ -140,13 +149,9 @@ function splitIntoHookLines(text: string): Array<{ text: string; size: LineSize 
 }
 
 /**
- * Builds a Hyperframes composition from a brand config JSON
- * (as stored in trends_models.video_brand_config).
- * Replicates the exact structure of the brand preview HTML:
- * - hook lines with lg/sm/xs sizing
- * - sticker absolutely positioned next to the text block
- * - centered composition
- * - word-by-word GSAP stagger matching the preview animation
+ * Builds a Hyperframes composition from a brand config JSON.
+ * Uses the same DOM-building technique as the brand preview HTML (span.textContent = w + ' ')
+ * to guarantee word spacing. Strips emoji from text; first sticker from config is the emoji.
  */
 export function buildCompositionFromBrandConfig(
   config: BrandConfig,
@@ -159,22 +164,24 @@ export function buildCompositionFromBrandConfig(
 ): string {
   const id = `slot${slot}`
   const dur = duration.toFixed(2)
-  const text = overlayText.trim()
+
+  // Strip emoji — rendered as ugly Noto glyphs in Linux Chrome; sticker handles it separately
+  const text = stripEmojiFromText(overlayText.trim())
 
   const fontFamily = `'${config.font_primary}', '${config.font_fallback ?? 'Georgia'}', serif`
   const fontWeight = config.font_weight ?? '700'
   const fontStyle = config.font_style ?? 'normal'
-  const sizeLg = config.font_size_px ?? 50
+  // Use config value or scale up for video canvas (brand preview was 50px on 320px phone frame)
+  const sizeLg = config.font_size_px ?? 90
   const sizeSm = Math.round(sizeLg * 0.68)
   const sizeXs = Math.round(sizeLg * 0.52)
   const colorText = config.color_text
   const colorAccent = config.color_accent ?? '#FFFFFF'
   const colorShadow = config.color_shadow ?? '#0A0A0A'
   const effects = config.effects ?? []
-  const stickers = config.stickers ?? []
-  const sticker = stickers[0] ?? null
+  const sticker = (config.stickers ?? [])[0] ?? null
 
-  // Text effects
+  // Text effects — match brand preview exactly
   const shadows: string[] = []
   if (effects.includes('drop-shadow')) shadows.push(`3px 3px 0px ${colorShadow}`)
   if (effects.includes('glow')) {
@@ -187,28 +194,14 @@ export function buildCompositionFromBrandConfig(
   const textShadow = shadows.length > 0 ? shadows.join(', ') : 'none'
   const strokeWidth = effects.includes('outline') ? '1.6px' : '0px'
 
-  // Local font file (bundled in pipeline/fonts/, copied to comp dir at render time)
   const localFontFile = `${config.font_primary.toLowerCase().replace(/ /g, '-')}-${fontStyle === 'italic' ? 'italic-' : ''}${fontWeight}.woff2`
 
-  // Split text into hook lines with size hierarchy
+  // Lines for the HOOK — JSON injected into the page script
   const lines = splitIntoHookLines(text)
-
-  // Build hook-line HTML (mirrors brand preview structure exactly)
-  const hookLinesHtml = lines.map(line => {
-    const cls = line.size === 'lg' ? 'word' : line.size === 'sm' ? 'word sm' : 'word xs'
-    const words = line.text.split(/\s+/).filter(Boolean)
-    const spans = words.map(w => `<span class="${cls}">${escapeHtml(w)} </span>`).join('')
-    return `<div class="hook-line">${spans}</div>`
-  }).join('\n        ')
-
-  // Sticker: positioned top-right of composition (matching hook 0 of brand preview)
-  const stickerHtml = sticker
-    ? `<span id="sticker" class="sticker" style="top:-14px;right:-20px;">${sticker}</span>`
-    : ''
-
-  // Calculate word count for sticker timing
-  const totalWords = lines.reduce((n, l) => n + l.text.split(/\s+/).filter(Boolean).length, 0)
-  const stickerDelay = (0.15 + totalWords * 0.09 + 0.05).toFixed(2)
+  const hookJson = JSON.stringify({
+    lines,
+    sticker: sticker ? { emoji: sticker, bottom: '-12px', right: '10px', animation: 'rock' } : null,
+  })
 
   return `<!doctype html>
 <html lang="en">
@@ -226,6 +219,12 @@ export function buildCompositionFromBrandConfig(
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: ${width}px; height: ${height}px; overflow: hidden; background: #000; }
     .clip { position: absolute; top: 0; left: 0; visibility: hidden; }
+    .vignette {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at center, transparent 35%, rgba(0,0,0,0.75) 100%);
+      pointer-events: none;
+    }
     .composition {
       position: absolute;
       top: 50%;
@@ -258,10 +257,11 @@ export function buildCompositionFromBrandConfig(
     }
     .sticker {
       position: absolute;
-      font-size: 48px;
+      font-size: ${Math.round(sizeLg * 0.96)}px;
       opacity: 0;
       filter: drop-shadow(0 3px 8px rgba(0,0,0,0.7));
       line-height: 1;
+      pointer-events: none;
     }
   </style>
 </head>
@@ -284,26 +284,70 @@ export function buildCompositionFromBrandConfig(
       data-track-index="0"
       style="width:${width}px;height:${height}px;object-fit:cover;"
     ></video>
-    <div id="overlay" class="clip" data-start="0" data-duration="${dur}" data-track-index="1"
+    <div class="vignette clip" data-start="0" data-duration="${dur}" data-track-index="1"
+         style="width:${width}px;height:${height}px;"></div>
+    <div id="overlay" class="clip" data-start="0" data-duration="${dur}" data-track-index="2"
          style="position:absolute;top:0;left:0;width:${width}px;height:${height}px;">
-      <div class="composition" id="composition">
-        ${stickerHtml}
-        ${hookLinesHtml}
-      </div>
+      <div class="composition" id="composition"></div>
     </div>
   </div>
   <script>
-    document.fonts.ready.then(function() {
-      window.__timelines = window.__timelines || {};
-      var tl = gsap.timeline({ paused: true });
-      tl.to('#video', { opacity: 1, duration: 0.01 }, 0);
-      var words = document.querySelectorAll('.word');
-      gsap.set(words, { opacity: 0, y: 20 });
-      tl.to(words, { opacity: 1, y: 0, duration: 0.4, stagger: 0.09, ease: 'power3.out' }, 0.15);
-      ${sticker ? `gsap.set('#sticker', { opacity: 0, scale: 0.2 });
-      tl.to('#sticker', { opacity: 1, scale: 1, duration: 0.55, ease: 'back.out(2)' }, ${stickerDelay});` : ''}
-      window.__timelines['${id}'] = tl;
-    });
+    // Mirrors buildHook() from the brand preview HTML exactly — uses textContent not innerHTML
+    // so word spacing is guaranteed regardless of CSS whitespace handling
+    var HOOK = ${hookJson};
+
+    function buildHook(hook) {
+      var comp = document.getElementById('composition');
+      comp.innerHTML = '';
+      var allWords = [];
+
+      if (hook.sticker) {
+        var stickerEl = document.createElement('span');
+        stickerEl.className = 'sticker';
+        stickerEl.id = 'sticker';
+        stickerEl.textContent = hook.sticker.emoji;
+        if (hook.sticker.top)    stickerEl.style.top    = hook.sticker.top;
+        if (hook.sticker.bottom) stickerEl.style.bottom = hook.sticker.bottom;
+        if (hook.sticker.left)   stickerEl.style.left   = hook.sticker.left;
+        if (hook.sticker.right)  stickerEl.style.right  = hook.sticker.right;
+        comp.appendChild(stickerEl);
+      }
+
+      hook.lines.forEach(function(line) {
+        var lineEl = document.createElement('div');
+        lineEl.className = 'hook-line';
+        line.text.split(' ').forEach(function(w) {
+          if (!w) return;
+          var span = document.createElement('span');
+          var cls = line.size === 'lg' ? 'word' : line.size === 'sm' ? 'word sm' : 'word xs';
+          span.className = cls;
+          span.textContent = w + ' ';
+          lineEl.appendChild(span);
+          allWords.push(span);
+        });
+        comp.appendChild(lineEl);
+      });
+
+      return allWords;
+    }
+
+    window.__timelines = window.__timelines || {};
+    var words = buildHook(HOOK);
+    var stickerEl = document.getElementById('sticker');
+
+    var tl = gsap.timeline({ paused: true });
+    tl.to('#video', { opacity: 1, duration: 0.01 }, 0);
+
+    gsap.set(words, { opacity: 0, y: 20 });
+    tl.to(words, { opacity: 1, y: 0, duration: 0.4, stagger: 0.09, ease: 'power3.out' }, 0.15);
+
+    if (stickerEl) {
+      var wordDelay = 0.15 + words.length * 0.09 + 0.05;
+      gsap.set(stickerEl, { opacity: 0, scale: 0.2 });
+      tl.to(stickerEl, { opacity: 1, scale: 1, duration: 0.55, ease: 'back.out(2)' }, wordDelay);
+    }
+
+    window.__timelines['${id}'] = tl;
   </script>
 </body>
 </html>`
