@@ -3,9 +3,7 @@ import { useState, useEffect } from 'react'
 
 interface Template {
   id: string
-  creator_username: string
   text_template: string
-  likes_current: number
 }
 
 interface Model {

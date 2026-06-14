@@ -2,15 +2,12 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import GenerateModal from './GenerateModal'
+import { useNiches } from '@/components/NichesProvider'
 
 interface Template {
   id: string
-  creator_username: string
-  caption: string | null
-  hashtags: string[]
-  likes_current: number
-  post_date: string | null
   text_template: string
+  trends_ideas?: { niches: string[] }[]
 }
 
 export default function TemplatesPage() {
@@ -93,37 +90,32 @@ export default function TemplatesPage() {
 
 function TemplateCard({ template: t, onGenerate }: { template: Template; onGenerate: () => void }) {
   const lines = t.text_template.split('\n').filter(Boolean)
+  const niches = t.trends_ideas?.[0]?.niches ?? []
+  const { badgeClass, nicheEmoji } = useNiches()
 
   return (
     <div className="bg-[#111] border border-[#1e1e1e] rounded-xl p-4 flex flex-col gap-3 hover:border-[#2a2a2a] transition-colors">
-      {/* Template text preview */}
-      <div className="bg-[#0a0a0a] rounded-lg px-3 py-3 min-h-[72px] flex flex-col justify-center gap-1">
+      {/* Template text */}
+      <div className="bg-[#0a0a0a] rounded-lg px-3 py-3 min-h-[72px] flex flex-col justify-center gap-1 flex-1">
         {lines.map((line, i) => (
           <p key={i} className="text-sm text-white font-mono leading-snug">{line}</p>
         ))}
       </div>
 
-      {/* Source info */}
-      <div className="flex items-center justify-between text-xs text-[#444]">
-        <span>@{t.creator_username}</span>
-        <span>❤️ {t.likes_current.toLocaleString()}</span>
-      </div>
-
-      {/* Hashtags */}
-      {t.hashtags?.length > 0 && (
+      {/* Niches */}
+      {niches.length > 0 && (
         <div className="flex flex-wrap gap-1">
-          {t.hashtags.slice(0, 4).map(tag => (
-            <span key={tag} className="text-[10px] bg-[#1a1a1a] text-[#555] px-1.5 py-0.5 rounded-full">#{tag}</span>
+          {niches.map(n => (
+            <span key={n} className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${badgeClass(n)}`}>
+              {nicheEmoji(n)} {n}
+            </span>
           ))}
-          {t.hashtags.length > 4 && (
-            <span className="text-[10px] text-[#444]">+{t.hashtags.length - 4}</span>
-          )}
         </div>
       )}
 
       <button
         onClick={onGenerate}
-        className="mt-auto w-full bg-[#D41020] hover:bg-[#b50d1a] text-white text-xs font-semibold py-2 rounded-lg transition-colors"
+        className="w-full bg-[#D41020] hover:bg-[#b50d1a] text-white text-xs font-semibold py-2 rounded-lg transition-colors"
       >
         Generate →
       </button>

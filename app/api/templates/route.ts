@@ -4,7 +4,7 @@ import { supabaseAdmin } from '@/lib/supabase'
 export async function GET() {
   const { data, error } = await supabaseAdmin
     .from('trends_posts')
-    .select('id, caption, hashtags, likes_current, post_date, creator_username, text_template, thumbnail_r2_key')
+    .select('id, text_template, trends_ideas(niches)')
     .not('text_template', 'is', null)
     .order('likes_current', { ascending: false })
 
