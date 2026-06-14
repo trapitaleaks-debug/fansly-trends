@@ -31,7 +31,7 @@ export async function GET(
 
     const { data: contentBank } = await supabaseAdmin
       .from('pipeline_content_bank')
-      .select('id, type, r2_key, label, created_at')
+      .select('id, type, r2_key, label, tags, trim_start, trim_end, created_at')
       .eq('model_id', model.id)
       .order('created_at', { ascending: false })
 
