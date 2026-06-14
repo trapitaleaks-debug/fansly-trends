@@ -55,9 +55,9 @@ async function downloadBufferFromR2(key: string): Promise<Buffer> {
 
 function stripEmoji(text: string): string {
   return text
-    .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
-    .replace(/[\u{2600}-\u{27BF}]/gu, '')
-    .replace(/[\u{FE00}-\u{FE0F}]/gu, '')
+    .replace(/\p{Extended_Pictographic}(?:️?(?:‍\p{Extended_Pictographic}️?)*)?️?/gu, '')
+    .replace(/‍/g, '')        // stray zero-width joiners
+    .replace(/[\u{FE00}-\u{FE0F}]/gu, '') // stray variation selectors
     .replace(/\s+/g, ' ')
     .trim()
 }
