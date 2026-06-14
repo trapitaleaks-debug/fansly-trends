@@ -102,24 +102,25 @@ function extractEmoji(text: string): string[] {
 }
 
 function emojiToTwemojiCP(emoji: string): string {
-  // Twemoji filenames: hex codepoints joined by '-', FE0F stripped for simple emoji
-  const cps = [...emoji].map(c => c.codePointAt(0)!)
-  const hasZWJ = cps.includes(0x200D)
-  // Keep FE0F in ZWJ sequences, strip for simple emoji
-  const filtered = hasZWJ ? cps : cps.filter(cp => cp !== 0xFE0F)
-  return filtered.map(cp => cp.toString(16)).join('-')
+  // Twemoji filenames: hex codepoints joined by '-', FE0F always stripped
+  const cps = [...emoji].map(c => c.codePointAt(0)!).filter(cp => cp !== 0xFE0F)
+  return cps.map(cp => cp.toString(16)).join('-')
 }
 
 function downloadTwemojiPng(emoji: string, dest: string): boolean {
   const cp = emojiToTwemojiCP(emoji)
-  const url = `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${cp}.png`
-  try {
-    execSync(`curl -sL --max-time 6 --fail "${url}" -o "${dest}"`, { stdio: 'pipe', env: process.env })
-    return fs.existsSync(dest) && fs.statSync(dest).size > 200
-  } catch {
-    // Emoji may be newer than Twemoji v14.0.2 (Unicode 14) — skip silently
-    return false
+  // Try twitter/twemoji@14.0.2 (Unicode 14, stable) then jdecked@15.1.0 (Unicode 15 community fork)
+  const urls = [
+    `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${cp}.png`,
+    `https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/${cp}.png`,
+  ]
+  for (const url of urls) {
+    try {
+      execSync(`curl -sL --max-time 6 --fail "${url}" -o "${dest}"`, { stdio: 'pipe', env: process.env })
+      if (fs.existsSync(dest) && fs.statSync(dest).size > 200) return true
+    } catch { /* try next url */ }
   }
+  return false
 }
 
 export async function processVideoJob(jobId: string): Promise<void> {
