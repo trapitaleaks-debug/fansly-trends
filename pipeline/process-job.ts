@@ -101,26 +101,23 @@ function extractEmoji(text: string): string[] {
   return [...seen]
 }
 
-function emojiToTwemojiCP(emoji: string): string {
-  // Twemoji filenames: hex codepoints joined by '-', FE0F always stripped
+function emojiToNotoCP(emoji: string): string {
+  // Noto Emoji filenames: hex codepoints joined by '_', FE0F always stripped
   const cps = [...emoji].map(c => c.codePointAt(0)!).filter(cp => cp !== 0xFE0F)
-  return cps.map(cp => cp.toString(16)).join('-')
+  return cps.map(cp => cp.toString(16)).join('_')
 }
 
-function downloadTwemojiPng(emoji: string, dest: string): boolean {
-  const cp = emojiToTwemojiCP(emoji)
-  // Try twitter/twemoji@14.0.2 (Unicode 14, stable) then jdecked@15.1.0 (Unicode 15 community fork)
-  const urls = [
-    `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${cp}.png`,
-    `https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/${cp}.png`,
-  ]
-  for (const url of urls) {
-    try {
-      execSync(`curl -sL --max-time 6 --fail "${url}" -o "${dest}"`, { stdio: 'pipe', env: process.env })
-      if (fs.existsSync(dest) && fs.statSync(dest).size > 200) return true
-    } catch { /* try next url */ }
+function downloadEmojiPng(emoji: string, dest: string): boolean {
+  const cp = emojiToNotoCP(emoji)
+  // Google Noto Emoji — actively maintained, covers Unicode 15.1+
+  // Twemoji (twitter) was abandoned in 2022 and frozen at Unicode 14
+  const url = `https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u${cp}.png`
+  try {
+    execSync(`curl -sL --max-time 8 --fail "${url}" -o "${dest}"`, { stdio: 'pipe', env: process.env })
+    return fs.existsSync(dest) && fs.statSync(dest).size > 200
+  } catch {
+    return false
   }
-  return false
 }
 
 export async function processVideoJob(jobId: string): Promise<void> {
@@ -206,7 +203,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const emojiPngs: string[] = []
     for (let i = 0; i < emojis.length; i++) {
       const dest = path.join(tmpDir, `emoji_${i}.png`)
-      if (downloadTwemojiPng(emojis[i], dest)) {
+      if (downloadEmojiPng(emojis[i], dest)) {
         emojiPngs.push(dest)
         console.log(`  Emoji sticker: ${emojis[i]}`)
       }
