@@ -47,6 +47,7 @@ export default function GeneratedPage() {
   const [watch, setWatch] = useState<WatchState | null>(null)
   const [retrying, setRetrying] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [processing, setProcessing] = useState(false)
 
   const fetchJobs = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -77,6 +78,13 @@ export default function GeneratedPage() {
     } else {
       setWatch(prev => prev ? { ...prev, loading: false } : null)
     }
+  }
+
+  async function processNow() {
+    setProcessing(true)
+    await fetch('/api/video-jobs/process', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+    await fetchJobs(true)
+    setProcessing(false)
   }
 
   async function retryJob(job: Job) {
@@ -133,9 +141,17 @@ export default function GeneratedPage() {
             <h2 className="text-xl font-semibold">Generated Content</h2>
             <p className="text-xs text-[#444] mt-0.5">{jobs.length} total · {queue.length} in queue · {done.length} done</p>
           </div>
-          <button onClick={() => fetchJobs()} className="text-xs text-[#555] hover:text-white border border-[#1e1e1e] px-3 py-1.5 rounded-lg transition-colors">
-            Refresh
-          </button>
+          <div className="flex gap-2">
+            {queue.length > 0 && (
+              <button onClick={processNow} disabled={processing}
+                className="text-xs bg-[#D41020] hover:bg-[#b50d1a] disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition-colors">
+                {processing ? 'Starting...' : `Process queue (${queue.length})`}
+              </button>
+            )}
+            <button onClick={() => fetchJobs()} className="text-xs text-[#555] hover:text-white border border-[#1e1e1e] px-3 py-1.5 rounded-lg transition-colors">
+              Refresh
+            </button>
+          </div>
         </div>
 
         {/* Tabs */}

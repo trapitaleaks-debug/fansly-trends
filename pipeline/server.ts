@@ -28,6 +28,30 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime() })
 })
 
+// ─── Manual video job trigger ─────────────────────────────────────────────────
+
+app.post('/jobs/process', async (_req, res) => {
+  const { data: jobs } = await supabaseAdmin
+    .from('video_jobs')
+    .select('id')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(5)
+
+  const ids = (jobs ?? []).map((j: { id: string }) => j.id)
+  res.json({ message: 'Processing started', jobs: ids })
+
+  for (const id of ids) {
+    processVideoJob(id).catch(e => console.error(`[jobs/process] Failed ${id}:`, (e as Error).message))
+  }
+})
+
+app.post('/jobs/process/:jobId', async (req, res) => {
+  const { jobId } = req.params
+  res.json({ message: 'Processing started', jobId })
+  processVideoJob(jobId).catch(e => console.error(`[jobs/process] Failed ${jobId}:`, (e as Error).message))
+})
+
 // ─── Trigger endpoint: fire pipeline for a specific model ─────────────────────
 
 app.post('/trigger/:handle', async (req, res) => {
