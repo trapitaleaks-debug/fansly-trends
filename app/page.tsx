@@ -13,6 +13,7 @@ const DEFAULT_FILTERS: Filters = {
   hashtag: '',
   niche: '',
   hideBookmarked: true,
+  showHidden: false,
 }
 
 export default function FeedPage() {
@@ -32,6 +33,7 @@ export default function FeedPage() {
       hashtag: f.hashtag,
       niche: f.niche,
       hide_bookmarked: f.hideBookmarked ? 'yes' : '',
+      show_hidden: f.showHidden ? 'yes' : '',
       page: String(p),
     })
     const res = await fetch(`/api/posts?${params}`)
@@ -58,6 +60,15 @@ export default function FeedPage() {
     setPage(0)
   }
 
+  async function handleHide(postId: string) {
+    await fetch(`/api/posts/${postId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden_at: new Date().toISOString() }),
+    })
+    setPosts(prev => prev.filter(p => p.id !== postId))
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <nav className="bg-[#0f0f0f] border-b border-[#1e1e1e] px-4 py-3 flex items-center justify-between sticky top-0 z-10">
@@ -82,6 +93,7 @@ export default function FeedPage() {
             post={post}
             onClick={() => setSelectedPostId(post.id)}
             onBookmark={() => setSelectedPostId(post.id)}
+            onHide={!filters.showHidden ? () => handleHide(post.id) : undefined}
           />
         ))}
       </div>

@@ -7,10 +7,9 @@ export async function GET(request: NextRequest) {
   const days = parseInt(searchParams.get('days') ?? '7')
   const minLikes = parseInt(searchParams.get('minLikes') ?? '0')
   const hashtag = searchParams.get('hashtag') ?? ''
-  const type = searchParams.get('type') ?? 'all' // all | explicit | sfw
-  const niche = searchParams.get('niche') ?? '' // e.g. 'asian', 'general', 'teen'
-  const tagged = searchParams.get('tagged') // 'yes' = only tagged posts
+  const niche = searchParams.get('niche') ?? ''
   const hideBookmarked = searchParams.get('hide_bookmarked') === 'yes'
+  const showHidden = searchParams.get('show_hidden') === 'yes'
   const page = parseInt(searchParams.get('page') ?? '0')
   const limit = 30
 
@@ -18,10 +17,16 @@ export async function GET(request: NextRequest) {
     .from('trends_posts')
     .select('*, trends_ideas(id, niches, tags, notes)')
     .is('archived_at', null)
-    .gte('likes_current', 150) // always enforce minimum quality floor
+    .gte('likes_current', 150)
     .not('video_r2_key', 'is', null)
     .neq('video_r2_key', '')
     .not('hashtags', 'ov', '{deepthroat,porn,creampie,hotwife,bigdick,breeding,analcreampie,sex,bbc,bwc,bigcock,hugecock,hugedick,swingers,couple,couples,wifesharing,wifeswap,blacked,monstercock,gangbang,cumslut,analsex,cumeating,fuck,bg,sextape,standingfuck}')
+
+  if (showHidden) {
+    query = query.not('hidden_at', 'is', null)
+  } else {
+    query = query.is('hidden_at', null)
+  }
 
   if (days > 0) {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
@@ -29,11 +34,8 @@ export async function GET(request: NextRequest) {
   }
   if (minLikes > 0) query = query.gte('likes_current', minLikes)
   if (hashtag) query = query.contains('hashtags', [hashtag.replace('#', '')])
-  if (type === 'explicit') query = query.eq('is_explicit', true)
-  if (type === 'sfw') query = query.eq('is_explicit', false)
   if (niche) query = query.contains('niche_tags', [niche])
-  if (tagged === 'yes') query = query.not('niche_tags', 'eq', '{}')
-  if (hideBookmarked) {
+  if (hideBookmarked && !showHidden) {
     const { data: bookmarked } = await supabaseAdmin.from('trends_ideas').select('post_id')
     const ids = bookmarked?.map(b => b.post_id) ?? []
     if (ids.length > 0) query = query.not('id', 'in', `(${ids.join(',')})`)

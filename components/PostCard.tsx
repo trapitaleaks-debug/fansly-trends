@@ -23,6 +23,7 @@ interface Props {
   post: Post
   onClick: () => void
   onBookmark: () => void
+  onHide?: () => void
 }
 
 function fmt(n: number) {
@@ -30,7 +31,7 @@ function fmt(n: number) {
   return String(n)
 }
 
-export default function PostCard({ post, onClick, onBookmark }: Props) {
+export default function PostCard({ post, onClick, onBookmark, onHide }: Props) {
   const [revealed, setRevealed] = useState(false)
   const { badgeClass, nicheEmoji } = useNiches()
   const isBookmarked = (post.trends_ideas?.length ?? 0) > 0
@@ -87,6 +88,17 @@ export default function PostCard({ post, onClick, onBookmark }: Props) {
         >
           {isBookmarked ? '★' : '☆'}
         </button>
+
+        {/* Hide */}
+        {onHide && (
+          <button
+            className="absolute bottom-2 right-2 w-6 h-6 rounded-full bg-black/60 text-[#888] opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-[10px] hover:bg-black/90 hover:text-white"
+            onClick={e => { e.stopPropagation(); onHide() }}
+            title="Hide from feed"
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       {/* Info */}

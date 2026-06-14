@@ -8,6 +8,7 @@ export interface Filters {
   hashtag: string
   niche: string
   hideBookmarked: boolean
+  showHidden: boolean
 }
 
 interface Props {
@@ -76,11 +77,21 @@ export default function FilterBar({ filters, onChange }: Props) {
       </select>
 
       {/* Hide bookmarked toggle */}
+      {!filters.showHidden && (
+        <button
+          onClick={() => set({ hideBookmarked: !filters.hideBookmarked })}
+          className={`px-3 py-1.5 rounded-md border text-xs transition-colors ${!filters.hideBookmarked ? 'bg-yellow-500/20 border-yellow-500/40 text-yellow-400' : 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-[#888]'}`}
+        >
+          {filters.hideBookmarked ? 'Show bookmarks' : 'Hide bookmarks'}
+        </button>
+      )}
+
+      {/* Show hidden toggle */}
       <button
-        onClick={() => set({ hideBookmarked: !filters.hideBookmarked })}
-        className={`px-3 py-1.5 rounded-md border text-xs transition-colors ${!filters.hideBookmarked ? 'bg-yellow-500/20 border-yellow-500/40 text-yellow-400' : 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-[#888]'}`}
+        onClick={() => set({ showHidden: !filters.showHidden })}
+        className={`px-3 py-1.5 rounded-md border text-xs transition-colors ${filters.showHidden ? 'bg-red-500/20 border-red-500/40 text-red-400' : 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-[#888]'}`}
       >
-        {filters.hideBookmarked ? 'Show bookmarks' : 'Hide bookmarks'}
+        {filters.showHidden ? 'Hide hidden' : 'Show hidden'}
       </button>
     </div>
   )

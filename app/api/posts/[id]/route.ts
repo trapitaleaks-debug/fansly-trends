@@ -22,7 +22,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const body = await request.json()
-  const allowed = ['text_template', 'niche_tags']
+  const allowed = ['text_template', 'niche_tags', 'hidden_at']
   const update: Record<string, unknown> = {}
   for (const key of allowed) {
     if (key in body) update[key] = body[key]
