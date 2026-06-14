@@ -157,9 +157,9 @@ app.post('/regenerate/:videoId', async (req, res) => {
 
 // ─── Crons ────────────────────────────────────────────────────────────────────
 
-// Every 30s: process pending video_jobs (own footage + text overlay)
+// Every minute: process pending video_jobs (own footage + text overlay)
 let jobsRunning = false
-cron.schedule('*/30 * * * * *', async () => {
+cron.schedule('* * * * *', async () => {
   if (jobsRunning) return
   jobsRunning = true
   try {
