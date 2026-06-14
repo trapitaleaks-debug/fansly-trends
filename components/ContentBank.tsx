@@ -310,10 +310,30 @@ export default function ContentBank({ username }: { username: string }) {
   }
 
   if (loading) return <p className="text-xs text-[#444]">Loading...</p>
-  if (!pipelineModelId) return <p className="text-xs text-[#444]">Content bank not available for this model.</p>
 
   return (
     <div className="space-y-4">
+      {/* Tag library — always visible */}
+      <div className="space-y-2">
+        <p className="text-[10px] text-[#444] uppercase tracking-wider">Tag library</p>
+        <div className="flex flex-wrap gap-1.5 items-center">
+          {presetTags.map(tag => (
+            <span key={tag} className="flex items-center gap-1 text-[10px] pl-2 pr-1 py-0.5 rounded-full border border-[#2a2a2a] text-[#777]">
+              {tag}
+              <button onClick={() => removePresetTag(tag)} className="text-[#444] hover:text-red-400 leading-none w-3.5 h-3.5 flex items-center justify-center transition-colors">×</button>
+            </span>
+          ))}
+          <input
+            value={newPresetTag}
+            onChange={e => setNewPresetTag(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addPresetTag() } }}
+            placeholder="+ new tag"
+            className="text-[10px] px-2 py-0.5 rounded-full border border-dashed border-[#2a2a2a] bg-transparent text-[#555] placeholder-[#333] focus:outline-none focus:border-[#444] w-20"
+          />
+        </div>
+      </div>
+
+      {!pipelineModelId ? <p className="text-xs text-[#444]">Videos not available for this model.</p> : (<>
       {/* Upload zone */}
       {showTrim && file ? (
         <TrimSelector file={file} onConfirm={handleUpload} onCancel={() => { setShowTrim(false); setFile(null) }} uploading={uploading} trimProgress={trimProgress} />
@@ -328,28 +348,6 @@ export default function ContentBank({ username }: { username: string }) {
         </label>
       )}
       {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
-
-      {/* Tag library */}
-      <div className="space-y-2">
-        <p className="text-[10px] text-[#444] uppercase tracking-wider">Tag library</p>
-        <div className="flex flex-wrap gap-1.5 items-center">
-          {presetTags.map(tag => (
-            <span key={tag} className="flex items-center gap-1 text-[10px] pl-2 pr-1 py-0.5 rounded-full border border-[#2a2a2a] text-[#777]">
-              {tag}
-              <button onClick={() => removePresetTag(tag)} className="text-[#444] hover:text-red-400 leading-none w-3.5 h-3.5 flex items-center justify-center transition-colors">×</button>
-            </span>
-          ))}
-          <div className="flex items-center gap-1">
-            <input
-              value={newPresetTag}
-              onChange={e => setNewPresetTag(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addPresetTag() } }}
-              placeholder="+ new tag"
-              className="text-[10px] px-2 py-0.5 rounded-full border border-dashed border-[#2a2a2a] bg-transparent text-[#555] placeholder-[#333] focus:outline-none focus:border-[#444] w-20"
-            />
-          </div>
-        </div>
-      </div>
 
       {/* Video list */}
       {items.length === 0 && !showTrim && <p className="text-xs text-[#444]">No videos uploaded yet</p>}
@@ -393,6 +391,7 @@ export default function ContentBank({ username }: { username: string }) {
           </div>
         ))}
       </div>
+      </>)}
     </div>
   )
 }
