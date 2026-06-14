@@ -47,8 +47,8 @@ export function buildComposition(opts: CompositionOpts): string {
 
   const overlayHtml = textLines.length > 0 ? `
       <div id="overlay" class="clip" data-start="0" data-duration="${dur}" data-track-index="1"
-           style="position:absolute;top:${Math.round(height * 0.12)}px;left:0;width:${width}px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:0 28px;">
-        ${textLines.map(l => `<p style="margin:0;font-family:'Arial Black',Arial,sans-serif;font-size:60px;font-weight:900;color:#fff;text-align:center;line-height:1.15;-webkit-text-stroke:5px #000;paint-order:stroke fill;letter-spacing:-0.5px;">${escapeHtml(l)}</p>`).join('\n        ')}
+           style="position:absolute;top:${Math.round(height * 0.70)}px;left:0;width:${width}px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:0 28px;">
+        ${textLines.map(l => `<p style="margin:0;font-family:'Arial Black',Arial,sans-serif;font-size:70px;font-weight:900;color:#fff;text-align:center;line-height:1.15;-webkit-text-stroke:6px #000;paint-order:stroke fill;letter-spacing:-0.5px;">${escapeHtml(l)}</p>`).join('\n        ')}
       </div>` : ''
 
   const overlayAnim = textLines.length > 0 ? `

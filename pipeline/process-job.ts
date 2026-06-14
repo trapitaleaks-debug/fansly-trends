@@ -60,14 +60,14 @@ function stripEmoji(text: string): string {
 function buildDrawtextFilter(overlayText: string, tmpDir: string): string {
   const font = fontPath()
   const MAX_CHARS = 40
-  const baseStyle = `fontfile='${font}':fontsize=58:fontcolor=white:bordercolor=black:borderw=4`
+  const baseStyle = `fontfile='${font}':fontsize=70:fontcolor=white:bordercolor=black:borderw=6`
   const safeText = stripEmoji(overlayText)
   if (!safeText) return ''
 
   if (safeText.length <= MAX_CHARS) {
     const textFile = path.join(tmpDir, 'text_1.txt')
     fs.writeFileSync(textFile, safeText, 'utf8')
-    return `drawtext=textfile='${textFile}':${baseStyle}:x=(w-text_w)/2:y=h*0.15`
+    return `drawtext=textfile='${textFile}':${baseStyle}:x=(w-text_w)/2:y=h*0.70`
   }
 
   const mid = Math.floor(safeText.length / 2)
@@ -81,7 +81,7 @@ function buildDrawtextFilter(overlayText: string, tmpDir: string): string {
   const textFile2 = path.join(tmpDir, 'text_2.txt')
   fs.writeFileSync(textFile1, line1, 'utf8')
   fs.writeFileSync(textFile2, line2, 'utf8')
-  return `drawtext=textfile='${textFile1}':${baseStyle}:x=(w-text_w)/2:y=h*0.13,drawtext=textfile='${textFile2}':${baseStyle}:x=(w-text_w)/2:y=h*0.21`
+  return `drawtext=textfile='${textFile1}':${baseStyle}:x=(w-text_w)/2:y=h*0.65,drawtext=textfile='${textFile2}':${baseStyle}:x=(w-text_w)/2:y=h*0.73`
 }
 
 async function renderWithHyperframes(rawPath: string, composedPath: string, overlayText: string | null, duration: number, tmpDir: string): Promise<void> {
