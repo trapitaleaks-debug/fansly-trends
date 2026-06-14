@@ -6,6 +6,9 @@
 import dotenv from 'dotenv'
 dotenv.config({ path: '.env.local' })
 
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import express from 'express'
 import cron from 'node-cron'
 import { runPipelineForModel } from './index'
@@ -28,26 +31,54 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime() })
 })
 
-// ─── Emoji download diagnostics ───────────────────────────────────────────────
+// ─── Emoji pipeline diagnostics ───────────────────────────────────────────────
 
 app.get('/debug/emoji', async (_req, res) => {
-  const testEmoji = '😔'
-  const cp = [...testEmoji].map(c => c.codePointAt(0)!).filter(cp => cp !== 0xFE0F).map(cp => cp.toString(16)).join('_')
+  const testText = "SORRY, I'M CUMMING 😔"
+
+  // Step 1: extract emoji from text
+  const re = /\p{Extended_Pictographic}(?:️?(?:‍\p{Extended_Pictographic}️?)*)?️?/gu
+  const found: string[] = []
+  for (const m of testText.matchAll(re)) { if (m[0].trim()) found.push(m[0]) }
+
+  const result: Record<string, unknown> = { text: testText, extracted: found, step: 'extraction' }
+
+  if (found.length === 0) {
+    result.verdict = 'FAIL: extractEmoji found nothing'
+    return res.json(result)
+  }
+
+  // Step 2: download to temp file
+  const emoji = found[0]
+  const cps = [...emoji].map(c => c.codePointAt(0)!).filter(cp => cp !== 0xFE0F)
+  const cp = cps.map(cp => cp.toString(16)).join('_')
   const url = `https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u${cp}.png`
-  const result: Record<string, unknown> = { emoji: testEmoji, cp, url }
+  result.cp = cp
+  result.url = url
+  result.step = 'download'
+
   try {
     const fetchRes = await fetch(url, { signal: AbortSignal.timeout(10000) })
-    result.status = fetchRes.status
-    result.ok = fetchRes.ok
-    if (fetchRes.ok) {
-      const buf = Buffer.from(await fetchRes.arrayBuffer())
-      result.bytes = buf.length
-      result.success = buf.length > 200
+    result.httpStatus = fetchRes.status
+    if (!fetchRes.ok) {
+      result.verdict = `FAIL: HTTP ${fetchRes.status}`
+      return res.json(result)
     }
+    const buf = Buffer.from(await fetchRes.arrayBuffer())
+    result.fetchedBytes = buf.length
+    result.step = 'write'
+
+    const tmpFile = path.join(os.tmpdir(), `emoji_debug_${Date.now()}.png`)
+    fs.writeFileSync(tmpFile, buf)
+    const writtenSize = fs.statSync(tmpFile).size
+    fs.unlinkSync(tmpFile)
+    result.writtenBytes = writtenSize
+    result.verdict = writtenSize > 200 ? 'OK: all steps passed' : `FAIL: written file too small (${writtenSize}B)`
   } catch (e) {
     result.error = (e as Error).message
-    result.success = false
+    result.verdict = `FAIL: exception — ${(e as Error).message}`
   }
+
   res.json(result)
 })
 
