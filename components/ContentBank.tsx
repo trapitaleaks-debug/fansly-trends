@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-const PRESET_TAGS = ['masturbation', 'dildo', 'blowjob', 'girl/girl', 'solo', 'teaser', 'all']
+// Tags are managed via /api/settings/content-tags — not hardcoded here
 
 async function trimVideoClientSide(
   file: File,
@@ -142,7 +142,7 @@ function TrimSelector({ file, onConfirm, onCancel, uploading, trimProgress }: {
   )
 }
 
-function TagChips({ tags, onChange }: { tags: string[]; onChange: (t: string[]) => void }) {
+function TagChips({ tags, presetTags, onChange }: { tags: string[]; presetTags: string[]; onChange: (t: string[]) => void }) {
   const [newTag, setNewTag] = useState('')
 
   function add(tag: string) {
@@ -156,7 +156,7 @@ function TagChips({ tags, onChange }: { tags: string[]; onChange: (t: string[]) 
     onChange(tags.filter(t => t !== tag))
   }
 
-  const available = PRESET_TAGS.filter(t => !tags.includes(t))
+  const available = presetTags.filter(t => !tags.includes(t))
 
   return (
     <div className="space-y-1.5">
@@ -181,8 +181,8 @@ function TagChips({ tags, onChange }: { tags: string[]; onChange: (t: string[]) 
           value={newTag}
           onChange={e => setNewTag(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(newTag) } }}
-          placeholder="+ new tag"
-          className="text-[10px] px-2 py-0.5 rounded-full border border-dashed border-[#2a2a2a] bg-transparent text-[#555] placeholder-[#333] focus:outline-none focus:border-[#444] w-16"
+          placeholder="+ tag"
+          className="text-[10px] px-2 py-0.5 rounded-full border border-dashed border-[#2a2a2a] bg-transparent text-[#555] placeholder-[#333] focus:outline-none focus:border-[#444] w-14"
         />
       </div>
     </div>
@@ -202,6 +202,32 @@ export default function ContentBank({ username }: { username: string }) {
   const [savingTagsId, setSavingTagsId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({})
+  const [presetTags, setPresetTags] = useState<string[]>([])
+  const [newPresetTag, setNewPresetTag] = useState('')
+
+  useEffect(() => {
+    fetch('/api/settings/content-tags').then(r => r.json()).then(d => setPresetTags(d.tags ?? []))
+  }, [])
+
+  async function savePresetTags(tags: string[]) {
+    setPresetTags(tags)
+    await fetch('/api/settings/content-tags', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags }),
+    })
+  }
+
+  function addPresetTag() {
+    const t = newPresetTag.trim().toLowerCase()
+    if (!t || presetTags.includes(t)) return
+    setNewPresetTag('')
+    savePresetTags([...presetTags, t])
+  }
+
+  function removePresetTag(tag: string) {
+    savePresetTags(presetTags.filter(t => t !== tag))
+  }
 
   const fetchItems = useCallback(async () => {
     const res = await fetch(`/api/pipeline/models/${username}`)
@@ -303,6 +329,28 @@ export default function ContentBank({ username }: { username: string }) {
       )}
       {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
 
+      {/* Tag library */}
+      <div className="space-y-2">
+        <p className="text-[10px] text-[#444] uppercase tracking-wider">Tag library</p>
+        <div className="flex flex-wrap gap-1.5 items-center">
+          {presetTags.map(tag => (
+            <span key={tag} className="flex items-center gap-1 text-[10px] pl-2 pr-1 py-0.5 rounded-full border border-[#2a2a2a] text-[#777]">
+              {tag}
+              <button onClick={() => removePresetTag(tag)} className="text-[#444] hover:text-red-400 leading-none w-3.5 h-3.5 flex items-center justify-center transition-colors">×</button>
+            </span>
+          ))}
+          <div className="flex items-center gap-1">
+            <input
+              value={newPresetTag}
+              onChange={e => setNewPresetTag(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addPresetTag() } }}
+              placeholder="+ new tag"
+              className="text-[10px] px-2 py-0.5 rounded-full border border-dashed border-[#2a2a2a] bg-transparent text-[#555] placeholder-[#333] focus:outline-none focus:border-[#444] w-20"
+            />
+          </div>
+        </div>
+      </div>
+
       {/* Video list */}
       {items.length === 0 && !showTrim && <p className="text-xs text-[#444]">No videos uploaded yet</p>}
       <div className="space-y-3">
@@ -340,7 +388,7 @@ export default function ContentBank({ username }: { username: string }) {
 
             {/* Tags */}
             <div className="px-3 pb-3">
-              <TagChips tags={item.tags ?? []} onChange={newTags => handleTagsChange(item, newTags)} />
+              <TagChips tags={item.tags ?? []} presetTags={presetTags} onChange={newTags => handleTagsChange(item, newTags)} />
             </div>
           </div>
         ))}

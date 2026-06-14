@@ -7,7 +7,7 @@ import PostModal from '@/components/PostModal'
 import { useNiches } from '@/components/NichesProvider'
 import ContentBank from '@/components/ContentBank'
 
-const CONTENT_TAGS = ['masturbation', 'dildo', 'blowjob', 'girl/girl', 'solo', 'teaser', 'all']
+// loaded from /api/settings/content-tags
 
 interface Model {
   id: string
@@ -54,9 +54,13 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [generatingAll, setGeneratingAll] = useState(false)
 
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [contentTags, setContentTags] = useState<string[]>([])
   const { niches: allNiches, badgeClass, nicheEmoji } = useNiches()
 
   useEffect(() => { fetchModel() }, [username])
+  useEffect(() => {
+    fetch('/api/settings/content-tags').then(r => r.json()).then(d => setContentTags(d.tags ?? []))
+  }, [])
 
   async function fetchModel(silent = false) {
     if (!silent) setLoading(true)
@@ -354,7 +358,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                     <div className="flex items-center gap-2 px-4 pb-2.5 pl-16">
                       <span className="text-[10px] text-[#444] flex-shrink-0">Content:</span>
                       <div className="flex flex-wrap gap-1">
-                        {CONTENT_TAGS.map(tag => (
+                        {contentTags.map(tag => (
                           <button key={tag} onClick={() => toggleIdeaTag(idea.id, tag, idea.tags ?? [])}
                             className={`text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${(idea.tags ?? []).includes(tag) ? 'bg-violet-500/20 border-violet-500/40 text-violet-300' : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}>
                             {tag}
