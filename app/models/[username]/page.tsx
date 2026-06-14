@@ -209,6 +209,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <Link href="/models" className="text-white">Models</Link>
+          <Link href="/generated" className="hover:text-white transition-colors">Generated</Link>
         </div>
       </nav>
 

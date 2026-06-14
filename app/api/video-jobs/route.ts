@@ -8,10 +8,10 @@ export async function GET(request: NextRequest) {
   let query = supabaseAdmin
     .from('video_jobs')
     .select(`
-      id, post_id, model_id, clip_id, original_template, personalized_text, status, created_at, updated_at,
+      id, post_id, model_id, clip_id, personalized_text, status, created_at, updated_at,
+      output_r2_key, thumbnail_r2_key, error_message,
       trends_models(fansly_username),
-      model_clips(filename, r2_key),
-      trends_posts(creator_username, caption)
+      trends_posts(creator_username, thumbnail_r2_key)
     `)
     .order('created_at', { ascending: false })
 

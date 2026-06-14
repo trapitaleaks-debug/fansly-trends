@@ -107,7 +107,7 @@ export default function IdeasPage() {
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <span className="text-white">Ideas</span>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
-          
+          <Link href="/generated" className="hover:text-white transition-colors">Generated</Link>
           <Link href="/templates" className="hover:text-white transition-colors">Templates</Link>
         </div>
       </nav>
