@@ -78,7 +78,7 @@ export default function FeedPage() {
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           
-          <Link href="/pipeline" className="hover:text-white transition-colors">Pipeline</Link>
+          
           <Link href="/templates" className="hover:text-white transition-colors">Templates</Link>
         </div>
       </nav>

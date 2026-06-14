@@ -1,6 +1,5 @@
 'use client'
-import { useState, useEffect, useRef, useCallback, use } from 'react'
-import Link from 'next/link'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 async function trimVideoClientSide(
   file: File,
@@ -17,6 +16,7 @@ async function trimVideoClientSide(
     video.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Video failed to load')) }
 
     video.onloadedmetadata = () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const captureStream = (video as any).captureStream?.bind(video) || (video as any).mozCaptureStream?.bind(video)
       if (!captureStream) { URL.revokeObjectURL(objectUrl); reject(new Error('captureStream not supported')); return }
 
@@ -64,7 +64,7 @@ async function trimVideoClientSide(
   })
 }
 
-interface ContentBankItem {
+export interface ContentBankItem {
   id: string
   type: 'own_footage' | 'hook_clip' | 'audio'
   r2_key: string
@@ -73,16 +73,6 @@ interface ContentBankItem {
   trim_end: number | null
   created_at: string
 }
-
-interface PipelineModelDetail {
-  id: string
-  handle: string
-  status: 'active' | 'inactive'
-  videos_per_cycle: number
-  flash_frame_enabled: boolean
-  content_bank: ContentBankItem[]
-}
-
 
 function TrimSelector({
   file, label, onLabelChange, onConfirm, onCancel, uploading, trimProgress,
@@ -155,7 +145,6 @@ function TrimSelector({
 
       {videoDuration > 0 && (
         <>
-          {/* Timeline bar */}
           <div className="relative h-6 bg-[#1a1a1a] rounded-md overflow-hidden select-none">
             <div
               className="absolute inset-y-0 bg-violet-500/20 border-l-2 border-r-2 border-violet-500"
@@ -219,13 +208,7 @@ function TrimSelector({
 }
 
 function UploadSection({
-  modelId,
-  type,
-  label: sectionLabel,
-  accept,
-  items,
-  onUploaded,
-  onDelete,
+  modelId, type, label: sectionLabel, accept, items, onUploaded, onDelete,
 }: {
   modelId: string
   type: 'own_footage' | 'hook_clip' | 'audio'
@@ -292,7 +275,6 @@ function UploadSection({
     }
 
     const { uploadUrl, contentType: ct } = await res.json()
-
     const putRes = await fetch(uploadUrl, {
       method: 'PUT',
       body: uploadFile,
@@ -301,10 +283,7 @@ function UploadSection({
 
     setUploading(false)
 
-    if (!putRes.ok) {
-      setUploadError('Upload to storage failed')
-      return
-    }
+    if (!putRes.ok) { setUploadError('Upload to storage failed'); return }
 
     setFile(null)
     setFileLabel('')
@@ -345,7 +324,7 @@ function UploadSection({
         />
       ) : isVideo ? (
         <label className="flex items-center justify-center border-2 border-dashed border-[#2a2a2a] hover:border-[#3a3a3a] rounded-lg py-5 cursor-pointer transition-colors">
-          <span className="text-xs text-[#555] hover:text-[#888] pointer-events-none">Click to select a video — you'll trim it before uploading</span>
+          <span className="text-xs text-[#555] hover:text-[#888] pointer-events-none">Click to select a video — you&apos;ll trim it before uploading</span>
           <input
             type="file"
             accept={accept}
@@ -423,14 +402,11 @@ function UploadSection({
                     {item.label || <span className="text-[#444]">Untitled</span>}
                   </p>
                 )}
-                <div className="flex items-center gap-2 mt-0.5">
-                  <p className="text-[10px] text-[#444] truncate">{item.r2_key.split('/').pop()}</p>
-                  {item.trim_end != null && (
-                    <span className="text-[10px] text-violet-400 shrink-0">
-                      {item.trim_start.toFixed(1)}s–{item.trim_end.toFixed(1)}s ({(item.trim_end - item.trim_start).toFixed(1)}s)
-                    </span>
-                  )}
-                </div>
+                {item.trim_end != null && (
+                  <span className="text-[10px] text-violet-400">
+                    {item.trim_start.toFixed(1)}s–{item.trim_end.toFixed(1)}s ({(item.trim_end - item.trim_start).toFixed(1)}s)
+                  </span>
+                )}
               </div>
               <button
                 onClick={() => handleDelete(item.id)}
@@ -449,173 +425,37 @@ function UploadSection({
   )
 }
 
-export default function ModelSettingsPage({ params }: { params: Promise<{ handle: string }> }) {
-  const { handle } = use(params)
-
-  const [model, setModel] = useState<PipelineModelDetail | null>(null)
+export default function ContentBank({ username }: { username: string }) {
+  const [pipelineModelId, setPipelineModelId] = useState<string | null>(null)
+  const [items, setItems] = useState<ContentBankItem[]>([])
   const [loading, setLoading] = useState(true)
 
-  // Settings state
-  const [videosPerCycle, setVideosPerCycle] = useState(6)
-  const [savingSettings, setSavingSettings] = useState(false)
-  const [settingsSaved, setSettingsSaved] = useState(false)
-
-  const fetchModel = useCallback(async () => {
-    const res = await fetch(`/api/pipeline/models/${handle}`)
+  const fetchItems = useCallback(async () => {
+    const res = await fetch(`/api/pipeline/models/${username}`)
     if (res.ok) {
       const data = await res.json()
-      const m: PipelineModelDetail = { ...data.model, content_bank: data.model.content_bank ?? [] }
-      setModel(m)
-      setVideosPerCycle(m.videos_per_cycle)
+      setPipelineModelId(data.model?.id ?? null)
+      setItems(data.model?.content_bank ?? [])
     }
     setLoading(false)
-  }, [handle])
+  }, [username])
 
-  useEffect(() => {
-    fetchModel()
-  }, [fetchModel])
+  useEffect(() => { fetchItems() }, [fetchItems])
 
-  async function handleSaveSettings() {
-    setSavingSettings(true)
-    await fetch(`/api/pipeline/models/${handle}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videos_per_cycle: videosPerCycle }),
-    })
-    setSavingSettings(false)
-    setSettingsSaved(true)
-    setTimeout(() => setSettingsSaved(false), 2000)
+  function handleDelete(id: string) {
+    setItems(prev => prev.filter(i => i.id !== id))
   }
 
-  function handleItemDeleted(itemId: string) {
-    setModel(prev => {
-      if (!prev) return prev
-      return { ...prev, content_bank: prev.content_bank.filter(i => i.id !== itemId) }
-    })
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-[#333] border-t-white rounded-full animate-spin" />
-      </div>
-    )
-  }
-
-  if (!model) {
-    return (
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center text-[#555]">
-        <p className="text-sm">Model not found</p>
-      </div>
-    )
-  }
+  if (loading) return <p className="text-xs text-[#444]">Loading...</p>
+  if (!pipelineModelId) return <p className="text-xs text-[#444]">Content bank not set up for this model yet.</p>
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white">
-      <nav className="bg-[#0f0f0f] border-b border-[#1e1e1e] px-4 py-3 flex items-center justify-between sticky top-0 z-10">
-        <h1 className="text-sm font-bold text-white">FanslyTrends</h1>
-        <div className="flex gap-4 text-xs text-[#666]">
-          <Link href="/" className="hover:text-white transition-colors">Feed</Link>
-          <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
-          <Link href="/models" className="hover:text-white transition-colors">Models</Link>
-          <Link href="/pipeline" className="text-white">Pipeline</Link>
-        </div>
-      </nav>
-
-      <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
-
-        {/* Header */}
-        <div className="space-y-1">
-          <Link
-            href="/pipeline"
-            className="text-xs text-[#555] hover:text-white transition-colors inline-flex items-center gap-1"
-          >
-            ← Back to Pipeline
-          </Link>
-          <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold">@{model.handle} — Model Settings</h2>
-            <span className={`text-xs px-2 py-0.5 rounded-full border ${
-              model.status === 'active'
-                ? 'text-green-400 border-green-400/20 bg-green-400/5'
-                : 'text-[#555] border-[#2a2a2a] bg-[#1a1a1a]'
-            }`}>
-              {model.status}
-            </span>
-          </div>
-        </div>
-
-        {/* Settings */}
-        <div className="bg-[#111] border border-[#1a1a1a] rounded-xl p-6 space-y-6">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">Settings</h3>
-            <button
-              onClick={handleSaveSettings}
-              disabled={savingSettings}
-              className="text-xs bg-white text-black px-4 py-1.5 rounded-lg hover:bg-[#e5e5e5] disabled:opacity-50 transition-colors"
-            >
-              {settingsSaved ? 'Saved ✓' : savingSettings ? 'Saving...' : 'Save'}
-            </button>
-          </div>
-
-          {/* videos_per_cycle */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-[#ccc]">Videos per cycle</p>
-              <p className="text-xs text-[#444] mt-0.5">How many videos to generate per run</p>
-            </div>
-            <input
-              type="number"
-              min={1}
-              max={12}
-              value={videosPerCycle}
-              onChange={e => setVideosPerCycle(Math.min(12, Math.max(1, parseInt(e.target.value) || 1)))}
-              className="w-16 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-1.5 text-sm text-white text-center focus:outline-none focus:border-[#444]"
-            />
-          </div>
-
-        </div>
-
-
-        {/* Content bank */}
-        <div className="bg-[#111] border border-[#1a1a1a] rounded-xl p-6 space-y-6">
-          <h3 className="text-sm font-medium">Content Bank</h3>
-
-          <UploadSection
-            modelId={model.id}
-            type="own_footage"
-            label="Own Footage"
-            accept="video/*"
-            items={model.content_bank}
-            onUploaded={fetchModel}
-            onDelete={handleItemDeleted}
-          />
-
-          <div className="border-t border-[#1a1a1a]" />
-
-          <UploadSection
-            modelId={model.id}
-            type="hook_clip"
-            label="Hook Clips"
-            accept="video/*"
-            items={model.content_bank}
-            onUploaded={fetchModel}
-            onDelete={handleItemDeleted}
-          />
-
-          <div className="border-t border-[#1a1a1a]" />
-
-          <UploadSection
-            modelId={model.id}
-            type="audio"
-            label="Audio Files"
-            accept="audio/*"
-            items={model.content_bank}
-            onUploaded={fetchModel}
-            onDelete={handleItemDeleted}
-          />
-        </div>
-
-      </div>
+    <div className="space-y-6">
+      <UploadSection modelId={pipelineModelId} type="own_footage" label="Own Footage" accept="video/*" items={items} onUploaded={fetchItems} onDelete={handleDelete} />
+      <div className="border-t border-[#1a1a1a]" />
+      <UploadSection modelId={pipelineModelId} type="hook_clip" label="Hook Clips" accept="video/*" items={items} onUploaded={fetchItems} onDelete={handleDelete} />
+      <div className="border-t border-[#1a1a1a]" />
+      <UploadSection modelId={pipelineModelId} type="audio" label="Audio Files" accept="audio/*" items={items} onUploaded={fetchItems} onDelete={handleDelete} />
     </div>
   )
 }

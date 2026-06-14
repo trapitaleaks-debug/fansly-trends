@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { type Post } from '@/components/PostCard'
 import PostModal from '@/components/PostModal'
 import { useNiches } from '@/components/NichesProvider'
+import ContentBank from '@/components/ContentBank'
 
 interface Model {
   id: string
@@ -34,27 +35,25 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [model, setModel] = useState<Model | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Branding file
   const [brandingFileName, setBrandingFileName] = useState<string | null>(null)
   const [brandingUploading, setBrandingUploading] = useState(false)
 
-  // Niches
   const [niches, setNiches] = useState<string[]>([])
   const [savingNiches, setSavingNiches] = useState(false)
 
-  // Matched ideas
   const [matchedIdeas, setMatchedIdeas] = useState<MatchedIdea[]>([])
   const [ideasLoading, setIdeasLoading] = useState(false)
-  const [generatedFilter, setGeneratedFilter] = useState<GeneratedFilter>('all')
+  const [generatedFilter, setGeneratedFilter] = useState<GeneratedFilter>('not_generated')
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null)
 
-  // Delete
+  // Generate state: ideaPostId → 'pending' | 'done' | 'error'
+  const [generatingIds, setGeneratingIds] = useState<Record<string, 'pending' | 'done' | 'error'>>({})
+  const [generatingAll, setGeneratingAll] = useState(false)
+
   const [confirmDelete, setConfirmDelete] = useState(false)
   const { niches: allNiches, badgeClass, nicheEmoji } = useNiches()
 
-  useEffect(() => {
-    fetchModel()
-  }, [username])
+  useEffect(() => { fetchModel() }, [username])
 
   async function fetchModel(silent = false) {
     if (!silent) setLoading(true)
@@ -79,9 +78,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     setIdeasLoading(false)
   }, [username])
 
-  useEffect(() => {
-    if (!loading) fetchMatchedIdeas()
-  }, [loading, fetchMatchedIdeas])
+  useEffect(() => { if (!loading) fetchMatchedIdeas() }, [loading, fetchMatchedIdeas])
 
   async function handleBrandingUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -93,10 +90,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ branding_file_md: text }),
     })
-    if (res.ok) {
-      setBrandingFileName(file.name)
-      await fetchModel()
-    }
+    if (res.ok) { setBrandingFileName(file.name); await fetchModel() }
     setBrandingUploading(false)
     e.target.value = ''
   }
@@ -119,6 +113,25 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     router.push('/models')
   }
 
+  async function generateIdea(postId: string) {
+    setGeneratingIds(prev => ({ ...prev, [postId]: 'pending' }))
+    const res = await fetch(`/api/models/${username}/generate-idea`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ post_id: postId }),
+    })
+    setGeneratingIds(prev => ({ ...prev, [postId]: res.ok ? 'done' : 'error' }))
+    if (res.ok) fetchMatchedIdeas()
+  }
+
+  async function generateAll() {
+    const targets = notGeneratedIdeas.filter(idea => !generatingIds[idea.trends_posts.id])
+    if (!targets.length) return
+    setGeneratingAll(true)
+    await Promise.all(targets.map(idea => generateIdea(idea.trends_posts.id)))
+    setGeneratingAll(false)
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
@@ -129,14 +142,21 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
   if (!model) return null
 
-  const modelId = model?.id
-  const filteredIdeas = matchedIdeas.filter(idea => {
+  const modelId = model.id
+
+  const notGeneratedIdeas = matchedIdeas.filter(idea => {
     const jobs = idea.trends_posts.video_jobs ?? []
-    const hasGenerated = jobs.some(j => j.model_id === modelId && j.status === 'done')
-    if (generatedFilter === 'generated') return hasGenerated
-    if (generatedFilter === 'not_generated') return !hasGenerated
-    return true
+    return !jobs.some(j => j.model_id === modelId && j.status === 'done')
   })
+
+  const generatedIdeas = matchedIdeas.filter(idea => {
+    const jobs = idea.trends_posts.video_jobs ?? []
+    return jobs.some(j => j.model_id === modelId && j.status === 'done')
+  })
+
+  const filteredIdeas = generatedFilter === 'not_generated' ? notGeneratedIdeas
+    : generatedFilter === 'generated' ? generatedIdeas
+    : matchedIdeas
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
@@ -145,8 +165,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
         <div className="flex gap-4 text-xs text-[#666]">
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
-          <Link href="/models" className="hover:text-white transition-colors">Models</Link>
-          <Link href="/pipeline" className="hover:text-white transition-colors">Pipeline</Link>
+          <Link href="/models" className="text-white">Models</Link>
         </div>
       </nav>
 
@@ -158,8 +177,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
             <h2 className="text-xl font-semibold">@{model.fansly_username}</h2>
             <a
               href={model.fansly_url ?? `https://fansly.com/${model.fansly_username}`}
-              target="_blank"
-              rel="noopener noreferrer"
+              target="_blank" rel="noopener noreferrer"
               className="text-xs text-[#555] hover:text-[#888] transition-colors mt-0.5 block"
             >
               fansly.com/{model.fansly_username} ↗
@@ -167,21 +185,14 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
           </div>
           <div className="flex gap-2">
             {!confirmDelete ? (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                className="text-xs text-[#444] hover:text-red-400 border border-[#1e1e1e] hover:border-red-400/30 px-3 py-1.5 rounded-lg transition-colors"
-              >
+              <button onClick={() => setConfirmDelete(true)} className="text-xs text-[#444] hover:text-red-400 border border-[#1e1e1e] hover:border-red-400/30 px-3 py-1.5 rounded-lg transition-colors">
                 Delete
               </button>
             ) : (
               <div className="flex gap-2 items-center">
                 <span className="text-xs text-[#666]">Are you sure?</span>
-                <button onClick={handleDelete} className="text-xs text-red-400 hover:text-red-300 px-3 py-1.5 rounded-lg border border-red-400/30 transition-colors">
-                  Yes, delete
-                </button>
-                <button onClick={() => setConfirmDelete(false)} className="text-xs text-[#666] hover:text-white px-3 py-1.5 rounded-lg transition-colors">
-                  Cancel
-                </button>
+                <button onClick={handleDelete} className="text-xs text-red-400 hover:text-red-300 px-3 py-1.5 rounded-lg border border-red-400/30 transition-colors">Yes, delete</button>
+                <button onClick={() => setConfirmDelete(false)} className="text-xs text-[#666] hover:text-white px-3 py-1.5 rounded-lg transition-colors">Cancel</button>
               </div>
             )}
           </div>
@@ -233,6 +244,12 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
           )}
         </div>
 
+        {/* Content Bank */}
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-xl p-5 space-y-4">
+          <h3 className="text-sm font-medium">Content Bank</h3>
+          <ContentBank username={username} />
+        </div>
+
         {/* Matched Ideas */}
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -240,22 +257,37 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
               <h3 className="text-sm font-medium">Matched Ideas</h3>
               <p className="text-xs text-[#444] mt-0.5">Bookmarked posts that share this model&apos;s niches</p>
             </div>
-            {niches.length === 0 && (
-              <span className="text-xs text-[#444]">Assign niches above to see matches</span>
-            )}
+            {niches.length === 0 && <span className="text-xs text-[#444]">Assign niches above to see matches</span>}
           </div>
 
           {matchedIdeas.length > 0 && (
-            <div className="flex gap-1 bg-[#111] border border-[#1e1e1e] rounded-xl p-1 w-fit">
-              {(['all', 'not_generated', 'generated'] as const).map(f => (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex gap-1 bg-[#111] border border-[#1e1e1e] rounded-xl p-1 w-fit">
+                {(['not_generated', 'generated', 'all'] as const).map(f => (
+                  <button
+                    key={f}
+                    onClick={() => setGeneratedFilter(f)}
+                    className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${generatedFilter === f ? 'bg-white text-black font-medium' : 'text-[#666] hover:text-[#999]'}`}
+                  >
+                    {f === 'all' ? `All (${matchedIdeas.length})` : f === 'not_generated' ? `Not generated (${notGeneratedIdeas.length})` : `Generated (${generatedIdeas.length})`}
+                  </button>
+                ))}
+              </div>
+
+              {/* Generate all button — shown for not_generated and generated tabs */}
+              {generatedFilter !== 'all' && filteredIdeas.length > 0 && (
                 <button
-                  key={f}
-                  onClick={() => setGeneratedFilter(f)}
-                  className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${generatedFilter === f ? 'bg-white text-black font-medium' : 'text-[#666] hover:text-[#999]'}`}
+                  onClick={generateAll}
+                  disabled={generatingAll}
+                  className="text-xs bg-[#D41020] hover:bg-[#b50d1a] disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition-colors"
                 >
-                  {f === 'all' ? `All (${matchedIdeas.length})` : f === 'not_generated' ? 'Not generated' : 'Generated'}
+                  {generatingAll
+                    ? 'Generating...'
+                    : generatedFilter === 'not_generated'
+                    ? `Generate all (${notGeneratedIdeas.length})`
+                    : `Regenerate all (${generatedIdeas.length})`}
                 </button>
-              ))}
+              )}
             </div>
           )}
 
@@ -284,40 +316,52 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                 const doneCount = modelJobs.filter(j => j.status === 'done').length
                 const hasAny = modelJobs.length > 0
                 const post = idea.trends_posts
+                const genState = generatingIds[post.id]
 
                 return (
-                  <button
-                    key={idea.id}
-                    onClick={() => setSelectedPostId(post.id)}
-                    className="w-full flex items-center gap-3 px-4 py-3 border-b border-[#1a1a1a] last:border-0 hover:bg-[#111] transition-colors text-left"
-                  >
-                    {/* Thumbnail */}
-                    <div className="w-9 h-12 rounded-md overflow-hidden flex-shrink-0 bg-[#1a1a1a]">
+                  <div key={idea.id} className="flex items-center gap-3 px-4 py-3 border-b border-[#1a1a1a] last:border-0 hover:bg-[#111] transition-colors">
+                    {/* Thumbnail — clickable to open modal */}
+                    <button onClick={() => setSelectedPostId(post.id)} className="w-9 h-12 rounded-md overflow-hidden flex-shrink-0 bg-[#1a1a1a]">
                       {post.thumbnail_r2_key && (
                         <img src={`/api/thumb/${post.id}`} className="w-full h-full object-cover" alt="" />
                       )}
-                    </div>
+                    </button>
 
                     {/* Info */}
-                    <div className="flex-1 min-w-0">
+                    <button onClick={() => setSelectedPostId(post.id)} className="flex-1 min-w-0 text-left">
                       <p className="text-xs text-[#666] truncate">@{post.creator_username}</p>
-                      <div className="flex flex-wrap gap-1 mt-1">
+                      <div className="flex flex-wrap gap-1 mt-0.5">
                         {idea.niches.map(n => (
                           <span key={n} className="text-[10px] text-[#555]">{nicheEmoji(n)} {n}</span>
                         ))}
                       </div>
-                    </div>
+                    </button>
 
-                    {/* Status + likes */}
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${doneCount > 0 ? 'bg-green-500/20 text-green-400 border-green-500/30' : hasAny ? 'bg-blue-500/20 text-blue-400 border-blue-500/30' : 'bg-[#1a1a1a] text-[#555] border-[#2a2a2a]'}`}>
-                        {doneCount > 0 ? `✓ ${doneCount}x` : hasAny ? 'queued' : 'not generated'}
-                      </span>
-                      <span className="text-[10px] text-[#444]">
-                        {post.likes_current >= 1000 ? `${(post.likes_current / 1000).toFixed(1)}K` : post.likes_current} ♥
-                      </span>
-                    </div>
-                  </button>
+                    {/* Status */}
+                    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border flex-shrink-0 ${doneCount > 0 ? 'bg-green-500/20 text-green-400 border-green-500/30' : hasAny ? 'bg-blue-500/20 text-blue-400 border-blue-500/30' : 'bg-[#1a1a1a] text-[#555] border-[#2a2a2a]'}`}>
+                      {doneCount > 0 ? `✓ ${doneCount}x` : hasAny ? 'queued' : 'not generated'}
+                    </span>
+
+                    <span className="text-[10px] text-[#444] flex-shrink-0">
+                      {post.likes_current >= 1000 ? `${(post.likes_current / 1000).toFixed(1)}K` : post.likes_current} ♥
+                    </span>
+
+                    {/* Generate button */}
+                    <button
+                      onClick={() => generateIdea(post.id)}
+                      disabled={genState === 'pending' || generatingAll}
+                      className={`text-[10px] font-medium px-2 py-1 rounded-lg border flex-shrink-0 transition-colors disabled:opacity-50 ${
+                        genState === 'done' ? 'border-green-500/30 text-green-400'
+                        : genState === 'error' ? 'border-red-500/30 text-red-400'
+                        : genState === 'pending' ? 'border-[#2a2a2a] text-[#555]'
+                        : doneCount > 0
+                        ? 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-white'
+                        : 'border-[#D41020]/40 text-[#D41020] hover:bg-[#D41020]/10'
+                      }`}
+                    >
+                      {genState === 'pending' ? '...' : genState === 'done' ? 'queued ✓' : genState === 'error' ? 'error' : doneCount > 0 ? 'regenerate' : 'generate'}
+                    </button>
+                  </div>
                 )
               })}
             </div>

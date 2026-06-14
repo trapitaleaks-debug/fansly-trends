@@ -72,7 +72,7 @@ export default function JobsPage() {
           <Link href="/" className="hover:text-white transition-colors">Feed</Link>
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
-          <Link href="/pipeline" className="hover:text-white transition-colors">Pipeline</Link>
+          
           <Link href="/templates" className="hover:text-white transition-colors">Templates</Link>
         </div>
       </nav>
