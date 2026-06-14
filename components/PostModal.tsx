@@ -24,7 +24,6 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
   const [savingTemplate, setSavingTemplate] = useState(false)
   const [ideaId, setIdeaId] = useState<string | null>(null)
   const [ideaNiches, setIdeaNiches] = useState<string[]>([])
-  const [showNichePicker, setShowNichePicker] = useState(false)
   const [bookmarking, setBookmarking] = useState(false)
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const templateTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -104,15 +103,16 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
     const res = await fetch('/api/ideas', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ post_id: postId, niches: ideaNiches, notes }),
+      body: JSON.stringify({ post_id: postId, niches: [], notes }),
     })
     const data = await res.json()
-    setIdeaId(data.idea?.id ?? ideaId)
-    setShowNichePicker(false)
+    const newId = data.idea?.id ?? null
+    setIdeaId(newId)
+    setIdeaNiches([])
     setBookmarking(false)
     setPost(p => p ? {
       ...p,
-      trends_ideas: [{ id: data.idea?.id ?? 'new', niches: ideaNiches, tags: [], notes }],
+      trends_ideas: [{ id: newId ?? 'new', niches: [], tags: [], notes }],
     } : p)
     onBookmarkChange()
   }
@@ -269,51 +269,13 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
                 </button>
               </div>
             ) : (
-              <div className="space-y-2">
-                {showNichePicker ? (
-                  <div className="space-y-2">
-                    <p className="text-xs text-[#555]">Save to niches:</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {niches.map(n => (
-                        <button
-                          key={n.name}
-                          onClick={() => {
-                            const next = ideaNiches.includes(n.name)
-                              ? ideaNiches.filter(x => x !== n.name)
-                              : [...ideaNiches, n.name]
-                            setIdeaNiches(next)
-                          }}
-                          className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${ideaNiches.includes(n.name) ? badgeClass(n.name) : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
-                        >
-                          {n.emoji} {n.name}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleBookmark}
-                        disabled={bookmarking}
-                        className="text-xs bg-yellow-500 text-black font-semibold px-4 py-1.5 rounded-lg hover:bg-yellow-400 disabled:opacity-50 transition-colors"
-                      >
-                        {bookmarking ? 'Saving...' : 'Save to Ideas'}
-                      </button>
-                      <button
-                        onClick={() => { setShowNichePicker(false); setIdeaNiches([]) }}
-                        className="text-xs text-[#555] hover:text-white transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setShowNichePicker(true)}
-                    className="text-sm px-4 py-2 rounded-lg font-medium bg-[#1a1a1a] text-[#999] border border-[#2a2a2a] hover:border-[#444] transition-colors"
-                  >
-                    ☆ Save to Ideas
-                  </button>
-                )}
-              </div>
+              <button
+                onClick={handleBookmark}
+                disabled={bookmarking}
+                className="text-sm px-4 py-2 rounded-lg font-medium bg-[#1a1a1a] text-[#999] border border-[#2a2a2a] hover:border-[#444] disabled:opacity-50 transition-colors"
+              >
+                {bookmarking ? 'Saving...' : '☆ Save to Ideas'}
+              </button>
             )}
           </div>
 
