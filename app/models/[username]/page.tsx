@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, use } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import PostCard, { type Post } from '@/components/PostCard'
+import { type Post } from '@/components/PostCard'
 import PostModal from '@/components/PostModal'
 import { useNiches } from '@/components/NichesProvider'
 
@@ -277,27 +277,47 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            <div className="border border-[#1e1e1e] rounded-xl overflow-hidden">
               {filteredIdeas.map(idea => {
                 const jobs = idea.trends_posts.video_jobs ?? []
                 const modelJobs = jobs.filter(j => j.model_id === modelId)
                 const doneCount = modelJobs.filter(j => j.status === 'done').length
                 const hasAny = modelJobs.length > 0
+                const post = idea.trends_posts
 
                 return (
-                  <div key={idea.id} className="relative">
-                    <PostCard
-                      post={{
-                        ...idea.trends_posts,
-                        trends_ideas: [{ id: idea.id, niches: idea.niches, tags: [], notes: idea.notes }],
-                      }}
-                      onClick={() => setSelectedPostId(idea.trends_posts.id)}
-                      onBookmark={() => setSelectedPostId(idea.trends_posts.id)}
-                    />
-                    <div className={`absolute bottom-10 left-2 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${doneCount > 0 ? 'bg-green-500/20 text-green-400 border border-green-500/30' : hasAny ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-[#1a1a1a] text-[#555] border border-[#2a2a2a]'}`}>
-                      {doneCount > 0 ? `✓ ${doneCount}x` : hasAny ? 'in queue' : 'not generated'}
+                  <button
+                    key={idea.id}
+                    onClick={() => setSelectedPostId(post.id)}
+                    className="w-full flex items-center gap-3 px-4 py-3 border-b border-[#1a1a1a] last:border-0 hover:bg-[#111] transition-colors text-left"
+                  >
+                    {/* Thumbnail */}
+                    <div className="w-9 h-12 rounded-md overflow-hidden flex-shrink-0 bg-[#1a1a1a]">
+                      {post.thumbnail_r2_key && (
+                        <img src={`/api/thumb/${post.id}`} className="w-full h-full object-cover" alt="" />
+                      )}
                     </div>
-                  </div>
+
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-[#666] truncate">@{post.creator_username}</p>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {idea.niches.map(n => (
+                          <span key={n} className="text-[10px] text-[#555]">{nicheEmoji(n)} {n}</span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Status + likes */}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${doneCount > 0 ? 'bg-green-500/20 text-green-400 border-green-500/30' : hasAny ? 'bg-blue-500/20 text-blue-400 border-blue-500/30' : 'bg-[#1a1a1a] text-[#555] border-[#2a2a2a]'}`}>
+                        {doneCount > 0 ? `✓ ${doneCount}x` : hasAny ? 'queued' : 'not generated'}
+                      </span>
+                      <span className="text-[10px] text-[#444]">
+                        {post.likes_current >= 1000 ? `${(post.likes_current / 1000).toFixed(1)}K` : post.likes_current} ♥
+                      </span>
+                    </div>
+                  </button>
                 )
               })}
             </div>

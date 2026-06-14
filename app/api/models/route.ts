@@ -4,30 +4,19 @@ import { supabaseAdmin } from '@/lib/supabase'
 export async function GET() {
   const { data, error } = await supabaseAdmin
     .from('trends_models')
-    .select(`
-      id, fansly_username, fansly_url, hashtags, created_at, updated_at,
-      trends_suggestions(status)
-    `)
+    .select('id, fansly_username, fansly_url, niches, created_at, updated_at')
     .order('fansly_username')
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  const models = (data ?? []).map(m => {
-    const suggestions = (m.trends_suggestions ?? []) as { status: string }[]
-    return {
-      id: m.id,
-      fansly_username: m.fansly_username,
-      fansly_url: m.fansly_url,
-      hashtag_count: (m.hashtags ?? []).length,
-      suggestion_counts: {
-        pending: suggestions.filter(s => s.status === 'pending').length,
-        done: suggestions.filter(s => s.status === 'done').length,
-        dismissed: suggestions.filter(s => s.status === 'dismissed').length,
-      },
-      created_at: m.created_at,
-      updated_at: m.updated_at,
-    }
-  })
+  const models = (data ?? []).map(m => ({
+    id: m.id,
+    fansly_username: m.fansly_username,
+    fansly_url: m.fansly_url,
+    niches: m.niches ?? [],
+    created_at: m.created_at,
+    updated_at: m.updated_at,
+  }))
 
   return NextResponse.json({ models })
 }

@@ -59,7 +59,7 @@ export default function ModelsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-lg font-semibold">Model Profiles</h2>
-            <p className="text-xs text-[#555] mt-0.5">{models.length} models · AI-powered content suggestions</p>
+            <p className="text-xs text-[#555] mt-0.5">{models.length} models</p>
           </div>
           <button
             onClick={() => setShowForm(true)}
@@ -116,7 +116,7 @@ export default function ModelsPage() {
             <p className="text-sm">Create a profile for each model you manage</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="border border-[#1e1e1e] rounded-xl overflow-hidden">
             {models.map(model => (
               <ModelCard key={model.id} model={model} />
             ))}
