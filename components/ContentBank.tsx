@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-const CONTENT_TAGS = ['masturbation', 'dildo', 'blowjob', 'girl/girl', 'solo', 'teaser']
+const PRESET_TAGS = ['masturbation', 'dildo', 'blowjob', 'girl/girl', 'solo', 'teaser', 'all']
 
 async function trimVideoClientSide(
   file: File,
@@ -143,17 +143,48 @@ function TrimSelector({ file, onConfirm, onCancel, uploading, trimProgress }: {
 }
 
 function TagChips({ tags, onChange }: { tags: string[]; onChange: (t: string[]) => void }) {
-  function toggle(tag: string) {
-    onChange(tags.includes(tag) ? tags.filter(t => t !== tag) : [...tags, tag])
+  const [newTag, setNewTag] = useState('')
+
+  function add(tag: string) {
+    const t = tag.trim().toLowerCase()
+    if (!t || tags.includes(t)) return
+    onChange([...tags, t])
+    setNewTag('')
   }
+
+  function remove(tag: string) {
+    onChange(tags.filter(t => t !== tag))
+  }
+
+  const available = PRESET_TAGS.filter(t => !tags.includes(t))
+
   return (
-    <div className="flex flex-wrap gap-1">
-      {CONTENT_TAGS.map(tag => (
-        <button key={tag} onClick={() => toggle(tag)}
-          className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${tags.includes(tag) ? 'bg-violet-500/20 border-violet-500/40 text-violet-300' : 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-[#888]'}`}>
-          {tag}
-        </button>
-      ))}
+    <div className="space-y-1.5">
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {tags.map(tag => (
+            <span key={tag} className="flex items-center gap-1 text-[10px] pl-2 pr-1 py-0.5 rounded-full bg-violet-500/20 border border-violet-500/40 text-violet-300">
+              {tag}
+              <button onClick={() => remove(tag)} className="hover:text-red-400 leading-none w-3.5 h-3.5 flex items-center justify-center">×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1 items-center">
+        {available.map(tag => (
+          <button key={tag} onClick={() => add(tag)}
+            className="text-[10px] px-2 py-0.5 rounded-full border border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#777] transition-colors">
+            {tag}
+          </button>
+        ))}
+        <input
+          value={newTag}
+          onChange={e => setNewTag(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(newTag) } }}
+          placeholder="+ new tag"
+          className="text-[10px] px-2 py-0.5 rounded-full border border-dashed border-[#2a2a2a] bg-transparent text-[#555] placeholder-[#333] focus:outline-none focus:border-[#444] w-16"
+        />
+      </div>
     </div>
   )
 }
@@ -266,7 +297,6 @@ export default function ContentBank({ username }: { username: string }) {
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="text-xs font-mono text-[#555] flex-shrink-0">#{idx + 1}</span>
-                <span className="text-xs text-[#ccc] truncate">{item.label ?? item.r2_key.split('/').pop()}</span>
                 {item.trim_end != null && (
                   <span className="text-[10px] text-[#444] flex-shrink-0">{(item.trim_end - item.trim_start).toFixed(1)}s</span>
                 )}
