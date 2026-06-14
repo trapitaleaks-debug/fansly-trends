@@ -12,7 +12,7 @@ import { execSync } from 'child_process'
 import { uploadToR2, r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
-import { buildComposition, adaptBrandHtmlForRender } from './compose'
+import { buildComposition, adaptBrandHtmlForRender, buildCompositionFromBrandConfig, type BrandConfig } from './compose'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
@@ -111,7 +111,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
     .select(`
       id, post_id, model_id, clip_id, personalized_text, status,
       model_clips ( r2_key ),
-      trends_models ( fansly_username, brand_html_r2_key ),
+      trends_models ( fansly_username, brand_html_r2_key, video_brand_config ),
       trends_posts ( video_r2_key, fansly_post_id )
     `)
     .eq('id', jobId)
@@ -132,9 +132,10 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const clipKey = (job.model_clips as unknown as { r2_key: string } | null)?.r2_key
     if (!clipKey) throw new Error('No footage clip attached to this job')
 
-    const modelMeta = job.trends_models as unknown as { fansly_username: string; brand_html_r2_key: string | null } | null
+    const modelMeta = job.trends_models as unknown as { fansly_username: string; brand_html_r2_key: string | null; video_brand_config: BrandConfig | null } | null
     const handle = modelMeta?.fansly_username ?? 'unknown'
     const brandHtmlKey = modelMeta?.brand_html_r2_key ?? null
+    const brandConfig = modelMeta?.video_brand_config ?? null
     const overlayText = job.personalized_text ?? ''
     const sourceVideoKey = (job.trends_posts as unknown as { video_r2_key: string | null } | null)?.video_r2_key
 
@@ -181,9 +182,12 @@ export async function processVideoJob(jobId: string): Promise<void> {
       const composedPath = path.join(tmpDir, 'composed.mp4')
       let hfOk = false
       try {
-        // Build composition HTML — use brand HTML if model has one, else default
+        // Build composition HTML — brand config JSON > brand HTML file > default
         let compositionHtml: string
-        if (brandHtmlKey) {
+        if (brandConfig) {
+          console.log(`  Using brand config: ${brandConfig.font_primary}, ${brandConfig.color_text}`)
+          compositionHtml = buildCompositionFromBrandConfig(brandConfig, 'video.mp4', overlayText, duration, 1)
+        } else if (brandHtmlKey) {
           console.log(`  Using brand HTML: ${brandHtmlKey}`)
           const brandHtmlBuf = await downloadBufferFromR2(brandHtmlKey)
           compositionHtml = adaptBrandHtmlForRender(brandHtmlBuf.toString('utf8'), 'video.mp4', overlayText, duration, 1)

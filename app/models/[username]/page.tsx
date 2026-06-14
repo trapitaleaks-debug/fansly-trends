@@ -16,6 +16,7 @@ interface Model {
   niches: string[]
   placeholder_options: string[]
   brand_html_r2_key: string | null
+  video_brand_config: Record<string, unknown> | null
   updated_at: string
 }
 
@@ -55,8 +56,8 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [newOption, setNewOption] = useState('')
   const [savingPlaceholders, setSavingPlaceholders] = useState(false)
 
-  // Brand HTML
-  const [brandHtmlKey, setBrandHtmlKey] = useState<string | null>(null)
+  // Brand config
+  const [brandConfig, setBrandConfig] = useState<Record<string, unknown> | null>(null)
   const [uploadingBrand, setUploadingBrand] = useState(false)
 
   const [matchedIdeas, setMatchedIdeas] = useState<MatchedIdea[]>([])
@@ -86,7 +87,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     if (!silent) {
       setNiches(data.model.niches ?? [])
       setPlaceholderOptions(data.model.placeholder_options ?? [])
-      setBrandHtmlKey(data.model.brand_html_r2_key ?? null)
+      setBrandConfig(data.model.video_brand_config ?? null)
       setLoading(false)
     }
   }
@@ -190,7 +191,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     const res = await fetch(`/api/models/${username}/brand-html`, { method: 'POST', body: form })
     if (res.ok) {
       const data = await res.json()
-      setBrandHtmlKey(data.key)
+      setBrandConfig(data.config ?? null)
     }
     setUploadingBrand(false)
     e.target.value = ''
@@ -198,7 +199,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
   async function removeBrandHtml() {
     await fetch(`/api/models/${username}/brand-html`, { method: 'DELETE' })
-    setBrandHtmlKey(null)
+    setBrandConfig(null)
   }
 
   if (loading) {
@@ -318,24 +319,41 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
           {placeholderOptions.length === 0 && <p className="text-xs text-[#444]">No options yet. Add at least one so templates can be personalized.</p>}
         </div>
 
-        {/* Brand HTML */}
+        {/* Brand Style */}
         <div className="bg-[#111] border border-[#1e1e1e] rounded-xl p-5 space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-medium">Video Brand Style</h3>
-              <p className="text-xs text-[#444] mt-0.5">Upload a brand preview <span className="font-mono text-[#555]">.html</span> file to define text typography for generated videos</p>
+              <p className="text-xs text-[#444] mt-0.5">Upload the model&apos;s Video Brand <span className="font-mono text-[#555]">.md</span> profile to define font, color, effects, and stickers</p>
             </div>
-            {brandHtmlKey && (
+            {brandConfig && (
               <span className="text-[10px] font-medium text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full">Active</span>
             )}
           </div>
 
+          {brandConfig && (
+            <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-lg px-3 py-2.5 space-y-1">
+              <p className="text-[11px] text-[#888]">
+                <span className="text-[#555]">Font: </span>{String(brandConfig.font_primary ?? '—')} {String(brandConfig.font_weight ?? '')} {String(brandConfig.font_style ?? '')}
+              </p>
+              <p className="text-[11px] text-[#888]">
+                <span className="text-[#555]">Color: </span>
+                <span style={{ color: String(brandConfig.color_text ?? '#fff') }}>{String(brandConfig.color_text ?? '—')}</span>
+              </p>
+              {(brandConfig.stickers as string[] | undefined)?.length ? (
+                <p className="text-[11px] text-[#888]">
+                  <span className="text-[#555]">Stickers: </span>{(brandConfig.stickers as string[]).join(' ')}
+                </p>
+              ) : null}
+            </div>
+          )}
+
           <div className="flex gap-2 items-center">
             <label className={`inline-block text-xs px-3 py-1.5 rounded-lg border transition-colors ${uploadingBrand ? 'opacity-50 border-[#2a2a2a] text-[#444]' : 'border-[#2a2a2a] text-[#888] hover:text-white hover:border-[#444] cursor-pointer'}`}>
-              {uploadingBrand ? 'Uploading...' : brandHtmlKey ? 'Replace .html' : 'Upload .html'}
-              <input type="file" accept=".html" className="hidden" onChange={handleBrandHtmlUpload} disabled={uploadingBrand} />
+              {uploadingBrand ? 'Uploading...' : brandConfig ? 'Replace profile' : 'Upload brand profile (.md)'}
+              <input type="file" accept=".md,.json" className="hidden" onChange={handleBrandHtmlUpload} disabled={uploadingBrand} />
             </label>
-            {brandHtmlKey && (
+            {brandConfig && (
               <button onClick={removeBrandHtml}
                 className="text-xs text-[#444] hover:text-red-400 border border-[#2a2a2a] hover:border-red-400/30 px-3 py-1.5 rounded-lg transition-colors">
                 Remove
@@ -343,10 +361,9 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
             )}
           </div>
 
-          {brandHtmlKey
-            ? <p className="text-xs text-[#555]">Brand typography is active — new videos will use this style.</p>
-            : <p className="text-xs text-[#444]">No brand HTML. Videos use default Arial Black white style.</p>
-          }
+          {!brandConfig && (
+            <p className="text-xs text-[#444]">No brand profile. Videos use default white Arial Black style.</p>
+          )}
         </div>
 
         {/* Content Bank */}
