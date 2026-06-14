@@ -15,6 +15,7 @@ interface Model {
   fansly_url: string | null
   niches: string[]
   placeholder_options: string[]
+  brand_html_r2_key: string | null
   updated_at: string
 }
 
@@ -54,6 +55,10 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [newOption, setNewOption] = useState('')
   const [savingPlaceholders, setSavingPlaceholders] = useState(false)
 
+  // Brand HTML
+  const [brandHtmlKey, setBrandHtmlKey] = useState<string | null>(null)
+  const [uploadingBrand, setUploadingBrand] = useState(false)
+
   const [matchedIdeas, setMatchedIdeas] = useState<MatchedIdea[]>([])
   const [ideasLoading, setIdeasLoading] = useState(false)
   const [generatedFilter, setGeneratedFilter] = useState<GeneratedFilter>('not_generated')
@@ -81,6 +86,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     if (!silent) {
       setNiches(data.model.niches ?? [])
       setPlaceholderOptions(data.model.placeholder_options ?? [])
+      setBrandHtmlKey(data.model.brand_html_r2_key ?? null)
       setLoading(false)
     }
   }
@@ -173,6 +179,26 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     setGeneratingAll(true)
     await Promise.all(targets.map(idea => generateIdea(idea.trends_posts.id)))
     setGeneratingAll(false)
+  }
+
+  async function handleBrandHtmlUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadingBrand(true)
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`/api/models/${username}/brand-html`, { method: 'POST', body: form })
+    if (res.ok) {
+      const data = await res.json()
+      setBrandHtmlKey(data.key)
+    }
+    setUploadingBrand(false)
+    e.target.value = ''
+  }
+
+  async function removeBrandHtml() {
+    await fetch(`/api/models/${username}/brand-html`, { method: 'DELETE' })
+    setBrandHtmlKey(null)
   }
 
   if (loading) {
@@ -290,6 +316,37 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
             </button>
           </div>
           {placeholderOptions.length === 0 && <p className="text-xs text-[#444]">No options yet. Add at least one so templates can be personalized.</p>}
+        </div>
+
+        {/* Brand HTML */}
+        <div className="bg-[#111] border border-[#1e1e1e] rounded-xl p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-medium">Video Brand Style</h3>
+              <p className="text-xs text-[#444] mt-0.5">Upload a brand preview <span className="font-mono text-[#555]">.html</span> file to define text typography for generated videos</p>
+            </div>
+            {brandHtmlKey && (
+              <span className="text-[10px] font-medium text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full">Active</span>
+            )}
+          </div>
+
+          <div className="flex gap-2 items-center">
+            <label className={`inline-block text-xs px-3 py-1.5 rounded-lg border transition-colors ${uploadingBrand ? 'opacity-50 border-[#2a2a2a] text-[#444]' : 'border-[#2a2a2a] text-[#888] hover:text-white hover:border-[#444] cursor-pointer'}`}>
+              {uploadingBrand ? 'Uploading...' : brandHtmlKey ? 'Replace .html' : 'Upload .html'}
+              <input type="file" accept=".html" className="hidden" onChange={handleBrandHtmlUpload} disabled={uploadingBrand} />
+            </label>
+            {brandHtmlKey && (
+              <button onClick={removeBrandHtml}
+                className="text-xs text-[#444] hover:text-red-400 border border-[#2a2a2a] hover:border-red-400/30 px-3 py-1.5 rounded-lg transition-colors">
+                Remove
+              </button>
+            )}
+          </div>
+
+          {brandHtmlKey
+            ? <p className="text-xs text-[#555]">Brand typography is active — new videos will use this style.</p>
+            : <p className="text-xs text-[#444]">No brand HTML. Videos use default Arial Black white style.</p>
+          }
         </div>
 
         {/* Content Bank */}

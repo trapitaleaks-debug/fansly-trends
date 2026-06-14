@@ -12,7 +12,7 @@ import { execSync } from 'child_process'
 import { uploadToR2, r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
-import { buildComposition } from './compose'
+import { buildComposition, adaptBrandHtmlForRender } from './compose'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
@@ -40,12 +40,17 @@ function run(cmd: string) {
 }
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
+  const buf = await downloadBufferFromR2(key)
+  fs.writeFileSync(destPath, buf)
+}
+
+async function downloadBufferFromR2(key: string): Promise<Buffer> {
   const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
   const body = res.Body
   if (!body) throw new Error(`R2 key not found: ${key}`)
   const chunks: Uint8Array[] = []
   for await (const chunk of body as AsyncIterable<Uint8Array>) chunks.push(chunk)
-  fs.writeFileSync(destPath, Buffer.concat(chunks))
+  return Buffer.concat(chunks)
 }
 
 function stripEmoji(text: string): string {
@@ -84,17 +89,14 @@ function buildDrawtextFilter(overlayText: string, tmpDir: string): string {
   return `drawtext=textfile='${textFile1}':${baseStyle}:x=(w-text_w)/2:y=h*0.65,drawtext=textfile='${textFile2}':${baseStyle}:x=(w-text_w)/2:y=h*0.73`
 }
 
-async function renderWithHyperframes(rawPath: string, composedPath: string, overlayText: string | null, duration: number, tmpDir: string): Promise<void> {
+async function renderWithHyperframes(rawPath: string, composedPath: string, compositionHtml: string, tmpDir: string): Promise<void> {
   const normPath = path.join(tmpDir, 'hf_norm.mp4')
   run(`${ffmpegBin()} -i "${rawPath}" -c:v libx264 -preset ultrafast -threads 2 -crf 18 -an -y "${normPath}"`)
 
   const compDir = path.join(tmpDir, 'comp')
   fs.mkdirSync(compDir, { recursive: true })
-  const videoFile = 'video.mp4'
-  fs.symlinkSync(normPath, path.join(compDir, videoFile))
-
-  const html = buildComposition({ videoFile, overlayText, duration, slot: 1 })
-  fs.writeFileSync(path.join(compDir, 'index.html'), html, 'utf8')
+  fs.symlinkSync(normPath, path.join(compDir, 'video.mp4'))
+  fs.writeFileSync(path.join(compDir, 'index.html'), compositionHtml, 'utf8')
 
   const bin = hyperframesBin()
   run(`"${bin}" render "${compDir}" -o "${composedPath}" --no-browser-gpu --fps 30 --workers 1`)
@@ -109,7 +111,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
     .select(`
       id, post_id, model_id, clip_id, personalized_text, status,
       model_clips ( r2_key ),
-      trends_models ( fansly_username ),
+      trends_models ( fansly_username, brand_html_r2_key ),
       trends_posts ( video_r2_key, fansly_post_id )
     `)
     .eq('id', jobId)
@@ -130,7 +132,9 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const clipKey = (job.model_clips as unknown as { r2_key: string } | null)?.r2_key
     if (!clipKey) throw new Error('No footage clip attached to this job')
 
-    const handle = (job.trends_models as unknown as { fansly_username: string } | null)?.fansly_username ?? 'unknown'
+    const modelMeta = job.trends_models as unknown as { fansly_username: string; brand_html_r2_key: string | null } | null
+    const handle = modelMeta?.fansly_username ?? 'unknown'
+    const brandHtmlKey = modelMeta?.brand_html_r2_key ?? null
     const overlayText = job.personalized_text ?? ''
     const sourceVideoKey = (job.trends_posts as unknown as { video_r2_key: string | null } | null)?.video_r2_key
 
@@ -177,7 +181,16 @@ export async function processVideoJob(jobId: string): Promise<void> {
       const composedPath = path.join(tmpDir, 'composed.mp4')
       let hfOk = false
       try {
-        await renderWithHyperframes(rawPath, composedPath, overlayText, duration, tmpDir)
+        // Build composition HTML — use brand HTML if model has one, else default
+        let compositionHtml: string
+        if (brandHtmlKey) {
+          console.log(`  Using brand HTML: ${brandHtmlKey}`)
+          const brandHtmlBuf = await downloadBufferFromR2(brandHtmlKey)
+          compositionHtml = adaptBrandHtmlForRender(brandHtmlBuf.toString('utf8'), 'video.mp4', overlayText, duration, 1)
+        } else {
+          compositionHtml = buildComposition({ videoFile: 'video.mp4', overlayText, duration, slot: 1 })
+        }
+        await renderWithHyperframes(rawPath, composedPath, compositionHtml, tmpDir)
         hfOk = true
       } catch (e) {
         console.log(`  Hyperframes failed — falling back to ffmpeg: ${(e as Error).message}`)
