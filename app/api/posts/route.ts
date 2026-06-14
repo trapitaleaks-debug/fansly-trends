@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
   const page = parseInt(searchParams.get('page') ?? '0')
   const limit = 30
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let query = supabaseAdmin
     .from('trends_posts')
     .select('*, trends_ideas(id, niches, tags, notes)')
@@ -20,7 +21,7 @@ export async function GET(request: NextRequest) {
     .gte('likes_current', 150)
     .not('video_r2_key', 'is', null)
     .neq('video_r2_key', '')
-    .not('hashtags', 'ov', '{deepthroat,porn,creampie,hotwife,bigdick,breeding,analcreampie,sex,bbc,bwc,bigcock,hugecock,hugedick,swingers,couple,couples,wifesharing,wifeswap,blacked,monstercock,gangbang,cumslut,analsex,cumeating,fuck,bg,sextape,standingfuck}')
+    .not('hashtags', 'ov', '{deepthroat,porn,creampie,hotwife,bigdick,breeding,analcreampie,sex,bbc,bwc,bigcock,hugecock,hugedick,swingers,couple,couples,wifesharing,wifeswap,blacked,monstercock,gangbang,cumslut,analsex,cumeating,fuck,bg,sextape,standingfuck}') as any
 
   if (showHidden) {
     query = query.not('hidden_at', 'is', null)
