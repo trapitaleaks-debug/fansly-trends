@@ -191,6 +191,7 @@ export function buildCompositionFromBrandConfig(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=${width}, height=${height}">
+  <link rel="preload" href="${fontsUrl}" as="style">
   <link href="${fontsUrl}" rel="stylesheet">
   ${fallbackUrl ? `<link href="${fallbackUrl}" rel="stylesheet">` : ''}
   <script src="${GSAP_CDN}"></script>
@@ -248,13 +249,16 @@ export function buildCompositionFromBrandConfig(
     </div>
   </div>
   <script>
-    window.__timelines = window.__timelines || {};
-    const tl = gsap.timeline({ paused: true });
-    tl.to('#video', { opacity: 1, duration: 0.01 }, 0);
-    const words = document.querySelectorAll('.word');
-    tl.fromTo(words, { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: ${wordDuration.toFixed(2)}, stagger: 0.12, ease: '${ease}' }, 0.2);
-    ${stickerAnim}
-    window.__timelines['${id}'] = tl;
+    // Wait for custom fonts before registering timeline so Hyperframes renders correct typeface
+    document.fonts.ready.then(function() {
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+      tl.to('#video', { opacity: 1, duration: 0.01 }, 0);
+      var words = document.querySelectorAll('.word');
+      tl.fromTo(words, { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: ${wordDuration.toFixed(2)}, stagger: 0.12, ease: '${ease}' }, 0.2);
+      ${stickerAnim}
+      window.__timelines['${id}'] = tl;
+    });
   </script>
 </body>
 </html>`
