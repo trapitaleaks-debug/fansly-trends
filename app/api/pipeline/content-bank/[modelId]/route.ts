@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
-import { r2 } from '@/lib/r2'
+import { r2, getSignedVideoUrl } from '@/lib/r2'
 import { DeleteObjectCommand } from '@aws-sdk/client-s3'
 
 const Bucket = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
@@ -13,6 +13,20 @@ export async function GET(
     const { modelId } = await params
     const { searchParams } = new URL(request.url)
     const type = searchParams.get('type')
+    const signedId = searchParams.get('signed')
+
+    // Return a signed playback URL for a single item
+    if (signedId) {
+      const { data: item, error } = await supabaseAdmin
+        .from('pipeline_content_bank')
+        .select('r2_key')
+        .eq('id', signedId)
+        .eq('model_id', modelId)
+        .single()
+      if (error || !item) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      const url = await getSignedVideoUrl(item.r2_key, 3600)
+      return NextResponse.json({ url })
+    }
 
     let query = supabaseAdmin
       .from('pipeline_content_bank')

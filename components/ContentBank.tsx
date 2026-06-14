@@ -200,6 +200,8 @@ export default function ContentBank({ username }: { username: string }) {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [savingTagsId, setSavingTagsId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [signedUrls, setSignedUrls] = useState<Record<string, string>>({})
 
   const fetchItems = useCallback(async () => {
     const res = await fetch(`/api/pipeline/models/${username}`)
@@ -256,6 +258,18 @@ export default function ContentBank({ username }: { username: string }) {
     setItems(prev => prev.filter(i => i.id !== id))
   }
 
+  async function togglePreview(item: ContentBankItem) {
+    if (expandedId === item.id) { setExpandedId(null); return }
+    setExpandedId(item.id)
+    if (!signedUrls[item.id] && pipelineModelId) {
+      const res = await fetch(`/api/pipeline/content-bank/${pipelineModelId}?signed=${item.id}`)
+      if (res.ok) {
+        const data = await res.json()
+        setSignedUrls(prev => ({ ...prev, [item.id]: data.url }))
+      }
+    }
+  }
+
   async function handleTagsChange(item: ContentBankItem, newTags: string[]) {
     if (!pipelineModelId) return
     // optimistic
@@ -293,21 +307,41 @@ export default function ContentBank({ username }: { username: string }) {
       {items.length === 0 && !showTrim && <p className="text-xs text-[#444]">No videos uploaded yet</p>}
       <div className="space-y-3">
         {items.map((item, idx) => (
-          <div key={item.id} className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg px-3 py-3 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
+          <div key={item.id} className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg overflow-hidden">
+            {/* Row header */}
+            <div className="flex items-center gap-3 px-3 py-2.5">
+              <button onClick={() => togglePreview(item)}
+                className="flex items-center gap-2 min-w-0 flex-1 text-left group">
                 <span className="text-xs font-mono text-[#555] flex-shrink-0">#{idx + 1}</span>
                 {item.trim_end != null && (
                   <span className="text-[10px] text-[#444] flex-shrink-0">{(item.trim_end - item.trim_start).toFixed(1)}s</span>
                 )}
-                {savingTagsId === item.id && <span className="text-[10px] text-[#444]">saving...</span>}
-              </div>
+                <span className={`text-[10px] flex-shrink-0 transition-colors ${expandedId === item.id ? 'text-violet-400' : 'text-[#333] group-hover:text-[#555]'}`}>
+                  {expandedId === item.id ? '▲ hide' : '▶ preview'}
+                </span>
+                {savingTagsId === item.id && <span className="text-[10px] text-[#444] flex-shrink-0">saving...</span>}
+              </button>
               <button onClick={() => handleDelete(item.id)} disabled={deletingId === item.id}
                 className="text-xs text-[#444] hover:text-red-400 disabled:opacity-50 transition-colors flex-shrink-0">
                 {deletingId === item.id ? '...' : 'Delete'}
               </button>
             </div>
-            <TagChips tags={item.tags ?? []} onChange={newTags => handleTagsChange(item, newTags)} />
+
+            {/* Inline video preview */}
+            {expandedId === item.id && (
+              <div className="px-3 pb-3">
+                {signedUrls[item.id] ? (
+                  <video src={signedUrls[item.id]} controls className="w-full max-h-72 rounded-lg bg-black object-contain" />
+                ) : (
+                  <div className="flex items-center justify-center h-24 text-xs text-[#444]">Loading...</div>
+                )}
+              </div>
+            )}
+
+            {/* Tags */}
+            <div className="px-3 pb-3">
+              <TagChips tags={item.tags ?? []} onChange={newTags => handleTagsChange(item, newTags)} />
+            </div>
           </div>
         ))}
       </div>
