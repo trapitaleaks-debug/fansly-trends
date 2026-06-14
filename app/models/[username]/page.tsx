@@ -18,13 +18,22 @@ interface Model {
   updated_at: string
 }
 
+interface VideoJob {
+  id: string
+  status: string
+  model_id: string
+  output_r2_key: string | null
+  thumbnail_r2_key: string | null
+  personalized_text: string | null
+}
+
 interface MatchedIdea {
   id: string
   niches: string[]
   tags: string[]
   notes: string
   trends_posts: Post & {
-    video_jobs?: { id: string; status: string; model_id: string }[]
+    video_jobs?: VideoJob[]
   }
 }
 
@@ -55,6 +64,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [contentTags, setContentTags] = useState<string[]>([])
+  const [watchJob, setWatchJob] = useState<{ id: string; url: string | null; text: string | null; loading: boolean } | null>(null)
   const { niches: allNiches, badgeClass, nicheEmoji } = useNiches()
 
   useEffect(() => { fetchModel() }, [username])
@@ -133,6 +143,17 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   async function handleDelete() {
     await fetch(`/api/models/${username}`, { method: 'DELETE' })
     router.push('/models')
+  }
+
+  async function openWatch(job: VideoJob) {
+    setWatchJob({ id: job.id, url: null, text: job.personalized_text, loading: true })
+    const res = await fetch(`/api/video-jobs/${job.id}`)
+    if (res.ok) {
+      const data = await res.json()
+      setWatchJob({ id: job.id, url: data.video_url, text: data.personalized_text, loading: false })
+    } else {
+      setWatchJob(prev => prev ? { ...prev, loading: false } : null)
+    }
   }
 
   async function generateIdea(postId: string) {
@@ -348,6 +369,19 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                         {post.likes_current >= 1000 ? `${(post.likes_current / 1000).toFixed(1)}K` : post.likes_current} ♥
                       </span>
 
+                      {/* Watch buttons for done jobs */}
+                      <div className="flex gap-1 flex-shrink-0">
+                        {jobs.filter(j => j.status === 'done' && j.output_r2_key).map((j, i) => (
+                          <button key={j.id} onClick={() => openWatch(j)}
+                            className="text-[10px] font-medium px-2 py-1 rounded-lg border border-green-500/30 text-green-400 hover:bg-green-500/10 transition-colors">
+                            ▶ {i + 1}
+                          </button>
+                        ))}
+                        {jobs.some(j => j.status === 'processing') && (
+                          <span className="text-[10px] text-[#555] px-1">rendering…</span>
+                        )}
+                      </div>
+
                       {/* Generate button */}
                       <button onClick={() => generateIdea(post.id)} disabled={genState === 'pending' || generatingAll}
                         className={`text-[10px] font-medium px-2 py-1 rounded-lg border flex-shrink-0 transition-colors disabled:opacity-50 ${
@@ -384,6 +418,28 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
       {selectedPostId && (
         <PostModal postId={selectedPostId} onClose={() => setSelectedPostId(null)} onBookmarkChange={fetchMatchedIdeas} />
+      )}
+
+      {watchJob && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={() => setWatchJob(null)}>
+          <div className="bg-[#111] border border-[#2a2a2a] rounded-2xl overflow-hidden max-w-sm w-full" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e1e1e]">
+              <p className="text-xs text-[#888] truncate pr-4">{watchJob.text ?? 'Rendered video'}</p>
+              <button onClick={() => setWatchJob(null)} className="text-[#555] hover:text-white flex-shrink-0 text-lg leading-none">×</button>
+            </div>
+            <div className="bg-black">
+              {watchJob.loading ? (
+                <div className="flex items-center justify-center h-48">
+                  <div className="w-5 h-5 border-2 border-[#333] border-t-white rounded-full animate-spin" />
+                </div>
+              ) : watchJob.url ? (
+                <video src={watchJob.url} controls autoPlay className="w-full max-h-[70vh] object-contain" />
+              ) : (
+                <div className="flex items-center justify-center h-48 text-xs text-[#444]">Video not available</div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
