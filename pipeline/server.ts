@@ -28,6 +28,29 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime() })
 })
 
+// ─── Emoji download diagnostics ───────────────────────────────────────────────
+
+app.get('/debug/emoji', async (_req, res) => {
+  const testEmoji = '😔'
+  const cp = [...testEmoji].map(c => c.codePointAt(0)!).filter(cp => cp !== 0xFE0F).map(cp => cp.toString(16)).join('_')
+  const url = `https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u${cp}.png`
+  const result: Record<string, unknown> = { emoji: testEmoji, cp, url }
+  try {
+    const fetchRes = await fetch(url, { signal: AbortSignal.timeout(10000) })
+    result.status = fetchRes.status
+    result.ok = fetchRes.ok
+    if (fetchRes.ok) {
+      const buf = Buffer.from(await fetchRes.arrayBuffer())
+      result.bytes = buf.length
+      result.success = buf.length > 200
+    }
+  } catch (e) {
+    result.error = (e as Error).message
+    result.success = false
+  }
+  res.json(result)
+})
+
 // ─── Manual video job trigger ─────────────────────────────────────────────────
 
 app.post('/jobs/process', async (_req, res) => {
