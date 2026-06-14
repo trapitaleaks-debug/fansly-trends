@@ -13,6 +13,7 @@ import { getActiveModels, getModel } from './db'
 import { processRun } from './process'
 import { generateBriefs } from './research'
 import { generateSlot } from './generate'
+import { processVideoJob } from './process-job'
 import { supabaseAdmin } from '../lib/supabase'
 
 const app = express()
@@ -155,6 +156,34 @@ app.post('/regenerate/:videoId', async (req, res) => {
 })
 
 // ─── Crons ────────────────────────────────────────────────────────────────────
+
+// Every 30s: process pending video_jobs (own footage + text overlay)
+let jobsRunning = false
+cron.schedule('*/30 * * * * *', async () => {
+  if (jobsRunning) return
+  jobsRunning = true
+  try {
+    const { data: jobs } = await supabaseAdmin
+      .from('video_jobs')
+      .select('id')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+      .limit(2)
+
+    if (!jobs || jobs.length === 0) return
+
+    for (const job of jobs) {
+      console.log(`[cron:jobs] Processing job ${job.id}`)
+      await processVideoJob(job.id).catch(e =>
+        console.error(`[cron:jobs] Failed ${job.id}:`, (e as Error).message)
+      )
+    }
+  } catch (e) {
+    console.error('[cron:jobs] Error:', (e as Error).message)
+  } finally {
+    jobsRunning = false
+  }
+})
 
 // Every 2 min: pick up any queued runs dropped by a restart/deploy
 cron.schedule('*/2 * * * *', async () => {
