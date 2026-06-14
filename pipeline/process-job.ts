@@ -127,12 +127,12 @@ export async function processVideoJob(jobId: string): Promise<void> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vj_'))
 
   try {
-    const clipKey = (job.model_clips as { r2_key: string } | null)?.r2_key
+    const clipKey = (job.model_clips as unknown as { r2_key: string } | null)?.r2_key
     if (!clipKey) throw new Error('No footage clip attached to this job')
 
-    const handle = (job.trends_models as { fansly_username: string } | null)?.fansly_username ?? 'unknown'
+    const handle = (job.trends_models as unknown as { fansly_username: string } | null)?.fansly_username ?? 'unknown'
     const overlayText = job.personalized_text ?? ''
-    const sourceVideoKey = (job.trends_posts as { video_r2_key: string | null } | null)?.video_r2_key
+    const sourceVideoKey = (job.trends_posts as unknown as { video_r2_key: string | null } | null)?.video_r2_key
 
     const rawPath = path.join(tmpDir, 'raw.mp4')
     const audioPath = path.join(tmpDir, 'audio.aac')
