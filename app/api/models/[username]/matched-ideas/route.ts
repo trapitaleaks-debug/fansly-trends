@@ -18,7 +18,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ use
   // Fetch all ideas; filter those sharing at least one niche with the model
   const { data: ideas, error } = await supabaseAdmin
     .from('trends_ideas')
-    .select('*, trends_posts(*, video_jobs(id, status, model_username))')
+    .select('*, trends_posts(*, video_jobs(id, status, model_id))')
     .order('created_at', { ascending: false })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

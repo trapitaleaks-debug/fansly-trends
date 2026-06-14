@@ -11,7 +11,6 @@ interface Model {
   fansly_username: string
   fansly_url: string | null
   branding_file_md: string | null
-  hashtags: string[]
   niches: string[]
   notes_for_ai: string | null
   updated_at: string
@@ -22,7 +21,7 @@ interface MatchedIdea {
   niches: string[]
   notes: string
   trends_posts: Post & {
-    video_jobs?: { id: string; status: string; model_username: string }[]
+    video_jobs?: { id: string; status: string; model_id: string }[]
   }
 }
 
@@ -39,15 +38,9 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [brandingFileName, setBrandingFileName] = useState<string | null>(null)
   const [brandingUploading, setBrandingUploading] = useState(false)
 
-  // Hashtags
-  const [hashtags, setHashtags] = useState<string[]>([])
-  const [hashtagInput, setHashtagInput] = useState('')
-  const [editingHashtags, setEditingHashtags] = useState(false)
-
   // Niches
   const [niches, setNiches] = useState<string[]>([])
   const [savingNiches, setSavingNiches] = useState(false)
-  const [nichesSaved, setNichesSaved] = useState(false)
 
   // Matched ideas
   const [matchedIdeas, setMatchedIdeas] = useState<MatchedIdea[]>([])
@@ -70,7 +63,6 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     const data = await res.json()
     setModel(data.model)
     if (!silent) {
-      setHashtags(data.model.hashtags ?? [])
       setNiches(data.model.niches ?? [])
       if (data.model.branding_file_md) setBrandingFileName('branding-file.md')
       setLoading(false)
@@ -109,43 +101,16 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     e.target.value = ''
   }
 
-  async function handleSaveHashtags() {
-    await fetch(`/api/models/${username}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hashtags }),
-    })
-    setEditingHashtags(false)
-    await fetchModel()
-  }
-
-  function handleAddHashtag() {
-    const tag = hashtagInput.replace('#', '').trim().toLowerCase()
-    if (!tag || hashtags.includes(tag) || hashtags.length >= 50) return
-    setHashtags(prev => [...prev, tag])
-    setHashtagInput('')
-  }
-
-  function handleRemoveHashtag(tag: string) {
-    setHashtags(prev => prev.filter(t => t !== tag))
-  }
-
-  function toggleNiche(niche: string) {
-    setNiches(prev =>
-      prev.includes(niche) ? prev.filter(n => n !== niche) : [...prev, niche]
-    )
-  }
-
-  async function handleSaveNiches() {
+  async function toggleNiche(niche: string) {
+    const next = niches.includes(niche) ? niches.filter(n => n !== niche) : [...niches, niche]
+    setNiches(next)
     setSavingNiches(true)
     await fetch(`/api/models/${username}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ niches }),
+      body: JSON.stringify({ niches: next }),
     })
     setSavingNiches(false)
-    setNichesSaved(true)
-    setTimeout(() => setNichesSaved(false), 2000)
     fetchMatchedIdeas()
   }
 
@@ -164,9 +129,10 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
   if (!model) return null
 
+  const modelId = model?.id
   const filteredIdeas = matchedIdeas.filter(idea => {
     const jobs = idea.trends_posts.video_jobs ?? []
-    const hasGenerated = jobs.some(j => j.model_username === username && j.status === 'done')
+    const hasGenerated = jobs.some(j => j.model_id === modelId && j.status === 'done')
     if (generatedFilter === 'generated') return hasGenerated
     if (generatedFilter === 'not_generated') return !hasGenerated
     return true
@@ -228,20 +194,15 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
               <h3 className="text-sm font-medium">Niches</h3>
               <p className="text-xs text-[#444] mt-0.5">Select which niches this model operates in</p>
             </div>
-            <button
-              onClick={handleSaveNiches}
-              disabled={savingNiches}
-              className="text-xs bg-white text-black px-3 py-1.5 rounded-lg hover:bg-[#e5e5e5] disabled:opacity-50 transition-colors"
-            >
-              {nichesSaved ? 'Saved ✓' : savingNiches ? 'Saving...' : 'Save'}
-            </button>
+            {savingNiches && <span className="text-xs text-[#555]">Saving...</span>}
           </div>
           <div className="flex flex-wrap gap-2">
             {allNiches.map(n => (
               <button
                 key={n.name}
                 onClick={() => toggleNiche(n.name)}
-                className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${niches.includes(n.name) ? badgeClass(n.name) : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
+                disabled={savingNiches}
+                className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors disabled:opacity-60 ${niches.includes(n.name) ? badgeClass(n.name) : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
               >
                 {n.emoji} {n.name}
               </button>
@@ -269,72 +230,6 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
             </div>
           ) : (
             <p className="text-xs text-[#444]">No branding file yet. Upload the model&apos;s Personal Branding .md file.</p>
-          )}
-        </div>
-
-        {/* Hashtags */}
-        <div className="bg-[#111] border border-[#1e1e1e] rounded-xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium">
-              Hashtags <span className="text-[#555] font-normal">({hashtags.length}/50)</span>
-            </h3>
-            <div className="flex gap-2">
-              {!editingHashtags ? (
-                <button
-                  onClick={() => setEditingHashtags(true)}
-                  className="text-xs bg-[#1a1a1a] border border-[#2a2a2a] text-[#888] hover:text-white px-3 py-1.5 rounded-lg transition-colors"
-                >
-                  Edit
-                </button>
-              ) : (
-                <button
-                  onClick={handleSaveHashtags}
-                  className="text-xs bg-white text-black px-3 py-1.5 rounded-lg hover:bg-[#e5e5e5] transition-colors"
-                >
-                  Save
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {hashtags.map(tag => (
-              <span
-                key={tag}
-                className="flex items-center gap-1 bg-[#1a1a1a] border border-[#2a2a2a] text-[#888] text-xs px-2.5 py-1 rounded-full"
-              >
-                #{tag}
-                {editingHashtags && (
-                  <button
-                    onClick={() => handleRemoveHashtag(tag)}
-                    className="text-[#555] hover:text-red-400 ml-0.5 leading-none"
-                  >
-                    ×
-                  </button>
-                )}
-              </span>
-            ))}
-            {hashtags.length === 0 && (
-              <span className="text-xs text-[#444]">No hashtags yet</span>
-            )}
-          </div>
-
-          {editingHashtags && hashtags.length < 50 && (
-            <div className="flex gap-2">
-              <input
-                value={hashtagInput}
-                onChange={e => setHashtagInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddHashtag() } }}
-                placeholder="#hashtag"
-                className="flex-1 bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs text-white placeholder-[#444] focus:outline-none focus:border-[#444]"
-              />
-              <button
-                onClick={handleAddHashtag}
-                className="text-xs bg-[#1a1a1a] border border-[#2a2a2a] text-[#888] hover:text-white px-3 py-2 rounded-lg transition-colors"
-              >
-                Add
-              </button>
-            </div>
           )}
         </div>
 
@@ -385,7 +280,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {filteredIdeas.map(idea => {
                 const jobs = idea.trends_posts.video_jobs ?? []
-                const modelJobs = jobs.filter(j => j.model_username === username)
+                const modelJobs = jobs.filter(j => j.model_id === modelId)
                 const doneCount = modelJobs.filter(j => j.status === 'done').length
                 const hasAny = modelJobs.length > 0
 
