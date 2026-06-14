@@ -54,6 +54,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   if ('hashtags' in body) updates.hashtags = (body.hashtags as string[]).slice(0, 50)
   if ('notes_for_ai' in body) updates.notes_for_ai = body.notes_for_ai
   if ('niches' in body) updates.niches = body.niches
+  if ('placeholder_options' in body) updates.placeholder_options = body.placeholder_options
 
   const { data, error } = await supabaseAdmin
     .from('trends_models')

@@ -36,15 +36,18 @@ export async function PATCH(
 ) {
   try {
     const { modelId } = await params
-    const { id, label } = await request.json()
+    const body = await request.json()
+    const { id, label, tags } = body
 
-    if (!id || typeof label !== 'string') {
-      return NextResponse.json({ error: 'id and label required' }, { status: 400 })
-    }
+    if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+
+    const update: Record<string, unknown> = {}
+    if (typeof label === 'string') update.label = label.trim() || null
+    if (Array.isArray(tags)) update.tags = tags
 
     const { error } = await supabaseAdmin
       .from('pipeline_content_bank')
-      .update({ label: label.trim() || null })
+      .update(update)
       .eq('id', id)
       .eq('model_id', modelId)
 

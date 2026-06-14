@@ -1,48 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
-import Anthropic from '@anthropic-ai/sdk'
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ username: string }> }) {
   const { username } = await params
-  const { post_id } = await request.json()
+  const { post_id, placeholder } = await request.json()
   if (!post_id) return NextResponse.json({ error: 'post_id required' }, { status: 400 })
 
-  const [{ data: model }, { data: post }] = await Promise.all([
-    supabaseAdmin.from('trends_models').select('id, branding_file_md').eq('fansly_username', username.toLowerCase()).single(),
+  const [{ data: model }, { data: post }, { data: idea }] = await Promise.all([
+    supabaseAdmin.from('trends_models').select('id, placeholder_options').eq('fansly_username', username.toLowerCase()).single(),
     supabaseAdmin.from('trends_posts').select('text_template').eq('id', post_id).single(),
+    supabaseAdmin.from('trends_ideas').select('id, tags').eq('post_id', post_id).maybeSingle(),
   ])
 
   if (!model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
   if (!post?.text_template) return NextResponse.json({ error: 'Post has no template' }, { status: 400 })
 
-  // Personalize text
-  let personalizedText = post.text_template
-  if (model.branding_file_md) {
-    try {
-      const msg = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        messages: [{
-          role: 'user',
-          content: `You adapt video text overlays for OnlyFans/Fansly creators. Keep the same structure and emotional tone. Only change specific details (age, ethnicity, nationality, personality traits) to match the model's identity. Never change the format — one line per overlay, same number of lines. Never add emojis. Never explain — just output the adapted text.
+  // Replace [placeholder] with chosen option (caller can pass explicit placeholder, otherwise use first option)
+  const options: string[] = model.placeholder_options ?? []
+  const chosen = placeholder ?? options[0] ?? ''
+  const personalizedText = post.text_template.replace(/\[placeholder\]/gi, chosen)
 
-TEMPLATE:
-${post.text_template}
-
-MODEL PROFILE:
-${model.branding_file_md.slice(0, 3000)}
-
-Output only the adapted text, same number of lines, nothing else.`,
-        }],
-      })
-      personalizedText = (msg.content[0] as { type: string; text: string }).text.trim()
-    } catch { /* fall through to original */ }
-  }
-
-  // Get or create a model_clip from pipeline_content_bank own_footage
+  // Pick clip from content bank, preferring one matching the idea's tags
   let clipId: string | null = null
+  const ideaTags: string[] = idea?.tags ?? []
 
   const { data: pipelineModel } = await supabaseAdmin
     .from('pipeline_models')
@@ -51,22 +31,27 @@ Output only the adapted text, same number of lines, nothing else.`,
     .single()
 
   if (pipelineModel) {
-    const { data: footage } = await supabaseAdmin
+    const { data: allFootage } = await supabaseAdmin
       .from('pipeline_content_bank')
-      .select('id, r2_key, label, trim_end')
+      .select('id, r2_key, label, trim_end, tags')
       .eq('model_id', pipelineModel.id)
-      .eq('type', 'own_footage')
       .order('created_at')
-      .limit(1)
-      .single()
 
-    if (footage) {
-      // Check if already registered as model_clip
+    const footage = allFootage ?? []
+
+    // Find best clip: prefer one whose tags overlap with idea tags; fall back to "all"-tagged or first
+    const tagged = ideaTags.length > 0 && !ideaTags.includes('all')
+      ? footage.find(f => (f.tags ?? []).some((t: string) => ideaTags.includes(t)))
+      : null
+    const allTagged = footage.find(f => (f.tags ?? []).includes('all'))
+    const chosen_footage = tagged ?? allTagged ?? footage[0] ?? null
+
+    if (chosen_footage) {
       const { data: existing } = await supabaseAdmin
         .from('model_clips')
         .select('id')
         .eq('model_id', model.id)
-        .eq('r2_key', footage.r2_key)
+        .eq('r2_key', chosen_footage.r2_key)
         .maybeSingle()
 
       if (existing) {
@@ -74,7 +59,7 @@ Output only the adapted text, same number of lines, nothing else.`,
       } else {
         const { data: newClip } = await supabaseAdmin
           .from('model_clips')
-          .insert({ model_id: model.id, r2_key: footage.r2_key, filename: footage.label ?? footage.r2_key.split('/').pop(), duration_seconds: footage.trim_end ?? null, tags: [] })
+          .insert({ model_id: model.id, r2_key: chosen_footage.r2_key, filename: chosen_footage.label ?? chosen_footage.r2_key.split('/').pop(), duration_seconds: chosen_footage.trim_end ?? null, tags: chosen_footage.tags ?? [] })
           .select('id')
           .single()
         if (newClip) clipId = newClip.id
@@ -82,7 +67,6 @@ Output only the adapted text, same number of lines, nothing else.`,
     }
   }
 
-  // Create video_job
   const { data: job, error } = await supabaseAdmin
     .from('video_jobs')
     .insert({

@@ -4,10 +4,11 @@ import { supabaseAdmin } from '@/lib/supabase'
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const body = await request.json()
-  const { niches, notes } = body
+  const { niches, notes, tags } = body
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if ('niches' in body) updates.niches = niches
   if ('notes' in body) updates.notes = notes
+  if ('tags' in body) updates.tags = tags
   const { error } = await supabaseAdmin
     .from('trends_ideas')
     .update(updates)
