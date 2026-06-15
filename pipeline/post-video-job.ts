@@ -248,137 +248,19 @@ export async function postVideoJob(jobId: string): Promise<void> {
     const tagsInput = page.locator('input[placeholder*="petite"], input[placeholder*="kawaii"], input[placeholder*="fyp"]').nth(0)
     await tagsInput.fill(selectedHashtags.map(t => `#${t}`).join(' '))
 
-    // 2. Schedule for — field is read-only (mdm-cal custom datepicker).
-    //    Save a pre-picker screenshot first to diagnose selector issues in Railway.
-    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
-      uploadToR2(`debug/post-${jobId}-before-datepicker.png`, buf, 'image/png')
-    ).catch(() => {})
-
-    const targetDay = scheduledFor.getUTCDate()
-
-    // Find all elements with onclick handlers containing 'cal' or 'Cal', and all inputs near
-    // the "Schedule for" label, to identify the calendar trigger. Log them for debugging.
-    const triggerInfo = await page.evaluate(() => {
-      const results: Array<{tag: string; id: string; cls: string; onclick: string; type?: string; placeholder?: string; text?: string}> = []
-      for (const el of Array.from(document.querySelectorAll('*'))) {
-        const onclick = el.getAttribute('onclick') ?? ''
-        if (onclick && (onclick.toLowerCase().includes('cal') || onclick.toLowerCase().includes('date'))) {
-          results.push({ tag: el.tagName, id: el.id, cls: (el as Element).className, onclick })
-        }
-      }
-      // Also find all visible inputs in the form
-      for (const el of Array.from(document.querySelectorAll('input'))) {
-        const rect = el.getBoundingClientRect()
-        if (rect.width > 0 && rect.height > 0) {
-          results.push({ tag: 'INPUT', id: el.id, cls: el.className, onclick: el.getAttribute('onclick') ?? '', type: el.type, placeholder: el.placeholder })
-        }
-      }
-      return results
-    }).catch(() => [])
-    console.log(`[post] trigger candidates: ${JSON.stringify(triggerInfo).slice(0, 2000)}`)
-
-    // The calendar trigger is the input that shows the current date value and opens #mdmCal.
-    // Try: find any visible <input> that has an onclick pointing to the calendar, or
-    // find the element immediately before #mdmCal in the DOM.
-    const calTrigger = await page.evaluate(() => {
-      const cal = document.getElementById('mdmCal')
-      if (!cal) return null
-      // Walk backwards in DOM siblings to find the trigger
-      let prev = cal.previousElementSibling
-      while (prev) {
-        const tag = prev.tagName.toLowerCase()
-        if (tag === 'input' || tag === 'button' || prev.getAttribute('role') === 'button') {
-          return { tag: prev.tagName, id: prev.id, cls: (prev as Element).className, onclick: prev.getAttribute('onclick') }
-        }
-        // Check children of prev
-        const inp = prev.querySelector('input, button')
-        if (inp) return { tag: inp.tagName, id: inp.id, cls: inp.className, onclick: inp.getAttribute('onclick') }
-        prev = prev.previousElementSibling
-      }
-      return null
-    }).catch(() => null)
-    console.log(`[post] cal trigger element: ${JSON.stringify(calTrigger)}`)
-
-    // Open calendar: click trigger or force-open via JS
-    await page.evaluate(() => {
-      // Find all elements with onclick that reference the calendar
-      for (const el of Array.from(document.querySelectorAll('[onclick*="Cal"], [onclick*="cal"], [data-target="#mdmCal"]'))) {
-        (el as HTMLElement).click()
-        return
-      }
-      // Fallback: click the input immediately before #mdmCal
-      const cal = document.getElementById('mdmCal')
-      if (!cal) return
-      let prev = cal.previousElementSibling
-      while (prev) {
-        const clickable = prev.querySelector('input, button') ?? (prev.tagName === 'INPUT' || prev.tagName === 'BUTTON' ? prev : null)
-        if (clickable) { (clickable as HTMLElement).click(); return }
-        prev = prev.previousElementSibling
-      }
-    }).catch(() => {})
-    await page.waitForTimeout(1200)
-
-    // Screenshot after attempting to open calendar
-    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
-      uploadToR2(`debug/post-${jobId}-datepicker.png`, buf, 'image/png')
-    ).catch(() => {})
-
-    // Check if calendar opened (hidden attribute removed from #mdmCal)
-    const calOpen = await page.evaluate(() => {
-      const cal = document.getElementById('mdmCal')
-      return cal ? !cal.hasAttribute('hidden') : false
-    }).catch(() => false)
-    console.log(`[post] calendar opened: ${calOpen}`)
-
-    if (!calOpen) {
-      // Force open via JS — remove hidden and manually init grid
-      await page.evaluate((day: number) => {
-        const cal = document.getElementById('mdmCal')
-        if (!cal) return
-        cal.removeAttribute('hidden')
-        // Try clicking the trigger button to fire its event handler
-        const btn = cal.previousElementSibling?.querySelector('input, button, [role="button"]')
-        if (btn) (btn as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      }, targetDay).catch(() => {})
-      await page.waitForTimeout(800)
-    }
-
-    // Click the day in #mdmCalGrid (buttons injected by JS when calendar opens)
-    // Wait up to 5s for the grid to be populated
-    await page.waitForSelector(`#mdmCalGrid button`, { timeout: 5000 }).catch(() => {})
-    const dayClicked = await page.evaluate((day: number) => {
-      const buttons = Array.from(document.querySelectorAll('#mdmCalGrid button'))
-      const target = buttons.find(b => b.textContent?.trim() === String(day) && !b.classList.contains('mdm-cal-other') && !b.hasAttribute('disabled'))
-      if (target) { (target as HTMLElement).click(); return true }
-      return false
-    }, targetDay).catch(() => false)
-    console.log(`[post] day ${targetDay} clicked: ${dayClicked}`)
-    await page.waitForTimeout(400)
-
-    // Set hour = 22 via select dropdown #mdmCalHour
-    await page.selectOption('#mdmCalHour', '22').catch(async () => {
-      await page.evaluate(() => {
-        const sel = document.getElementById('mdmCalHour') as HTMLSelectElement | null
-        if (sel) { sel.value = '22'; sel.dispatchEvent(new Event('change', { bubbles: true })) }
-      })
-    })
-    await page.waitForTimeout(200)
-
-    // Set minute = 00 via select dropdown #mdmCalMin
-    await page.selectOption('#mdmCalMin', '0').catch(async () => {
-      await page.evaluate(() => {
-        const sel = document.getElementById('mdmCalMin') as HTMLSelectElement | null
-        if (sel) { sel.value = '0'; sel.dispatchEvent(new Event('change', { bubbles: true })) }
-      })
-    })
-    await page.waitForTimeout(200)
-
-    // Click Done button to confirm
-    await page.click('#mdmCalDone').catch(async (e) => {
-      console.log(`[post] Done click error: ${e.message}`)
-      await page.evaluate(() => { (document.getElementById('mdmCalDone') as HTMLElement | null)?.click() })
-    })
-    await page.waitForTimeout(500)
+    // 2. Schedule for — the "Schedule for" field is input.schedule-input[type="datetime-local"].
+    //    Fill it directly with the UTC datetime in YYYY-MM-DDTHH:MM format.
+    //    (Browser context is already set to UTC so no timezone offset needed.)
+    const yyyy = scheduledFor.getUTCFullYear()
+    const mm = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
+    const dd = String(scheduledFor.getUTCDate()).padStart(2, '0')
+    const hh = String(scheduledFor.getUTCHours()).padStart(2, '0')
+    const min = String(scheduledFor.getUTCMinutes()).padStart(2, '0')
+    const dtValue = `${yyyy}-${mm}-${dd}T${hh}:${min}`
+    const schedInput = page.locator('input.schedule-input[type="datetime-local"]').nth(0)
+    await schedInput.fill(dtValue)
+    console.log(`[post] schedule-input filled: ${dtValue}`)
+    await page.waitForTimeout(300)
 
     // Debug screenshot after calendar interaction
     await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
