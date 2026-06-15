@@ -18,6 +18,7 @@ import { processRun } from './process'
 import { generateBriefs } from './research'
 import { generateSlot } from './generate'
 import { processVideoJob } from './process-job'
+import { postVideoJob } from './post-video-job'
 import { supabaseAdmin } from '../lib/supabase'
 
 const app = express()
@@ -105,6 +106,13 @@ app.post('/jobs/process/:jobId', async (req, res) => {
   const { jobId } = req.params
   res.json({ message: 'Processing started', jobId })
   processVideoJob(jobId).catch(e => console.error(`[jobs/process] Failed ${jobId}:`, (e as Error).message))
+})
+
+// Retry posting a specific job that already rendered (status=done, output_r2_key set)
+app.post('/jobs/post/:jobId', async (req, res) => {
+  const { jobId } = req.params
+  res.json({ message: 'Posting started', jobId })
+  postVideoJob(jobId).catch(e => console.error(`[jobs/post] Failed ${jobId}:`, (e as Error).message))
 })
 
 // ─── Trigger endpoint: fire pipeline for a specific model ─────────────────────
