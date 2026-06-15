@@ -310,51 +310,31 @@ export async function postVideoJob(jobId: string): Promise<void> {
       console.log('[post] walls: already pre-selected, skipping dropdown')
     }
 
-    // 4. Media — two-step:
-    //    (A) Drag-and-drop: activates the slot's media state (submit creates the post).
-    //        setInputFiles directly on any input doesn't activate slot state (tested: no-op at submit).
-    //    (B) Filechooser fallback.
-    //    FC-FETCH/FC-XHR/WS interceptors (added at addInitScript above) capture what happens at submit.
+    // 4. Media — try 4 approaches in order, log which succeeded.
+    //    Key insight: 'input.bulk-file-input' are the per-slot upload inputs (3 found, one per slot).
+    //    'bulkFileInput' (ID) is a global input that doesn't map to any slot → no-op at submit.
+    //    Drag-and-drop events dispatch correctly but slot state is never set → submit is also no-op.
     let uploadMethod = 'none'
     const videoName = path.basename(videoPath)
     const videoSizeMB = Math.round(fs.statSync(videoPath).size / 1024 / 1024)
     console.log(`[post] media: uploading ${videoName} (${videoSizeMB}MB)`)
 
-    const fakeUrl = 'https://media-upload-local.internal/upload.mp4'
-    await page.route(fakeUrl, async route => {
-      const buffer = fs.readFileSync(videoPath)
-      await route.fulfill({
-        status: 200,
-        contentType: 'video/mp4',
-        headers: { 'Content-Length': String(buffer.length), 'Access-Control-Allow-Origin': '*' },
-        body: buffer,
-      })
-    })
+    // Approach A: setInputFiles on the per-slot input (first bulk-file-input class element = slot 1)
+    const slotInput = page.locator('input.bulk-file-input').first()
+    const slotInputCount = await slotInput.count()
+    console.log(`[post] media: bulk-file-input count: ${await page.locator('input.bulk-file-input').count()}`)
+    if (slotInputCount > 0) {
+      try {
+        await slotInput.setInputFiles(videoPath)
+        uploadMethod = 'slot-input-setInputFiles'
+        console.log('[post] media: setInputFiles on slot input (bulk-file-input[0]) called')
+      } catch (e) {
+        console.log(`[post] media: slot-input setInputFiles failed: ${(e as Error).message}`)
+      }
+    }
 
-    try {
-      const dataTransfer = await page.evaluateHandle(async ([url, name]: [string, string]) => {
-        const res = await fetch(url)
-        const buf = await res.arrayBuffer()
-        const file = new File([buf], name, { type: 'video/mp4' })
-        const dt = new DataTransfer()
-        dt.items.add(file)
-        return dt
-      }, [fakeUrl, videoName] as [string, string])
-
-      await page.unroute(fakeUrl)
-
-      const dropZone = page.locator('text=/[Dd]rop media/').first()
-      await dropZone.waitFor({ state: 'visible', timeout: 10000 })
-      await dropZone.dispatchEvent('dragenter', { dataTransfer })
-      await page.waitForTimeout(100)
-      await dropZone.dispatchEvent('dragover', { dataTransfer })
-      await page.waitForTimeout(100)
-      await dropZone.dispatchEvent('drop', { dataTransfer })
-      uploadMethod = 'drag-and-drop'
-      console.log('[post] media: drag-and-drop dispatched')
-    } catch (dndErr) {
-      await page.unroute(fakeUrl).catch(() => {})
-      console.log(`[post] media: drag-and-drop failed (${(dndErr as Error).message}) — trying filechooser`)
+    // Approach B: filechooser dialog (click drop zone → OS dialog → setFiles)
+    if (uploadMethod === 'none') {
       try {
         const [fileChooser] = await Promise.all([
           page.waitForEvent('filechooser', { timeout: 10000 }),
@@ -364,14 +344,51 @@ export async function postVideoJob(jobId: string): Promise<void> {
         uploadMethod = 'filechooser'
         console.log('[post] media: filechooser setFiles called')
       } catch (fcErr) {
-        console.log(`[post] media: filechooser also failed: ${(fcErr as Error).message}`)
+        console.log(`[post] media: filechooser failed: ${(fcErr as Error).message}`)
       }
     }
 
-    // Wait 10s to catch any pre-upload the slot triggers after file attachment
-    await page.waitForTimeout(10000)
+    // Approach C: drag-and-drop via DataTransfer
+    if (uploadMethod === 'none') {
+      const fakeUrl = 'https://media-upload-local.internal/upload.mp4'
+      await page.route(fakeUrl, async route => {
+        const buffer = fs.readFileSync(videoPath)
+        await route.fulfill({
+          status: 200,
+          contentType: 'video/mp4',
+          headers: { 'Content-Length': String(buffer.length), 'Access-Control-Allow-Origin': '*' },
+          body: buffer,
+        })
+      })
+      try {
+        const dataTransfer = await page.evaluateHandle(async ([url, name]: [string, string]) => {
+          const res = await fetch(url)
+          const buf = await res.arrayBuffer()
+          const file = new File([buf], name, { type: 'video/mp4' })
+          const dt = new DataTransfer()
+          dt.items.add(file)
+          return dt
+        }, [fakeUrl, videoName] as [string, string])
+        await page.unroute(fakeUrl)
+        const dropZone = page.locator('text=/[Dd]rop media/').first()
+        await dropZone.waitFor({ state: 'visible', timeout: 10000 })
+        await dropZone.dispatchEvent('dragenter', { dataTransfer })
+        await page.waitForTimeout(100)
+        await dropZone.dispatchEvent('dragover', { dataTransfer })
+        await page.waitForTimeout(100)
+        await dropZone.dispatchEvent('drop', { dataTransfer })
+        uploadMethod = 'drag-and-drop'
+        console.log('[post] media: drag-and-drop dispatched')
+      } catch (dndErr) {
+        await page.unroute(fakeUrl).catch(() => {})
+        console.log(`[post] media: drag-and-drop failed: ${(dndErr as Error).message}`)
+      }
+    }
 
-    // Diagnostic: check file input state and fetch/WS logs BEFORE submit
+    // Wait 20s for FanCore to process the file (thumbnail generation, state update)
+    await page.waitForTimeout(20000)
+
+    // Diagnostic: check file inputs and find ALL elements with "1 media" or "Selected Media" text
     const fileInputState = await page.evaluate(() =>
       Array.from(document.querySelectorAll('input[type="file"]')).map((i) => ({
         id: (i as HTMLInputElement).id,
@@ -380,15 +397,24 @@ export async function postVideoJob(jobId: string): Promise<void> {
         fileName: (i as HTMLInputElement).files?.[0]?.name ?? 'none',
       }))
     ).catch(() => [])
-    console.log(`[post] media: file input state: ${JSON.stringify(fileInputState)}`)
-    console.log(`[post] media: WS logs after select: ${JSON.stringify(wsLogs)}`)
-    console.log(`[post] media: page console after select: ${JSON.stringify(pageConsoleLogs.slice(-10))}`)
-
-    // Check whether the slot shows media preview — use visible-only check to avoid false positives
-    // from Already Scheduled tab entries in the DOM.
-    const mediaPreviewVisible = await page.locator('[class*="selected-media"], [class*="media-preview"], [class*="medias"] video, [class*="medias"] img').first().isVisible().catch(() => false)
-    const slotCardText = await page.locator('[class*="bulk-slot"], [class*="slot-card"], .slot-wrapper').first().innerText().catch(() => '')
-    console.log(`[post] media: preview visible: ${mediaPreviewVisible}, slot text: ${slotCardText.slice(0, 200)}`)
+    const mediaTextElements = await page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+      const results: Array<{text: string; tag: string; cls: string; visible: boolean}> = []
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const text = (node.textContent ?? '').trim()
+        if (text.includes('1 media') || text.includes('Selected Media') || text.includes('Medias')) {
+          const el = (node as Text).parentElement
+          if (el) results.push({ text: text.slice(0, 50), tag: el.tagName, cls: el.className.slice(0, 60), visible: el.offsetParent !== null })
+        }
+      }
+      return results
+    }).catch(() => [])
+    console.log(`[post] media: uploadMethod=${uploadMethod}`)
+    console.log(`[post] media: file inputs with files: ${JSON.stringify(fileInputState.filter((i: {filesCount: number}) => i.filesCount > 0))}`)
+    console.log(`[post] media: all elements with media text: ${JSON.stringify(mediaTextElements)}`)
+    console.log(`[post] media: WS logs: ${JSON.stringify(wsLogs)}`)
+    console.log(`[post] media: page console: ${JSON.stringify(pageConsoleLogs.slice(-10))}`)
 
     // Screenshot after upload to verify media was attached
     await page.screenshot({ type: 'png', fullPage: false }).then(buf =>
