@@ -197,13 +197,14 @@ export async function processVideoJob(jobId: string): Promise<void> {
 
     const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
     const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-    // -ss before -i = fast input seek; -t always applied — duration already capped by requestedDuration
+    // -ss before -i for fast input seek; -t goes AFTER all inputs as an output option
+    // (if placed between two -i flags ffmpeg treats it as an input option on the second input, not the output)
     const seekFlag = trimStart > 0 ? `-ss ${trimStart.toFixed(3)}` : ''
-    const durFlag = `-t ${duration.toFixed(3)}`
-    const rawInput = `${seekFlag} -i "${rawPath}" ${durFlag}`
-    const videoIn = hasAudio ? `${ffmpegBin()} ${rawInput} -i "${audioPath}"` : `${ffmpegBin()} ${rawInput}`
-    const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
-    run(`${videoIn} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
+    const videoIn = hasAudio
+      ? `${ffmpegBin()} ${seekFlag} -i "${rawPath}" -i "${audioPath}"`
+      : `${ffmpegBin()} ${seekFlag} -i "${rawPath}"`
+    const audioMap = hasAudio ? `-c:a aac` : `-an`
+    run(`${videoIn} ${vf} -t ${duration.toFixed(3)} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
 
     // 5. Thumbnail at 1s
     run(`${ffmpegBin()} -i "${finalPath}" -ss 00:00:01 -vframes 1 -y "${thumbPath}"`)
