@@ -3,8 +3,11 @@ import { supabaseAdmin } from '@/lib/supabase'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ username: string }> }) {
   const { username } = await params
-  const { post_id, placeholder } = await request.json()
+  const { post_id, placeholder, duration } = await request.json()
   if (!post_id) return NextResponse.json({ error: 'post_id required' }, { status: 400 })
+
+  // Clamp requested duration between 3 and 15 seconds, default 5
+  const durationSeconds = Math.min(15, Math.max(3, typeof duration === 'number' ? Math.round(duration) : 5))
 
   const [{ data: model }, { data: post }] = await Promise.all([
     supabaseAdmin.from('trends_models').select('id, placeholder_options').eq('fansly_username', username.toLowerCase()).single(),
@@ -18,8 +21,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const chosen = placeholder ?? options[0] ?? ''
   const personalizedText = post.text_template.replace(/\[placeholder\]/gi, chosen)
 
-  // Round-robin clip selection: pick the first content bank clip not yet used for this post+model combo
   let clipId: string | null = null
+  let clipIndex: number | null = null
 
   const { data: pipelineModel } = await supabaseAdmin
     .from('pipeline_models')
@@ -38,14 +41,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const usedClipIds = new Set((existingJobs ?? []).map(j => j.clip_id).filter(Boolean) as string[])
     const r2KeyToClipId = new Map((existingModelClips ?? []).map(mc => [mc.r2_key as string, mc.id as string]))
 
-    // Pick first footage whose slot is empty; wrap to first if all occupied
-    const chosen_footage =
-      footage.find(f => {
-        const existingClipId = r2KeyToClipId.get(f.r2_key)
-        return !existingClipId || !usedClipIds.has(existingClipId)
-      }) ?? footage[0] ?? null
+    // Filter to unused clips first; if all used, fall back to full pool
+    const unusedFootage = footage.filter(f => {
+      const existingClipId = r2KeyToClipId.get(f.r2_key)
+      return !existingClipId || !usedClipIds.has(existingClipId)
+    })
+    const pool = unusedFootage.length > 0 ? unusedFootage : footage
+
+    // Pick randomly from the pool
+    const chosen_footage = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null
 
     if (chosen_footage) {
+      // 1-based index of this clip in the full content bank (for display in UI)
+      clipIndex = footage.findIndex(f => f.r2_key === chosen_footage.r2_key) + 1
+
       const existingClipId = r2KeyToClipId.get(chosen_footage.r2_key)
       if (existingClipId) {
         clipId = existingClipId
@@ -72,6 +81,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       post_id,
       model_id: model.id,
       clip_id: clipId,
+      clip_index: clipIndex,
+      duration_seconds: durationSeconds,
       original_template: post.text_template,
       personalized_text: personalizedText,
       status: 'pending',

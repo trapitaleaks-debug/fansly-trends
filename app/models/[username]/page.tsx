@@ -28,6 +28,8 @@ interface VideoJob {
   thumbnail_r2_key: string | null
   personalized_text: string | null
   clip_id: string | null
+  clip_index: number | null
+  duration_seconds: number | null
   model_clips: { id: string; filename: string | null } | null
 }
 
@@ -70,6 +72,8 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [generatingIds, setGeneratingIds] = useState<Record<string, 'pending' | 'error'>>({})
   const [generatingAll, setGeneratingAll] = useState(false)
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null)
+  const [pendingGenerate, setPendingGenerate] = useState<{ postId: string } | null>(null)
+  const [selectedDuration, setSelectedDuration] = useState(5)
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [contentTags, setContentTags] = useState<string[]>([])
@@ -179,12 +183,12 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     }
   }
 
-  async function generateIdea(postId: string) {
+  async function generateIdea(postId: string, duration: number) {
     setGeneratingIds(prev => ({ ...prev, [postId]: 'pending' }))
     const res = await fetch(`/api/models/${username}/generate-idea`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ post_id: postId }),
+      body: JSON.stringify({ post_id: postId, duration }),
     })
     if (res.ok) {
       setGeneratingIds(prev => { const n = { ...prev }; delete n[postId]; return n })
@@ -211,7 +215,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     const targets = filteredIdeas.filter(idea => !generatingIds[idea.trends_posts.id])
     if (!targets.length) return
     setGeneratingAll(true)
-    await Promise.all(targets.map(idea => generateIdea(idea.trends_posts.id)))
+    await Promise.all(targets.map(idea => generateIdea(idea.trends_posts.id, selectedDuration)))
     setGeneratingAll(false)
   }
 
@@ -479,13 +483,14 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
                       {/* Done jobs — watch + delete per version */}
                       <div className="flex gap-1 flex-shrink-0 flex-wrap justify-end">
-                        {jobs.filter(j => j.status === 'done' && j.output_r2_key).map((j, i) => (
+                        {jobs.filter(j => j.status === 'done' && j.output_r2_key).map((j) => (
                           <span key={j.id} className="flex items-center gap-0.5 border border-green-500/30 rounded-lg overflow-hidden">
                             <button
                               onClick={() => openWatch(j)}
                               title={j.model_clips?.filename ?? undefined}
                               className="text-[10px] font-medium px-2 py-1 text-green-400 hover:bg-green-500/10 transition-colors">
-                              ▶ {i + 1}
+                              ▶{j.clip_index != null ? ` clip#${j.clip_index}` : ''}
+                              {j.duration_seconds != null ? ` ${j.duration_seconds}s` : ''}
                             </button>
                             <button
                               onClick={() => deleteJob(j.id)}
@@ -502,14 +507,14 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
                       {/* Generate button */}
                       <button
-                        onClick={() => generateIdea(post.id)}
+                        onClick={() => setPendingGenerate({ postId: post.id })}
                         disabled={genState === 'pending' || generatingAll || jobs.some(j => j.status === 'pending' || j.status === 'processing')}
                         className={`text-[10px] font-medium px-2 py-1 rounded-lg border flex-shrink-0 transition-colors disabled:opacity-40 ${
                           genState === 'error' ? 'border-red-500/30 text-red-400'
                           : useCount > 0 ? 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-white'
                           : 'border-[#D41020]/40 text-[#D41020] hover:bg-[#D41020]/10'
                         }`}>
-                        {genState === 'pending' ? '…' : genState === 'error' ? 'error' : useCount > 0 ? 'generate' : 'generate'}
+                        {genState === 'pending' ? '…' : genState === 'error' ? 'error' : 'generate'}
                       </button>
                     </div>
 
@@ -536,6 +541,44 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
       {selectedPostId && (
         <PostModal postId={selectedPostId} onClose={() => setSelectedPostId(null)} onBookmarkChange={fetchMatchedIdeas} />
+      )}
+
+      {pendingGenerate && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={() => setPendingGenerate(null)}>
+          <div className="bg-[#111] border border-[#2a2a2a] rounded-2xl p-5 w-72 space-y-4" onClick={e => e.stopPropagation()}>
+            <div>
+              <p className="text-sm font-medium">Duration</p>
+              <p className="text-xs text-[#555] mt-0.5">How long should the video be?</p>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-[#666]">3s</span>
+                <span className="text-lg font-semibold tabular-nums">{selectedDuration}s</span>
+                <span className="text-xs text-[#666]">15s</span>
+              </div>
+              <input
+                type="range"
+                min={3} max={15} step={1}
+                value={selectedDuration}
+                onChange={e => setSelectedDuration(Number(e.target.value))}
+                className="w-full accent-violet-500"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  generateIdea(pendingGenerate.postId, selectedDuration)
+                  setPendingGenerate(null)
+                }}
+                className="flex-1 text-xs font-medium bg-white text-black px-3 py-2 rounded-lg hover:bg-[#e5e5e5] transition-colors">
+                Generate
+              </button>
+              <button onClick={() => setPendingGenerate(null)} className="text-xs text-[#555] hover:text-white px-3 py-2 transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {watchJob && (

@@ -97,7 +97,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
   const { data: job, error: jobErr } = await supabaseAdmin
     .from('video_jobs')
     .select(`
-      id, post_id, model_id, clip_id, personalized_text, status,
+      id, post_id, model_id, clip_id, personalized_text, status, duration_seconds,
       model_clips ( r2_key ),
       trends_models ( fansly_username, brand_html_r2_key, video_brand_config ),
       trends_posts ( video_r2_key, fansly_post_id )
@@ -144,6 +144,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
       .maybeSingle()
     const trimStart = bankItem?.trim_start ?? 0
     const trimEnd = bankItem?.trim_end ?? null
+    const requestedDuration: number = (job as unknown as { duration_seconds?: number }).duration_seconds ?? 5
 
     // 2. Get duration — probe format first, then video stream (WebM from MediaRecorder often lacks format duration)
     let fullDuration = 0
@@ -163,7 +164,9 @@ export async function processVideoJob(jobId: string): Promise<void> {
         fullDuration = parseFloat(strmDur) || 15
       } catch { fullDuration = 15 }
     }
-    const duration = trimEnd != null ? trimEnd - trimStart : fullDuration - trimStart
+    const clipDuration = trimEnd != null ? trimEnd - trimStart : fullDuration - trimStart
+    // Cap output to the user-requested duration; never exceed actual clip length
+    const duration = Math.min(requestedDuration, clipDuration)
 
     // 3. Try to extract audio from trending post's source video
     let hasAudio = false
