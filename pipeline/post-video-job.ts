@@ -243,11 +243,22 @@ export async function postVideoJob(jobId: string): Promise<void> {
 
     if (!fpOk) {
       // Attempt 2: open calendar popup, interact with day grid + time columns
+      // Save a debug screenshot BEFORE interacting so we can see the page state on Railway
+      await page.screenshot({ type: 'png' }).then(buf =>
+        uploadToR2(`debug/post-${jobId}-before-datepicker.png`, buf, 'image/png')
+      ).catch(() => {})
+      console.log(`[post] pre-datepicker screenshot → debug/post-${jobId}-before-datepicker.png`)
+
+      // The Schedule for input may have pointer-events:none (custom picker display field)
+      // Use force:true to bypass actionability checks, or click the wrapper element
       const schedInput = page.locator('input[placeholder*="dd/mm"]').nth(0)
-      await schedInput.click()
+      await schedInput.click({ force: true }).catch(async () => {
+        // Fallback: click the wrapper div containing the input
+        await schedInput.locator('xpath=..').click({ force: true }).catch(() => {})
+      })
       await page.waitForTimeout(1000)
 
-      // Save a debug screenshot to R2 so we can see what the picker looks like on Railway
+      // Save screenshot after attempting to open the calendar
       await page.screenshot({ type: 'png' }).then(buf =>
         uploadToR2(`debug/post-${jobId}-datepicker.png`, buf, 'image/png')
       ).catch(() => {})
