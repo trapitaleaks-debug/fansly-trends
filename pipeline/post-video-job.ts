@@ -203,11 +203,12 @@ export async function postVideoJob(jobId: string): Promise<void> {
   page.setDefaultTimeout(60_000)
   page.setDefaultNavigationTimeout(30_000)
 
-  // Master 7-minute timeout — if anything hangs (R2 stall, Playwright deadlock), close the browser
+  // Master 12-minute timeout — if anything hangs (R2 stall, Playwright deadlock), close the browser
+  // Budget: R2 download (2min) + upload wait (1.5min) + form fill (1min) + verify (1min) + buffer
   const masterTimer = setTimeout(() => {
-    console.error('[post] ✗ Master 7-min timeout fired — closing browser')
+    console.error('[post] ✗ Master 12-min timeout fired — closing browser')
     browser.close().catch(() => {})
-  }, 7 * 60_000)
+  }, 12 * 60_000)
 
   try {
     // Navigate to /bulk-posts and verify auth — storageState may have expired tokens
@@ -278,14 +279,26 @@ export async function postVideoJob(jobId: string): Promise<void> {
       console.log('[post] walls: already pre-selected, skipping dropdown')
     }
 
-    // 4. Media — upload video. Dump file inputs first for debugging.
-    const fileInputInfo = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('input[type="file"]')).map((inp, i) => ({
-        i, accept: inp.accept, id: inp.id, cls: inp.className.slice(0, 60),
-        w: Math.round(inp.getBoundingClientRect().width),
-      }))
-    ).catch(() => [])
-    console.log(`[post] file inputs: ${JSON.stringify(fileInputInfo)}`)
+    // 4. Media — upload video.
+    // Register upload XHR listener BEFORE triggering file chooser — FanCore uploads video to
+    // their CDN asynchronously after setFiles, and we MUST NOT click submit until it completes.
+    // "Upload timed out" error in FanCore = we clicked submit while upload was still in progress.
+    const uploadDone = page.waitForResponse(
+      r => {
+        const m = r.request().method()
+        const u = r.url()
+        return (m === 'POST' || m === 'PUT') && (
+          u.includes('upload') || u.includes('storage') || u.includes('media') ||
+          u.includes('video') || u.includes('file') || u.includes('blob') ||
+          u.includes('cdn') || u.includes('asset') || u.includes('chunk') ||
+          u.includes('part') || u.includes('attach') || u.includes('object') ||
+          u.includes('s3.') || u.includes('.r2.') || u.includes('cloudfront') ||
+          u.includes('bunny') || u.includes('backblaze')
+        )
+      },
+      { timeout: 90000 },
+    ).then(r => `${r.status()} ${r.url().slice(0, 120)}`)
+    .catch((e: Error) => `watcher-miss:${e.message.slice(0, 80)}`)
 
     // Primary: filechooser — handles custom upload UIs
     let uploadMethod = 'none'
@@ -308,8 +321,27 @@ export async function postVideoJob(jobId: string): Promise<void> {
         } catch { /* try next */ }
       }
     }
-    console.log(`[post] media: uploaded via ${uploadMethod} — waiting 10s for processing`)
-    await page.waitForTimeout(10000)
+    console.log(`[post] media: file set via ${uploadMethod} — awaiting upload XHR`)
+
+    // Wait for the actual upload XHR to complete before clicking submit.
+    // Primary: XHR watcher. Secondary: wait for the "Medias" panel FanCore shows after upload.
+    const uploadResult = await uploadDone
+    if (uploadResult.startsWith('watcher-miss')) {
+      // URL pattern didn't match — wait for "Medias" panel OR fall back to 45s
+      console.log(`[post] media: upload XHR not caught (${uploadResult}) — waiting for Medias panel`)
+      try {
+        // FanCore shows "Medias" / "Selected Media" section after upload completes
+        await page.waitForSelector('text=/Medias|Selected Media/', { timeout: 45000 })
+        console.log('[post] media: Medias panel appeared — upload complete')
+      } catch {
+        console.log('[post] media: Medias panel not detected — waiting 45s fixed')
+        await page.waitForTimeout(45000)
+      }
+    } else {
+      console.log(`[post] media: upload XHR done — ${uploadResult}`)
+      // Small extra wait for FanCore to process the XHR response and update the UI
+      await page.waitForTimeout(2000)
+    }
 
     // Screenshot after upload to verify media was attached
     await page.screenshot({ type: 'png', fullPage: false }).then(buf =>
