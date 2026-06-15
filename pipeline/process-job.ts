@@ -89,46 +89,6 @@ function buildDrawtextFilter(overlayText: string, tmpDir: string): string {
   return `drawtext=textfile='${textFile1}':${baseStyle}:x=(w-text_w)/2:y=h*0.65,drawtext=textfile='${textFile2}':${baseStyle}:x=(w-text_w)/2:y=h*0.73`
 }
 
-// ─── Twemoji emoji sticker helpers ────────────────────────────────────────────
-
-function extractEmoji(text: string): string[] {
-  // Match emoji sequences: base glyph + optional ZWJ/variation-selector chains
-  const re = /\p{Extended_Pictographic}(?:️?(?:‍\p{Extended_Pictographic}️?)*)?️?/gu
-  const seen = new Set<string>()
-  for (const m of text.matchAll(re)) {
-    if (m[0].trim()) seen.add(m[0])
-  }
-  return [...seen]
-}
-
-function emojiToNotoCP(emoji: string): string {
-  // Noto Emoji filenames: hex codepoints joined by '_', FE0F always stripped
-  const cps = [...emoji].map(c => c.codePointAt(0)!).filter(cp => cp !== 0xFE0F)
-  return cps.map(cp => cp.toString(16)).join('_')
-}
-
-async function downloadEmojiPng(emoji: string, dest: string): Promise<boolean> {
-  const cp = emojiToNotoCP(emoji)
-  // Google Noto Emoji — actively maintained, covers Unicode 15.1+
-  const url = `https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u${cp}.png`
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
-    if (!res.ok) {
-      console.log(`  [emoji] HTTP ${res.status} for ${emoji} (${url})`)
-      return false
-    }
-    const buf = Buffer.from(await res.arrayBuffer())
-    if (buf.length <= 200) {
-      console.log(`  [emoji] too small (${buf.length}B) for ${emoji}`)
-      return false
-    }
-    fs.writeFileSync(dest, buf)
-    return true
-  } catch (e) {
-    console.log(`  [emoji] download failed for ${emoji}: ${(e as Error).message}`)
-    return false
-  }
-}
 
 export async function processVideoJob(jobId: string): Promise<void> {
   console.log(`[job] Processing video_job ${jobId}`)
@@ -201,68 +161,20 @@ export async function processVideoJob(jobId: string): Promise<void> {
       }
     }
 
-    // 4. Render overlay — white Arial text + black border + Twemoji emoji stickers
-    const encodeFlags = `-c:v libx264 -preset ultrafast -threads 2 -crf 23`
+    // 4. Render text overlay
+    // -preset fast: much better quality than ultrafast with acceptable speed on Railway
+    // -crf 20: higher quality (lower = better, 23 was too lossy for source footage)
+    // -pix_fmt yuv420p: standardise pixel format to prevent color range shifts during encode
+    // -r 30: force constant 30fps output — phones shoot VFR which causes stuttering
+    // -movflags +faststart: move MOOV atom to front for fast web playback
+    const encodeFlags = `-c:v libx264 -preset fast -crf 20 -pix_fmt yuv420p -r 30 -movflags +faststart`
     console.log(`  Rendering overlay: "${overlayText}"`)
 
-    // Text drawtext filter (strips emoji internally, uses system Liberation/Helvetica)
     const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
-
-    // Download Noto Emoji PNGs for each unique emoji in the text
-    const emojis = extractEmoji(overlayText)
-    console.log(`  Found ${emojis.length} emoji(s): ${JSON.stringify(emojis)}`)
-    const emojiPngs: string[] = []
-    for (let i = 0; i < emojis.length; i++) {
-      const dest = path.join(tmpDir, `emoji_${i}.png`)
-      if (await downloadEmojiPng(emojis[i], dest)) {
-        emojiPngs.push(dest)
-        console.log(`  Emoji sticker downloaded: ${emojis[i]}`)
-      }
-    }
-
-    if (emojiPngs.length === 0) {
-      // No emoji or all failed to download — simple drawtext
-      const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-      const videoIn = hasAudio ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}"` : `${ffmpegBin()} -i "${rawPath}"`
-      const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
-      run(`${videoIn} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
-    } else {
-      // Build filter_complex: drawtext on video → overlay each emoji PNG centered below text
-      const EMOJI_SIZE = 100
-      const EMOJI_GAP = 8
-      const totalEmojiW = emojiPngs.length * EMOJI_SIZE + (emojiPngs.length - 1) * EMOJI_GAP
-
-      const fcParts: string[] = []
-      let curLabel = '0:v'
-
-      if (dtFilter) {
-        fcParts.push(`[0:v]${dtFilter}[vt]`)
-        curLabel = 'vt'
-      }
-
-      // Scale each emoji input (inputs 1..N are emoji PNGs)
-      emojiPngs.forEach((_, i) => fcParts.push(`[${i + 1}:v]scale=${EMOJI_SIZE}:${EMOJI_SIZE}[e${i}]`))
-
-      // Chain overlays: emoji row centered horizontally, just below text block
-      emojiPngs.forEach((_, i) => {
-        const xPos = `(W-${totalEmojiW})/2+${i * (EMOJI_SIZE + EMOJI_GAP)}`
-        const outLabel = i === emojiPngs.length - 1 ? 'vout' : `vm${i}`
-        fcParts.push(`[${curLabel}][e${i}]overlay=x=${xPos}:y=H*0.83[${outLabel}]`)
-        curLabel = outLabel
-      })
-
-      const fc = fcParts.join(';')
-      const emojiInputs = emojiPngs.map(p => `-i "${p}"`).join(' ')
-      const audioInputIdx = 1 + emojiPngs.length
-      const allInputs = hasAudio
-        ? `${ffmpegBin()} -i "${rawPath}" ${emojiInputs} -i "${audioPath}"`
-        : `${ffmpegBin()} -i "${rawPath}" ${emojiInputs}`
-      const audioMap = hasAudio
-        ? `-map "[vout]" -map ${audioInputIdx}:a -c:a aac -shortest`
-        : `-map "[vout]" -an`
-
-      run(`${allInputs} -filter_complex "${fc}" ${audioMap} ${encodeFlags} -y "${finalPath}"`)
-    }
+    const vf = dtFilter ? `-vf "${dtFilter}"` : ''
+    const videoIn = hasAudio ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}"` : `${ffmpegBin()} -i "${rawPath}"`
+    const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
+    run(`${videoIn} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
 
     // 5. Thumbnail at 1s
     run(`${ffmpegBin()} -i "${finalPath}" -ss 00:00:01 -vframes 1 -y "${thumbPath}"`)
