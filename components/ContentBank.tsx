@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 export interface ContentBankItem {
   id: string
@@ -62,14 +62,16 @@ export default function ContentBank({ username }: { username: string }) {
   const [pipelineModelId, setPipelineModelId] = useState<string | null>(null)
   const [items, setItems] = useState<ContentBankItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
+  const [uploadErrors, setUploadErrors] = useState<string[]>([])
+  const [dragActive, setDragActive] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [savingTagsId, setSavingTagsId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({})
   const [presetTags, setPresetTags] = useState<string[]>([])
   const [newPresetTag, setNewPresetTag] = useState('')
+  const dragCounter = useRef(0)
 
   useEffect(() => {
     fetch('/api/settings/content-tags').then(r => r.json()).then(d => setPresetTags(d.tags ?? []))
@@ -110,23 +112,61 @@ export default function ContentBank({ username }: { username: string }) {
 
   useEffect(() => { fetchItems() }, [fetchItems])
 
-  async function handleFileChange(file: File) {
-    if (!pipelineModelId) return
-    setUploading(true)
-    setUploadError(null)
-
+  async function uploadFile(file: File, modelId: string): Promise<string | null> {
     const res = await fetch('/api/pipeline/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_id: pipelineModelId, type: 'own_footage', filename: file.name, label: null, trim_start: 0, trim_end: null }),
+      body: JSON.stringify({ model_id: modelId, type: 'own_footage', filename: file.name, label: null, trim_start: 0, trim_end: null }),
     })
-    if (!res.ok) { setUploadError('Failed to get upload URL'); setUploading(false); return }
+    if (!res.ok) return `${file.name}: failed to get upload URL`
     const { uploadUrl } = await res.json()
-
     const put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'video/mp4' } })
-    setUploading(false)
-    if (!put.ok) { setUploadError('Upload failed'); return }
+    if (!put.ok) return `${file.name}: upload failed`
+    return null
+  }
+
+  async function handleFiles(files: File[]) {
+    if (!pipelineModelId || files.length === 0) return
+    const videos = files.filter(f => f.type.startsWith('video/') || f.name.match(/\.(mp4|mov|webm|avi|mkv)$/i))
+    if (videos.length === 0) return
+
+    setUploadErrors([])
+    setUploadProgress({ done: 0, total: videos.length })
+
+    const errors: string[] = []
+    await Promise.all(videos.map(async (file) => {
+      const err = await uploadFile(file, pipelineModelId)
+      if (err) errors.push(err)
+      setUploadProgress(prev => prev ? { ...prev, done: prev.done + 1 } : null)
+    }))
+
+    setUploadProgress(null)
+    if (errors.length) setUploadErrors(errors)
     fetchItems()
+  }
+
+  function onDragEnter(e: React.DragEvent) {
+    e.preventDefault()
+    dragCounter.current++
+    if (dragCounter.current === 1) setDragActive(true)
+  }
+
+  function onDragLeave(e: React.DragEvent) {
+    e.preventDefault()
+    dragCounter.current--
+    if (dragCounter.current === 0) setDragActive(false)
+  }
+
+  function onDragOver(e: React.DragEvent) {
+    e.preventDefault()
+  }
+
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault()
+    dragCounter.current = 0
+    setDragActive(false)
+    const files = Array.from(e.dataTransfer.files)
+    handleFiles(files)
   }
 
   async function handleDelete(id: string) {
@@ -161,6 +201,8 @@ export default function ContentBank({ username }: { username: string }) {
     setSavingTagsId(null)
   }
 
+  const isUploading = uploadProgress !== null
+
   if (loading) return <p className="text-xs text-[#444]">Loading...</p>
 
   return (
@@ -187,17 +229,51 @@ export default function ContentBank({ username }: { username: string }) {
 
       {!pipelineModelId ? <p className="text-xs text-[#444]">Videos not available for this model.</p> : (<>
       {/* Upload zone */}
-      <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg py-5 cursor-pointer transition-colors ${uploading ? 'border-[#2a2a2a] opacity-50 pointer-events-none' : 'border-[#2a2a2a] hover:border-[#3a3a3a]'}`}>
-        <span className="text-xs text-[#555] hover:text-[#888] pointer-events-none">
-          {uploading ? 'Uploading...' : 'Click to upload a pre-trimmed clip'}
-        </span>
-        <span className="text-[10px] text-[#333] pointer-events-none mt-0.5">Trim on iPhone first (Photos app), then upload here</span>
-        <input type="file" accept="video/*" className="hidden" disabled={uploading} onChange={e => {
-          const f = e.target.files?.[0]; e.target.value = ''
-          if (f) handleFileChange(f)
-        }} />
+      <label
+        className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg py-6 transition-colors cursor-pointer
+          ${isUploading ? 'pointer-events-none opacity-50 border-[#2a2a2a]' : dragActive ? 'border-violet-500 bg-violet-500/5' : 'border-[#2a2a2a] hover:border-[#3a3a3a]'}`}
+        onDragEnter={onDragEnter}
+        onDragLeave={onDragLeave}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+      >
+        {isUploading ? (
+          <>
+            <span className="text-xs text-[#555]">Uploading {uploadProgress!.done}/{uploadProgress!.total}...</span>
+            <div className="mt-2 w-32 h-0.5 bg-[#1a1a1a] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-violet-500 transition-all duration-300"
+                style={{ width: `${(uploadProgress!.done / uploadProgress!.total) * 100}%` }}
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            <span className="text-xs text-[#555] pointer-events-none">
+              {dragActive ? 'Drop to upload' : 'Drop videos here or click to browse'}
+            </span>
+            <span className="text-[10px] text-[#333] pointer-events-none mt-0.5">Pre-trim on iPhone first (Photos app) — multiple files supported</span>
+          </>
+        )}
+        <input
+          type="file"
+          accept="video/*"
+          multiple
+          className="hidden"
+          disabled={isUploading}
+          onChange={e => {
+            const files = Array.from(e.target.files ?? [])
+            e.target.value = ''
+            handleFiles(files)
+          }}
+        />
       </label>
-      {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
+
+      {uploadErrors.length > 0 && (
+        <div className="space-y-0.5">
+          {uploadErrors.map((err, i) => <p key={i} className="text-xs text-red-400">{err}</p>)}
+        </div>
+      )}
 
       {/* Video list */}
       {items.length === 0 && <p className="text-xs text-[#444]">No videos uploaded yet</p>}
