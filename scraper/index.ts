@@ -55,6 +55,7 @@ async function main() {
   const startTime = Date.now()
 
   let added = 0, updated = 0, skipped = 0
+  let phase1Posts = 0, accountsOk = 0, accountsFailed = 0
 
   try {
     const blacklist = await getBlacklist()
@@ -85,9 +86,12 @@ async function main() {
             if (!existing) fresh++
           }
         }
+        phase1Posts += posts.length
+        accountsOk++
         console.log(`  ✅ Scrape complete: ${posts.length} posts collected`)
         console.log(`  +${fresh} unique posts (${postMap.size} total so far)`)
       } catch (err) {
+        accountsFailed++
         console.error(`  ❌ Account ${acc.email} failed:`, err instanceof Error ? err.message : err)
       }
     }
@@ -220,7 +224,7 @@ async function main() {
 
     const elapsed = Math.round((Date.now() - startTime) / 1000)
     console.log(`\n✅ Done in ${elapsed}s — added: ${added}, updated: ${updated}, skipped: ${skipped}`)
-    await sendTelegram(scraperSuccess(added, updated, skipped))
+    await sendTelegram(scraperSuccess(added, updated, skipped, { accountsOk, accountsFailed, phase1Posts, authHeaders: accountHeaders.length }))
 
     // Suggestions are generated on-demand via the UI — not auto-generated after scraping
 
