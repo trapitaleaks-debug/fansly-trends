@@ -193,55 +193,51 @@ export async function postVideoJob(jobId: string): Promise<void> {
       await saveSession(page)
     }
 
-    // Select the model in FanCore's sidebar by Fansly username
+    // Click the model in the left sidebar (shows as display name + @handle below)
     await page.goto(FANCORE_URL, { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2000)
-    for (const sel of [`text=@${handle}`, `text=${handle}`]) {
-      const el = page.locator(sel).first()
-      if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await el.click({ force: true })
-        break
-      }
-    }
+    // Sidebar entry contains "@handle" as a child element — click the list item
+    const modelEntry = page.locator(`text=@${handle}`).first()
+    await modelEntry.waitFor({ state: 'visible', timeout: 10_000 })
+    await modelEntry.click()
     await page.waitForTimeout(1500)
 
-    // Navigate to Bulk Posts / Reels
-    await page.goto(`${FANCORE_URL}/reels`, { waitUntil: 'domcontentloaded' })
+    // Click "Bulk Posting" in the left nav
+    await page.locator('text=Bulk Posting').first().click()
     await page.waitForTimeout(2000)
 
-    // Open new post dialog
-    const newPostBtn = page.locator('button').filter({ hasText: /New|Upload|Create|Add/i }).first()
-    if (await newPostBtn.isVisible({ timeout: 3000 })) {
-      await newPostBtn.click()
-      await page.waitForTimeout(2000)
-    }
+    // The page shows "Schedule a new post" forms already open.
+    // Use the first form's elements.
+    const firstForm = page.locator('text=Schedule a new post').first().locator('..')
 
-    // Download video from R2 and upload to FanCore
+    // Upload video via the hidden file input inside the media drop zone
     const videoPath = path.join(tmpDir, 'output.mp4')
     await downloadFromR2(job.output_r2_key, videoPath)
     const fileInput = page.locator('input[type="file"]').first()
     await fileInput.setInputFiles(videoPath)
     await page.waitForTimeout(3000)
 
-    // Fill caption with hashtags
-    const captionField = page.locator('textarea').first()
-    await captionField.fill(caption)
+    // Caption field (leave empty — overlay text is burned into the video)
+    // Tags field — comma-separated hashtags (FanCore strips # automatically)
+    const tagsInput = firstForm.locator('input[placeholder*="petite"], input[placeholder*="kawaii"], input[placeholder*="fyp"]').first()
+    await tagsInput.fill(selectedHashtags.join(', '))
 
-    // Set scheduled datetime (22:00 UTC)
-    const formatted = scheduledFor.toISOString().slice(0, 16) // YYYY-MM-DDTHH:mm
-    try {
-      const dateInput = page.locator('input[type="datetime-local"]').first()
-      if (await dateInput.isVisible({ timeout: 2000 })) {
-        await dateInput.fill(formatted)
-      }
-    } catch { /* scheduling UI may differ — saves as draft without time */ }
+    // Schedule for — FanCore uses dd/mm/yyyy, HH:mm format
+    const dd = String(scheduledFor.getUTCDate()).padStart(2, '0')
+    const mm = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
+    const yyyy = scheduledFor.getUTCFullYear()
+    const hh = String(scheduledFor.getUTCHours()).padStart(2, '0')
+    const min = String(scheduledFor.getUTCMinutes()).padStart(2, '0')
+    const dateStr = `${dd}/${mm}/${yyyy}, ${hh}:${min}`
 
-    // Save as draft/scheduled
-    const saveBtn = page.locator('button').filter({ hasText: /Save|Draft|Schedule/i }).first()
-    if (await saveBtn.isVisible({ timeout: 3000 })) {
-      await saveBtn.click()
-      await page.waitForTimeout(2000)
-    }
+    const scheduleInput = firstForm.locator('input[placeholder*="dd/mm"]').first()
+    await scheduleInput.click()
+    await scheduleInput.fill(dateStr)
+    await page.keyboard.press('Escape') // close any datepicker popup
+
+    // Click "+ Schedule Post"
+    await firstForm.locator('button', { hasText: /Schedule Post/i }).click()
+    await page.waitForTimeout(2000)
 
     // Mark posted in DB
     await supabaseAdmin.from('video_jobs').update({
