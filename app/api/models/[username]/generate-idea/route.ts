@@ -31,30 +31,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     .single()
 
   if (pipelineModel) {
-    const [{ data: allFootage }, { data: existingJobs }, { data: existingModelClips }] = await Promise.all([
+    const [{ data: allFootage }, { count: totalJobCount }, { data: existingModelClips }] = await Promise.all([
       supabaseAdmin.from('pipeline_content_bank').select('id, r2_key, label, trim_end, tags').eq('model_id', pipelineModel.id).order('created_at'),
-      supabaseAdmin.from('video_jobs').select('clip_id').eq('post_id', post_id).eq('model_id', model.id),
+      supabaseAdmin.from('video_jobs').select('id', { count: 'exact', head: true }).eq('model_id', model.id),
       supabaseAdmin.from('model_clips').select('id, r2_key').eq('model_id', model.id),
     ])
 
     const footage = allFootage ?? []
-    const usedClipIds = new Set((existingJobs ?? []).map(j => j.clip_id).filter(Boolean) as string[])
-    const r2KeyToClipId = new Map((existingModelClips ?? []).map(mc => [mc.r2_key as string, mc.id as string]))
 
-    // Filter to unused clips first; if all used, fall back to full pool
-    const unusedFootage = footage.filter(f => {
-      const existingClipId = r2KeyToClipId.get(f.r2_key)
-      return !existingClipId || !usedClipIds.has(existingClipId)
-    })
-    const pool = unusedFootage.length > 0 ? unusedFootage : footage
+    if (footage.length > 0) {
+      // Rotate through all clips in order based on total job count for this model.
+      // This guarantees clip variety across all generations regardless of which post is being generated.
+      const rotationIdx = (totalJobCount ?? 0) % footage.length
+      const chosen_footage = footage[rotationIdx]
+      clipIndex = rotationIdx + 1
 
-    // Pick randomly from the pool
-    const chosen_footage = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null
-
-    if (chosen_footage) {
-      // 1-based index of this clip in the full content bank (for display in UI)
-      clipIndex = footage.findIndex(f => f.r2_key === chosen_footage.r2_key) + 1
-
+      const r2KeyToClipId = new Map((existingModelClips ?? []).map(mc => [mc.r2_key as string, mc.id as string]))
       const existingClipId = r2KeyToClipId.get(chosen_footage.r2_key)
       if (existingClipId) {
         clipId = existingClipId
