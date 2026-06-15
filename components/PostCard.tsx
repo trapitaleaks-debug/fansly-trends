@@ -14,6 +14,7 @@ export interface Post {
   growth_24h_pct: number | null
   thumbnail_r2_key: string | null
   video_r2_key: string | null
+  text_template?: string | null
   is_explicit: boolean
   scraped_at: string
   trends_ideas?: { id: string; niches: string[]; tags: string[]; notes: string }[]
