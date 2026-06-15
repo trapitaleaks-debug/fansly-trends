@@ -9,7 +9,7 @@ import path from 'path'
 import os from 'os'
 import { chromium, type Browser, type Page } from 'playwright'
 import Anthropic from '@anthropic-ai/sdk'
-import { r2 } from '../lib/r2'
+import { r2, uploadToR2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
 import { sendTelegram } from '../lib/telegram'
@@ -210,25 +210,70 @@ export async function postVideoJob(jobId: string): Promise<void> {
     const tagsInput = page.locator('input[placeholder*="petite"], input[placeholder*="kawaii"], input[placeholder*="fyp"]').nth(0)
     await tagsInput.fill(selectedHashtags.map(t => `#${t}`).join(' '))
 
-    // 2. Schedule for — browser is UTC so 22:00 entered = 22:00 UTC
-    //    The field is a datetime-local input displayed as dd/mm/yyyy in UTC locale.
-    //    fill() with ISO format YYYY-MM-DDTHH:mm is what Playwright expects for datetime-local.
+    // 2. Schedule for — the field is read-only (custom datepicker); must interact with the popup UI
     const yyyy = scheduledFor.getUTCFullYear()
     const mm = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
     const dd = String(scheduledFor.getUTCDate()).padStart(2, '0')
-    const hh = String(scheduledFor.getUTCHours()).padStart(2, '0')  // always '22'
-    const min = String(scheduledFor.getUTCMinutes()).padStart(2, '0') // always '00'
-    const scheduleInput = page.locator('input[placeholder*="dd/mm"]').nth(0)
-    await scheduleInput.fill(`${yyyy}-${mm}-${dd}T${hh}:${min}`)
-    await page.waitForTimeout(300)
-    // If the input is a custom picker that ignored the fill, type in its native display format
-    const filledVal = await scheduleInput.inputValue().catch(() => '')
-    if (!filledVal || filledVal.trim() === '') {
-      await scheduleInput.click({ clickCount: 3 })
-      await page.keyboard.type(`${dd}/${mm}/${yyyy}, ${hh}:${min}`)
+    const targetDay = scheduledFor.getUTCDate()
+
+    // Attempt 1: flatpickr programmatic API (works with no UI interaction)
+    const fpOk = await page.evaluate((ts: number) => {
+      const inp = Array.from(document.querySelectorAll<HTMLInputElement>('input'))
+        .find(i => i.placeholder?.includes('dd/mm') || i.placeholder?.includes('/yyyy'))
+      if (!inp) return false
+      const fp = (inp as HTMLInputElement & { _flatpickr?: { setDate(d: Date, trigger: boolean): void } })._flatpickr
+      if (!fp) return false
+      fp.setDate(new Date(ts), true)
+      return true
+    }, scheduledFor.getTime())
+    console.log(`[post] flatpickr API: ${fpOk}`)
+
+    if (!fpOk) {
+      // Attempt 2: open calendar popup, interact with day grid + time columns
+      const schedInput = page.locator('input[placeholder*="dd/mm"]').nth(0)
+      await schedInput.click()
+      await page.waitForTimeout(1000)
+
+      // Save a debug screenshot to R2 so we can see what the picker looks like on Railway
+      await page.screenshot({ type: 'png' }).then(buf =>
+        uploadToR2(`debug/post-${jobId}-datepicker.png`, buf, 'image/png')
+      ).catch(() => {})
+      console.log(`[post] debug screenshot → debug/post-${jobId}-datepicker.png`)
+
+      // Click the correct day (exclude grayed-out other-month cells)
+      const daySel = [
+        `.flatpickr-day:not(.prevMonthDay):not(.nextMonthDay):not(.disabled)`,
+        `td.rdtDay:not(.rdtOld):not(.rdtNew):not(.rdtDisabled)`,
+        `[class*="day"]:not([class*="prev"]):not([class*="next"]):not([class*="other"]):not([class*="disabled"])`,
+      ].join(', ')
+      await page.locator(daySel).filter({ hasText: new RegExp(`^${targetDay}$`) }).first()
+        .click().catch(e => console.log(`[post] day click failed: ${e.message}`))
+      await page.waitForTimeout(400)
+
+      // Set hour = 22: try clicking scrollable list item, fall back to number input
+      await page.locator(`[class*="hour"]:not(input), [class*="Hour"]:not(input), td.rdtHour`)
+        .filter({ hasText: /^22$/ }).first()
+        .click().catch(async () => {
+          await page.locator(`input.flatpickr-hour, input[aria-label*="hour"], input[aria-label*="Hour"]`).first().fill('22').catch(() => {})
+        })
+      await page.waitForTimeout(300)
+
+      // Set minute = 00: same
+      await page.locator(`[class*="minute"]:not(input), [class*="Minute"]:not(input), td.rdtMin`)
+        .filter({ hasText: /^00$/ }).first()
+        .click().catch(async () => {
+          await page.locator(`input.flatpickr-minute, input[aria-label*="minute"], input[aria-label*="Minute"]`).last().fill('00').catch(() => {})
+        })
+      await page.waitForTimeout(300)
+
+      // Debug screenshot after time selection
+      await page.screenshot({ type: 'png' }).then(buf =>
+        uploadToR2(`debug/post-${jobId}-datepicker-after.png`, buf, 'image/png')
+      ).catch(() => {})
+
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(500)
     }
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(300)
 
     // 3. Walls — open dropdown, check "Posts" (POSTS badge, not FOLLOWERS), click Done
     await page.locator('text=Select walls...').nth(0).click()
