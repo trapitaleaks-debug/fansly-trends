@@ -13,6 +13,7 @@ import { uploadToR2, r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
 import { type BrandConfig } from './compose'
+import { postVideoJob } from './post-video-job'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
@@ -223,6 +224,11 @@ export async function processVideoJob(jobId: string): Promise<void> {
     }).eq('id', jobId)
 
     console.log(`[job] ✓ Done — ${outputKey}`)
+
+    // 8. Auto-post to FanCore (fire-and-forget — does not block the render loop)
+    postVideoJob(jobId).catch(e =>
+      console.error(`[job] FanCore post failed for ${jobId}:`, (e as Error).message)
+    )
   } catch (e) {
     const msg = (e as Error).message
     console.error(`[job] ✗ Failed ${jobId}:`, msg)

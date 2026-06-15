@@ -1,0 +1,197 @@
+/**
+ * FanCore auto-posting for content bank video jobs.
+ * Called after a video_job renders successfully (status → done).
+ * Schedules the post at 22:00 UTC — max 2 per day per model.
+ */
+
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
+import { chromium, type Browser, type Page } from 'playwright'
+import { r2 } from '../lib/r2'
+import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { supabaseAdmin } from '../lib/supabase'
+
+const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
+const FANCORE_URL = 'https://fancore-production.up.railway.app'
+const SESSION_FILE = path.join(__dirname, 'sessions', 'fancore.json')
+const POST_HOUR_UTC = 22
+const DAILY_LIMIT = 2
+
+async function downloadFromR2(key: string, destPath: string): Promise<void> {
+  const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
+  const body = res.Body
+  if (!body) throw new Error(`R2 key not found: ${key}`)
+  const chunks: Uint8Array[] = []
+  for await (const chunk of body as AsyncIterable<Uint8Array>) chunks.push(chunk)
+  fs.writeFileSync(destPath, Buffer.concat(chunks))
+}
+
+async function loginFanCore(page: Page): Promise<void> {
+  const email = process.env.FANCORE_EMAIL
+  const password = process.env.FANCORE_PASSWORD
+  if (!email || !password) throw new Error('FANCORE_EMAIL or FANCORE_PASSWORD not set')
+  await page.goto(`${FANCORE_URL}/signin`, { waitUntil: 'domcontentloaded' })
+  await page.fill('input[name="email"]', email)
+  await page.fill('input[name="password"]', password)
+  await page.locator('button.btn-violet').click()
+  await page.waitForURL(url => !String(url).includes('/signin'), { timeout: 20_000 })
+  console.log('  ✓ FanCore logged in')
+}
+
+async function saveSession(page: Page): Promise<void> {
+  fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true })
+  fs.writeFileSync(SESSION_FILE, JSON.stringify(await page.context().cookies(), null, 2))
+}
+
+async function loadSession(page: Page): Promise<boolean> {
+  if (!fs.existsSync(SESSION_FILE)) return false
+  try {
+    await page.context().addCookies(JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8')))
+    await page.goto(FANCORE_URL, { waitUntil: 'domcontentloaded' })
+    return !page.url().includes('/signin')
+  } catch {
+    return false
+  }
+}
+
+// Returns the next 22:00 UTC datetime where this model has fewer than DAILY_LIMIT posts scheduled
+async function getNextSlot(modelId: string): Promise<Date> {
+  const { data } = await supabaseAdmin
+    .from('video_jobs')
+    .select('scheduled_for')
+    .eq('model_id', modelId)
+    .not('scheduled_for', 'is', null)
+    .gte('scheduled_for', new Date().toISOString())
+
+  // Count how many posts are scheduled per calendar day (UTC)
+  const counts = new Map<string, number>()
+  for (const row of (data ?? [])) {
+    const d = new Date(row.scheduled_for)
+    const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+
+  const now = new Date()
+  // Start from today's 22:00 UTC; if that's already past, start from tomorrow's
+  let candidate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), POST_HOUR_UTC, 0, 0, 0))
+  if (candidate <= now) candidate = new Date(candidate.getTime() + 86_400_000)
+
+  for (let i = 0; i < 30; i++) {
+    const key = `${candidate.getUTCFullYear()}-${candidate.getUTCMonth()}-${candidate.getUTCDate()}`
+    if ((counts.get(key) ?? 0) < DAILY_LIMIT) return candidate
+    candidate = new Date(candidate.getTime() + 86_400_000)
+  }
+
+  return candidate
+}
+
+export async function postVideoJob(jobId: string): Promise<void> {
+  // Load job + model
+  const { data: job, error: jobErr } = await supabaseAdmin
+    .from('video_jobs')
+    .select('id, model_id, personalized_text, output_r2_key, trends_models(fansly_username, hashtags)')
+    .eq('id', jobId)
+    .single()
+
+  if (jobErr || !job) throw new Error(`postVideoJob: job not found — ${jobErr?.message}`)
+  if (!job.output_r2_key) throw new Error(`postVideoJob: no output_r2_key for job ${jobId}`)
+
+  const modelMeta = (job as unknown as { trends_models: { fansly_username: string; hashtags: string[] } | null }).trends_models
+  if (!modelMeta) throw new Error(`postVideoJob: no model data for job ${jobId}`)
+
+  const handle = modelMeta.fansly_username
+  const hashtags: string[] = modelMeta.hashtags ?? []
+  const caption = hashtags.map(t => `#${t}`).join(' ')
+  const scheduledFor = await getNextSlot(job.model_id)
+
+  console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()}`)
+
+  // Mark as posting to prevent duplicate pickup
+  await supabaseAdmin.from('video_jobs').update({ status: 'posting' }).eq('id', jobId)
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
+  const browser: Browser = await chromium.launch({ headless: true })
+  const context = await browser.newContext()
+  const page = await context.newPage()
+
+  try {
+    const sessionRestored = await loadSession(page)
+    if (!sessionRestored) {
+      await loginFanCore(page)
+      await saveSession(page)
+    }
+
+    // Select the model in FanCore's sidebar by Fansly username
+    await page.goto(FANCORE_URL, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(2000)
+    for (const sel of [`text=@${handle}`, `text=${handle}`]) {
+      const el = page.locator(sel).first()
+      if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await el.click({ force: true })
+        break
+      }
+    }
+    await page.waitForTimeout(1500)
+
+    // Navigate to Bulk Posts / Reels
+    await page.goto(`${FANCORE_URL}/reels`, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(2000)
+
+    // Open new post dialog
+    const newPostBtn = page.locator('button').filter({ hasText: /New|Upload|Create|Add/i }).first()
+    if (await newPostBtn.isVisible({ timeout: 3000 })) {
+      await newPostBtn.click()
+      await page.waitForTimeout(2000)
+    }
+
+    // Download video from R2 and upload to FanCore
+    const videoPath = path.join(tmpDir, 'output.mp4')
+    await downloadFromR2(job.output_r2_key, videoPath)
+    const fileInput = page.locator('input[type="file"]').first()
+    await fileInput.setInputFiles(videoPath)
+    await page.waitForTimeout(3000)
+
+    // Fill caption with hashtags
+    const captionField = page.locator('textarea').first()
+    await captionField.fill(caption)
+
+    // Set scheduled datetime (22:00 UTC)
+    const formatted = scheduledFor.toISOString().slice(0, 16) // YYYY-MM-DDTHH:mm
+    try {
+      const dateInput = page.locator('input[type="datetime-local"]').first()
+      if (await dateInput.isVisible({ timeout: 2000 })) {
+        await dateInput.fill(formatted)
+      }
+    } catch { /* scheduling UI may differ — saves as draft without time */ }
+
+    // Save as draft/scheduled
+    const saveBtn = page.locator('button').filter({ hasText: /Save|Draft|Schedule/i }).first()
+    if (await saveBtn.isVisible({ timeout: 3000 })) {
+      await saveBtn.click()
+      await page.waitForTimeout(2000)
+    }
+
+    // Mark posted in DB
+    await supabaseAdmin.from('video_jobs').update({
+      status: 'posted',
+      scheduled_for: scheduledFor.toISOString(),
+      posted_at: new Date().toISOString(),
+    }).eq('id', jobId)
+
+    console.log(`[post] ✓ Job ${jobId} posted — scheduled ${scheduledFor.toUTCString()}`)
+
+  } catch (e) {
+    const msg = (e as Error).message
+    console.error(`[post] ✗ Failed ${jobId}:`, msg)
+    // Revert to done so it can be retried
+    await supabaseAdmin.from('video_jobs').update({
+      status: 'done',
+      error_message: `post failed: ${msg.slice(0, 400)}`,
+    }).eq('id', jobId)
+    throw e
+  } finally {
+    await browser.close()
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
