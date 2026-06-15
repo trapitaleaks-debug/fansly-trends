@@ -197,9 +197,9 @@ export async function processVideoJob(jobId: string): Promise<void> {
 
     const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
     const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-    // -ss before -i = fast input seek; -t limits duration (omit when file is pre-trimmed)
+    // -ss before -i = fast input seek; -t always applied — duration already capped by requestedDuration
     const seekFlag = trimStart > 0 ? `-ss ${trimStart.toFixed(3)}` : ''
-    const durFlag = (trimEnd != null || trimStart > 0) ? `-t ${duration.toFixed(3)}` : ''
+    const durFlag = `-t ${duration.toFixed(3)}`
     const rawInput = `${seekFlag} -i "${rawPath}" ${durFlag}`
     const videoIn = hasAudio ? `${ffmpegBin()} ${rawInput} -i "${audioPath}"` : `${ffmpegBin()} ${rawInput}`
     const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
