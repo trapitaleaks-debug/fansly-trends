@@ -3,54 +3,6 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 
 // Tags are managed via /api/settings/content-tags — not hardcoded here
 
-async function trimVideoClientSide(
-  file: File,
-  trimStart: number,
-  trimEnd: number,
-  onProgress: (msg: string) => void
-): Promise<{ blob: Blob; filename: string }> {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement('video')
-    const objectUrl = URL.createObjectURL(file)
-    video.src = objectUrl
-    video.preload = 'auto'
-    video.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Video failed to load')) }
-    video.onloadedmetadata = () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const captureStream = (video as any).captureStream?.bind(video) || (video as any).mozCaptureStream?.bind(video)
-      if (!captureStream) { URL.revokeObjectURL(objectUrl); reject(new Error('captureStream not supported')); return }
-      const stream: MediaStream = captureStream()
-      const mimeType = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
-        .find(t => { try { return MediaRecorder.isTypeSupported(t) } catch { return false } }) ?? 'video/webm'
-      const recorder = new MediaRecorder(stream, { mimeType })
-      const chunks: Blob[] = []
-      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
-      recorder.onstop = () => {
-        URL.revokeObjectURL(objectUrl)
-        const type = mimeType.split(';')[0]
-        const blob = new Blob(chunks, { type })
-        const ext = type === 'video/mp4' ? 'mp4' : 'webm'
-        resolve({ blob, filename: file.name.replace(/\.[^.]+$/, `.${ext}`) })
-      }
-      video.currentTime = trimStart
-      video.onseeked = () => {
-        video.onseeked = null
-        const duration = trimEnd - trimStart
-        let remaining = Math.ceil(duration)
-        onProgress(`Recording... ${remaining}s`)
-        const tick = setInterval(() => { remaining = Math.max(0, remaining - 1); onProgress(`Recording... ${remaining}s`) }, 1000)
-        recorder.start(250)
-        video.play()
-        const check = () => {
-          if (video.currentTime >= trimEnd) { clearInterval(tick); video.pause(); recorder.stop() }
-          else requestAnimationFrame(check)
-        }
-        requestAnimationFrame(check)
-      }
-    }
-    video.load()
-  })
-}
 
 export interface ContentBankItem {
   id: string
@@ -249,28 +201,21 @@ export default function ContentBank({ username }: { username: string }) {
     if (!file || !pipelineModelId) return
     setUploading(true)
     setUploadError(null)
-    setTrimProgress(null)
-    let uploadFile: Blob = file
-    let uploadFilename = file.name
-    try {
-      const trimmed = await trimVideoClientSide(file, trimStart, trimEnd, msg => setTrimProgress(msg))
-      uploadFile = trimmed.blob
-      uploadFilename = trimmed.filename
-    } catch (e) {
-      setUploadError((e as Error).message || 'Trim failed')
-      setUploading(false)
-      return
-    }
-    setTrimProgress(null)
+    setTrimProgress('Uploading...')
+
+    // Upload the original file directly — no client-side re-encoding.
+    // trim_start/trim_end are stored in the DB and applied by ffmpeg at render time.
     const res = await fetch('/api/pipeline/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_id: pipelineModelId, type: 'own_footage', filename: uploadFilename, label: null, trim_start: trimStart, trim_end: trimEnd }),
+      body: JSON.stringify({ model_id: pipelineModelId, type: 'own_footage', filename: file.name, label: null, trim_start: trimStart, trim_end: trimEnd }),
     })
-    if (!res.ok) { setUploadError('Failed to get upload URL'); setUploading(false); return }
-    const { uploadUrl, contentType: ct } = await res.json()
-    const put = await fetch(uploadUrl, { method: 'PUT', body: uploadFile, headers: { 'Content-Type': ct || 'video/webm' } })
+    if (!res.ok) { setUploadError('Failed to get upload URL'); setUploading(false); setTrimProgress(null); return }
+    const { uploadUrl } = await res.json()
+    const contentType = file.type || 'video/mp4'
+    const put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': contentType } })
     setUploading(false)
+    setTrimProgress(null)
     if (!put.ok) { setUploadError('Upload to storage failed'); return }
     setFile(null); setShowTrim(false)
     fetchItems()

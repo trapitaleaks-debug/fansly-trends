@@ -136,12 +136,22 @@ export async function processVideoJob(jobId: string): Promise<void> {
     console.log(`  Downloading footage: ${clipKey}`)
     await downloadFromR2(clipKey, rawPath)
 
-    // 2. Get duration
-    const durationRaw = execSync(
+    // Look up trim points from content bank (trim is applied by ffmpeg, not during upload)
+    const { data: bankItem } = await supabaseAdmin
+      .from('pipeline_content_bank')
+      .select('trim_start, trim_end')
+      .eq('r2_key', clipKey)
+      .maybeSingle()
+    const trimStart = bankItem?.trim_start ?? 0
+    const trimEnd = bankItem?.trim_end ?? null
+
+    // 2. Get duration of trimmed segment
+    const fullDurationRaw = execSync(
       `ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${rawPath}"`,
       { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } }
     ).toString().trim()
-    const duration = parseFloat(durationRaw) || 10
+    const fullDuration = parseFloat(fullDurationRaw) || 10
+    const duration = trimEnd != null ? trimEnd - trimStart : fullDuration - trimStart
 
     // 3. Try to extract audio from trending post's source video
     let hasAudio = false
@@ -172,7 +182,11 @@ export async function processVideoJob(jobId: string): Promise<void> {
 
     const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
     const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-    const videoIn = hasAudio ? `${ffmpegBin()} -i "${rawPath}" -i "${audioPath}"` : `${ffmpegBin()} -i "${rawPath}"`
+    // -ss before -i = fast input seek; -t limits output duration to the trimmed segment
+    const seekFlag = trimStart > 0 ? `-ss ${trimStart.toFixed(3)}` : ''
+    const durFlag = `-t ${duration.toFixed(3)}`
+    const rawInput = `${seekFlag} -i "${rawPath}" ${durFlag}`
+    const videoIn = hasAudio ? `${ffmpegBin()} ${rawInput} -i "${audioPath}"` : `${ffmpegBin()} ${rawInput}`
     const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`
     run(`${videoIn} ${vf} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
 
