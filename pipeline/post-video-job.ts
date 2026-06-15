@@ -274,31 +274,34 @@ export async function postVideoJob(jobId: string): Promise<void> {
     const videoPath = path.join(tmpDir, 'output.mp4')
     await downloadFromR2(job.output_r2_key, videoPath)
 
-    // All fields below target the first form slot with .nth(0)
+    // ─── All fields scoped to slot 1's <form> ──────────────────────────────────
+    // Root cause of prior failures: page.locator(...).nth(0) can target a DIFFERENT
+    // form's input than the one that owns the submit button. FormData(form) only reads
+    // inputs inside the form's DOM subtree — if the date input is in a different form,
+    // fd.get('scheduled_at') returns null and FanCore shows "Pick a date/time first."
+    const slotForm = page.locator('form').filter({ has: page.locator('button.bulk-submit-btn') }).first()
+    const schedInput = slotForm.locator('input[name="scheduled_at"]')
+    const tagsInput  = slotForm.locator('input[name="tags"]')
+    const fileInput  = slotForm.locator('input.bulk-file-input')
+    const submitBtn  = slotForm.locator('button.bulk-submit-btn')
 
-    // 1. Tags — space-separated with # prefix
-    const tagsInput = page.locator('input[placeholder*="petite"], input[placeholder*="kawaii"], input[placeholder*="fyp"]').nth(0)
+    // 1. Tags
     await tagsInput.fill(selectedHashtags.map(t => `#${t}`).join(' '))
 
-    // 2. Schedule for — the "Schedule for" field is input.schedule-input[type="datetime-local"].
-    //    Fill it directly with the UTC datetime in YYYY-MM-DDTHH:MM format.
-    //    (Browser context is already set to UTC so no timezone offset needed.)
+    // 2. Schedule date — fill + dispatch change so FanCore's closure sees it
     const yyyy = scheduledFor.getUTCFullYear()
-    const mm = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
-    const dd = String(scheduledFor.getUTCDate()).padStart(2, '0')
-    const hh = String(scheduledFor.getUTCHours()).padStart(2, '0')
-    const min = String(scheduledFor.getUTCMinutes()).padStart(2, '0')
+    const mm   = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
+    const dd   = String(scheduledFor.getUTCDate()).padStart(2, '0')
+    const hh   = String(scheduledFor.getUTCHours()).padStart(2, '0')
+    const min  = String(scheduledFor.getUTCMinutes()).padStart(2, '0')
     const dtValue = `${yyyy}-${mm}-${dd}T${hh}:${min}`
-    const schedInput = page.locator('input.schedule-input[type="datetime-local"]').nth(0)
     await schedInput.fill(dtValue)
-    // Tab away to commit the value into Vue's reactive state
-    await schedInput.press('Tab')
-    await page.waitForTimeout(300)
-    console.log(`[post] schedule-input filled: ${dtValue}`)
+    await schedInput.evaluate((el: Element) => el.dispatchEvent(new Event('change', { bubbles: true })))
+    await page.waitForTimeout(200)
+    console.log(`[post] schedule-input filled: ${dtValue} actual="${await schedInput.inputValue().catch(() => '')}"`)
 
     // 3. Walls — open dropdown, select Posts, click Done
-    //    If already pre-selected (no "Select walls..." text), skip opening the dropdown
-    const wallsDropdown = page.locator('text=Select walls...').nth(0)
+    const wallsDropdown = slotForm.locator('text=Select walls...').first()
     const wallsNeedsOpen = await wallsDropdown.isVisible({ timeout: 3000 }).catch(() => false)
     if (wallsNeedsOpen) {
       await wallsDropdown.click()
@@ -307,49 +310,40 @@ export async function postVideoJob(jobId: string): Promise<void> {
       await page.waitForTimeout(300)
       await page.locator('button:has-text("Done"):not(#mdmCalDone)').first().click()
       await page.waitForTimeout(500)
-      console.log('[post] walls: opened dropdown and selected Posts')
+      console.log('[post] walls: selected Posts')
     } else {
-      console.log('[post] walls: already pre-selected, skipping dropdown')
+      console.log('[post] walls: pre-selected')
     }
 
-    // Re-fill schedule date after walls close — some Vue re-renders reset the field
+    // Re-fill date after walls (dropdown re-render may reset the field)
     await schedInput.fill(dtValue)
-    await schedInput.press('Tab')
-    await page.waitForTimeout(300)
+    await schedInput.evaluate((el: Element) => el.dispatchEvent(new Event('change', { bubbles: true })))
+    await page.waitForTimeout(200)
     const dateAfterWalls = await schedInput.inputValue().catch(() => '')
     console.log(`[post] schedule-input after walls: "${dateAfterWalls}" (expected "${dtValue}")`)
 
-    // 4. Media — try 4 approaches in order, log which succeeded.
-    //    Key insight: 'input.bulk-file-input' are the per-slot upload inputs (3 found, one per slot).
-    //    'bulkFileInput' (ID) is a global input that doesn't map to any slot → no-op at submit.
-    //    Drag-and-drop events dispatch correctly but slot state is never set → submit is also no-op.
-    let uploadMethod = 'none'
+    // 4. Media — setInputFiles on the form-scoped file input
     const videoName = path.basename(videoPath)
     const videoSizeMB = Math.round(fs.statSync(videoPath).size / 1024 / 1024)
     console.log(`[post] media: uploading ${videoName} (${videoSizeMB}MB)`)
 
-    // Approach A: setInputFiles on the per-slot input (first bulk-file-input class element = slot 1)
-    const slotInput = page.locator('input.bulk-file-input').first()
-    const slotInputCount = await slotInput.count()
-    console.log(`[post] media: bulk-file-input count: ${await page.locator('input.bulk-file-input').count()}`)
-    if (slotInputCount > 0) {
-      try {
-        await slotInput.setInputFiles(videoPath)
-        uploadMethod = 'slot-input-setInputFiles'
-        console.log('[post] media: setInputFiles on slot input (bulk-file-input[0]) called')
-      } catch (e) {
-        console.log(`[post] media: slot-input setInputFiles failed: ${(e as Error).message}`)
-      }
+    let uploadMethod = 'none'
+    try {
+      await fileInput.setInputFiles(videoPath)
+      uploadMethod = 'slot-input-setInputFiles'
+      console.log('[post] media: setInputFiles called')
+    } catch (e) {
+      console.log(`[post] media: setInputFiles failed: ${(e as Error).message}`)
     }
 
-    // Approach B: filechooser dialog (click drop zone → OS dialog → setFiles)
+    // Fallback: filechooser
     if (uploadMethod === 'none') {
       try {
-        const [fileChooser] = await Promise.all([
+        const [fc] = await Promise.all([
           page.waitForEvent('filechooser', { timeout: 10000 }),
-          page.locator('text=/[Dd]rop media|[Cc]lick to upload/').first().click(),
+          slotForm.locator('text=/[Dd]rop media|[Cc]lick to upload/').first().click(),
         ])
-        await fileChooser.setFiles(videoPath)
+        await fc.setFiles(videoPath)
         uploadMethod = 'filechooser'
         console.log('[post] media: filechooser setFiles called')
       } catch (fcErr) {
@@ -357,178 +351,153 @@ export async function postVideoJob(jobId: string): Promise<void> {
       }
     }
 
-    // Approach C: drag-and-drop via DataTransfer
-    if (uploadMethod === 'none') {
-      const fakeUrl = 'https://media-upload-local.internal/upload.mp4'
-      await page.route(fakeUrl, async route => {
-        const buffer = fs.readFileSync(videoPath)
-        await route.fulfill({
-          status: 200,
-          contentType: 'video/mp4',
-          headers: { 'Content-Length': String(buffer.length), 'Access-Control-Allow-Origin': '*' },
-          body: buffer,
-        })
-      })
-      try {
-        const dataTransfer = await page.evaluateHandle(async ([url, name]: [string, string]) => {
-          const res = await fetch(url)
-          const buf = await res.arrayBuffer()
-          const file = new File([buf], name, { type: 'video/mp4' })
-          const dt = new DataTransfer()
-          dt.items.add(file)
-          return dt
-        }, [fakeUrl, videoName] as [string, string])
-        await page.unroute(fakeUrl)
-        const dropZone = page.locator('text=/[Dd]rop media/').first()
-        await dropZone.waitFor({ state: 'visible', timeout: 10000 })
-        await dropZone.dispatchEvent('dragenter', { dataTransfer })
-        await page.waitForTimeout(100)
-        await dropZone.dispatchEvent('dragover', { dataTransfer })
-        await page.waitForTimeout(100)
-        await dropZone.dispatchEvent('drop', { dataTransfer })
-        uploadMethod = 'drag-and-drop'
-        console.log('[post] media: drag-and-drop dispatched')
-      } catch (dndErr) {
-        await page.unroute(fakeUrl).catch(() => {})
-        console.log(`[post] media: drag-and-drop failed: ${(dndErr as Error).message}`)
-      }
-    }
+    // Wait for FanCore to process the file (change handler → addFiles → refreshDropText)
+    await page.waitForTimeout(5000)
 
-    // Wait 20s for FanCore to process the file (thumbnail generation, state update)
-    await page.waitForTimeout(20000)
-
-    // Diagnostic: check file inputs and find ALL elements with "1 media" or "Selected Media" text
-    const fileInputState = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('input[type="file"]')).map((i) => ({
-        id: (i as HTMLInputElement).id,
-        cls: (i as HTMLInputElement).className.slice(0, 60),
-        filesCount: (i as HTMLInputElement).files?.length ?? 0,
-        fileName: (i as HTMLInputElement).files?.[0]?.name ?? 'none',
-      }))
-    ).catch(() => [])
+    // Verify "Selected Media (1)" is visible in the DOM
     const mediaTextElements = await page.evaluate(() => {
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-      const results: Array<{text: string; tag: string; cls: string; visible: boolean}> = []
+      const results: Array<{text: string; visible: boolean}> = []
       let node: Node | null
       while ((node = walker.nextNode())) {
         const text = (node.textContent ?? '').trim()
-        if (text.includes('1 media') || text.includes('Selected Media') || text.includes('Medias')) {
+        if (text.includes('1 media') || text.includes('Selected Media')) {
           const el = (node as Text).parentElement
-          if (el) results.push({ text: text.slice(0, 50), tag: el.tagName, cls: el.className.slice(0, 60), visible: el.offsetParent !== null })
+          if (el) results.push({ text: text.slice(0, 60), visible: el.offsetParent !== null })
         }
       }
       return results
     }).catch(() => [])
-    console.log(`[post] media: uploadMethod=${uploadMethod}`)
-    console.log(`[post] media: file inputs with files: ${JSON.stringify(fileInputState.filter((i: {filesCount: number}) => i.filesCount > 0))}`)
-    console.log(`[post] media: all elements with media text: ${JSON.stringify(mediaTextElements)}`)
-    console.log(`[post] media: WS logs: ${JSON.stringify(wsLogs)}`)
-    console.log(`[post] media: page console: ${JSON.stringify(pageConsoleLogs.slice(-10))}`)
+    console.log(`[post] media: uploadMethod=${uploadMethod} mediaText=${JSON.stringify(mediaTextElements)}`)
+    console.log(`[post] media: WS=${JSON.stringify(wsLogs)} console=${JSON.stringify(pageConsoleLogs.slice(-5))}`)
 
-    // Screenshot after upload to verify media was attached
-    await page.screenshot({ type: 'png', fullPage: false }).then(buf =>
+    // Screenshots for debugging
+    await page.screenshot({ type: 'png' }).then(buf =>
       uploadToR2(`debug/post-${jobId}-after-upload.png`, buf, 'image/png')
     ).catch(() => {})
-
-    // Full-page screenshot before submit
     await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
       uploadToR2(`debug/post-${jobId}-before-submit.png`, buf, 'image/png')
     ).catch(() => {})
 
-    // 5. Find and click the per-slot "Schedule Post" submit button.
-    //    Dump all matching buttons first so we can diagnose selector issues.
-    const schedBtns = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll('button')).filter(b => {
-        const t = b.textContent?.toLowerCase() ?? ''
-        return t.includes('schedule') || t.includes('post')
-      }).map(b => ({ text: b.textContent?.trim().slice(0, 50), cls: b.className, id: b.id, visible: b.offsetParent !== null }))
-    }).catch(() => [])
-    console.log(`[post] schedule buttons: ${JSON.stringify(schedBtns)}`)
-
-    // Use the PER-SLOT "Schedule Post" button (class contains "bulk-submit-btn"), NOT the global
-    // bulkSubmitBtn (which submits all slots and requires all slots to be filled).
-    // The per-slot button is the first button with class "bulk-submit-btn" in the DOM.
-    const submitBtn = await (async () => {
-      // Primary: per-slot button identified by class — skip the global bulkSubmitBtn
-      const perSlot = page.locator('button[class*="bulk-submit-btn"]')
-      if (await perSlot.count() > 0) {
-        console.log(`[post] submit: using per-slot bulk-submit-btn (${await perSlot.count()} found)`)
-        return perSlot.first()
-      }
-      // Fallback 1: second "Schedule Post" (nth(1) skips global bulkSubmitBtn, gets slot 1 button)
-      const exact = page.locator('button').filter({ hasText: /^Schedule Post$/ })
-      const cnt = await exact.count()
-      if (cnt > 1) {
-        console.log(`[post] submit: using nth(1) of ${cnt} Schedule Post buttons`)
-        return exact.nth(1)
-      }
-      // Fallback 2: any "Schedule Post" button
-      if (cnt > 0) return exact.nth(0)
-      return page.locator('button', { hasText: /Schedule Post/i }).nth(0)
-    })()
-    const wsLogsBeforeSubmit = wsLogs.length
-
-    // Pre-submit: verify button enabled state and date field value
-    const submitDisabled = await submitBtn.evaluate((btn: Element) => (btn as HTMLButtonElement).disabled)
-    const submitAriaDisabled = await submitBtn.getAttribute('aria-disabled').catch(() => null)
-    const datePreSubmit = await schedInput.inputValue().catch(() => '')
-    console.log(`[post] pre-submit: btn disabled=${submitDisabled} aria-disabled=${submitAriaDisabled} date="${datePreSubmit}"`)
-
-    // Verify the form that OWNS this submit button actually contains the scheduled_at input with our value.
-    // FormData(form) reads ONLY inputs inside the form element — if the input is outside, fd.get('scheduled_at') = null.
-    const formCheck = await submitBtn.evaluate((btn: Element) => {
-      const b = btn as HTMLButtonElement
-      const form = b.form || b.closest('form') as HTMLFormElement | null
+    // ─── Pre-submit: verify FormData sees all required fields ──────────────────
+    const preCheck = await submitBtn.evaluate((btn: Element, dtVal: string) => {
+      const form = (btn as HTMLButtonElement).closest('form') as HTMLFormElement | null
       if (!form) return { error: 'no form found' }
-      const sched = form.querySelector('input[name="scheduled_at"]') as HTMLInputElement | null
-      const fdSched = new FormData(form).get('scheduled_at')
+      const fd = new FormData(form)
+      const schedInp = form.querySelector('input[name="scheduled_at"]') as HTMLInputElement | null
       return {
-        formCls: form.className.slice(0, 60),
-        hasSchedInput: !!sched,
-        schedValue: sched?.value ?? '',
-        fdValue: String(fdSched ?? ''),
+        scheduledAt: String(fd.get('scheduled_at') ?? ''),
+        tags: String(fd.get('tags') ?? ''),
+        schedValue: schedInp?.value ?? '',
+        btnDisabled: (btn as HTMLButtonElement).disabled,
         statusText: (form.querySelector('.bulk-form-status') as HTMLElement)?.textContent?.trim() ?? '',
       }
-    }).catch((e: Error) => ({ evalError: e.message }))
-    console.log(`[post] pre-submit form check: ${JSON.stringify(formCheck)}`)
+    }, dtValue).catch((e: Error) => ({ evalError: e.message }))
+    console.log(`[post] pre-submit FormData: ${JSON.stringify(preCheck)}`)
 
-    // Monitor ALL HTTP requests during submit — captures file upload URL if FanCore does it at submit time
+    // If scheduled_at still empty, inject via native value setter (bypasses framework guards)
+    const preCheckAny = preCheck as Record<string, unknown>
+    if (!preCheckAny.evalError && !preCheckAny.schedValue) {
+      console.log('[post] schedValue empty — injecting via nativeInputValueSetter')
+      await submitBtn.evaluate((btn: Element, dtVal: string) => {
+        const form = (btn as HTMLButtonElement).closest('form')!
+        const inp = form.querySelector('input[name="scheduled_at"]') as HTMLInputElement
+        if (inp) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
+          setter.call(inp, dtVal)
+          inp.dispatchEvent(new Event('input', { bubbles: true }))
+          inp.dispatchEvent(new Event('change', { bubbles: true }))
+        }
+      }, dtValue)
+      await page.waitForTimeout(300)
+    }
+
+    // ─── Self-verifying submit loop ────────────────────────────────────────────
+    // Reads .bulk-form-status after each click to detect validation errors and fix them.
+    // Confirms success only when a real POST to /api/bulk-posts/pending is observed.
     const submitRequests: string[] = []
-    const submitListener = (req: any) => {
+    const submitListener = (req: import('playwright').Request) => {
       submitRequests.push(`${req.method()} ${req.url().slice(0, 140)}`)
     }
     page.on('request', submitListener)
 
-    await submitBtn.click()
-    console.log('[post] submit clicked — waiting for FanCore upload (90s)')
+    let postObserved = false
+    let submitAttempts = 0
 
-    // Read status banner immediately (FanCore sets this on validation errors)
-    await page.waitForTimeout(1000)
-    const statusAfterClick = await page.locator('.bulk-form-status').first().textContent().catch(() => '')
-    const allStatuses = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('.bulk-form-status')).map(el => ({
-        text: (el as HTMLElement).textContent?.trim() ?? '',
-        visible: (el as HTMLElement).offsetParent !== null,
-        display: (el as HTMLElement).style.display,
-      }))
-    ).catch(() => [])
-    console.log(`[post] form status after click: "${statusAfterClick}" all=${JSON.stringify(allStatuses)}`)
+    while (!postObserved && submitAttempts < 5) {
+      submitAttempts++
+      const reqsBefore = submitRequests.length
 
-    await page.waitForTimeout(89000)
+      // Escalating click strategies
+      if (submitAttempts === 1) {
+        await submitBtn.click()
+      } else if (submitAttempts === 2) {
+        // requestSubmit() dispatches the submit event directly from the form element
+        await submitBtn.evaluate((btn: Element) => {
+          const form = (btn as HTMLButtonElement).closest('form')
+          if (form) (form as HTMLFormElement).requestSubmit()
+        })
+      } else {
+        const box = await submitBtn.boundingBox()
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+        else await submitBtn.click()
+      }
+
+      await page.waitForTimeout(2000)
+
+      // Read validation banner and new POST requests
+      const statusText = await slotForm.locator('.bulk-form-status').textContent().catch(() => '')
+      const newRequests = submitRequests.slice(reqsBefore)
+      const postFired = newRequests.some(r => r.startsWith('POST'))
+      console.log(`[post] attempt ${submitAttempts}: status="${statusText}" newPOSTs=${JSON.stringify(newRequests.filter(r => r.startsWith('POST')))}`)
+
+      if (postFired) {
+        postObserved = true
+        console.log(`[post] ✓ POST confirmed on attempt ${submitAttempts}`)
+        break
+      }
+
+      // Diagnose and fix
+      if (statusText && /date|time|pick a date/i.test(statusText)) {
+        console.log('[post] → date validation error — re-injecting scheduled_at via JS')
+        await submitBtn.evaluate((btn: Element, dtVal: string) => {
+          const form = (btn as HTMLButtonElement).closest('form')!
+          const inp = form.querySelector('input[name="scheduled_at"]') as HTMLInputElement
+          if (inp) {
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
+            setter.call(inp, dtVal)
+            inp.dispatchEvent(new Event('input', { bubbles: true }))
+            inp.dispatchEvent(new Event('change', { bubbles: true }))
+          }
+        }, dtValue)
+        await page.waitForTimeout(300)
+      } else if (statusText && /caption|media|add a caption/i.test(statusText)) {
+        console.log('[post] → media validation error — re-uploading file')
+        await fileInput.setInputFiles(videoPath)
+        await page.waitForTimeout(3000)
+      }
+
+      await page.waitForTimeout(500)
+    }
 
     page.off('request', submitListener)
+    console.log(`[post] submit: all POST/PUT=${JSON.stringify(submitRequests.filter(r => r.startsWith('POST') || r.startsWith('PUT')))}`)
+    console.log(`[post] submit: WS=${JSON.stringify(wsLogs.slice(-15))} console=${JSON.stringify(pageConsoleLogs.slice(-10))}`)
 
-    const wsLogsAfterSubmit = wsLogs.slice(wsLogsBeforeSubmit)
-    const postPutRequests = submitRequests.filter(r => r.startsWith('POST') || r.startsWith('PUT'))
-    console.log(`[post] submit: POST/PUT HTTP: ${JSON.stringify(postPutRequests)}`)
-    console.log(`[post] submit: new WS logs: ${JSON.stringify(wsLogsAfterSubmit.slice(-30))}`)
-    console.log(`[post] submit: page console: ${JSON.stringify(pageConsoleLogs.slice(-15))}`)
+    if (!postObserved) {
+      await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
+        uploadToR2(`debug/post-${jobId}-submit-failed.png`, buf, 'image/png')
+      ).catch(() => {})
+      throw new Error(`FanCore: no POST to /api/bulk-posts/pending after ${submitAttempts} attempts — see debug/post-${jobId}-submit-failed.png`)
+    }
 
-    // 6. Check "Already Scheduled" tab — count total posts before/after to verify our post was added
+    // POST confirmed — wait for FanCore to finish uploading the video file
+    console.log('[post] POST confirmed — waiting up to 90s for upload to complete')
+    await page.waitForTimeout(90000)
+
+    // 6. Verify in Already Scheduled tab
     await page.locator('text=Already Scheduled').first().click()
     await page.waitForTimeout(2000)
-
-    // Screenshot after navigating to Already Scheduled
     await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
       uploadToR2(`debug/post-${jobId}-already-scheduled.png`, buf, 'image/png')
     ).catch(() => {})
@@ -542,21 +511,19 @@ export async function postVideoJob(jobId: string): Promise<void> {
     console.log(`[post] Already Scheduled: All=${allCount} Scheduled=${scheduledCount} Failed=${failedCount}`)
 
     if (failedCount > 0) {
-      await sendTelegram(`⚠️ FanCore posting error: ${failedCount} failed post(s) for @${handle}. Check Already Scheduled tab manually.`)
+      await sendTelegram(`⚠️ FanCore posting error: ${failedCount} failed post(s) for @${handle}. Check Already Scheduled tab.`)
       throw new Error(`FanCore: ${failedCount} failed posts for @${handle}`)
     }
-    // Require at least 1 Scheduled post — Sent posts are already published and don't count
     if (scheduledCount === 0) {
-      throw new Error(`FanCore: no Scheduled post found after submit (All=${allCount} Scheduled=0) — post was not created. Check after-upload + already-scheduled debug screenshots.`)
+      throw new Error(`FanCore: no Scheduled post after submit (All=${allCount} Scheduled=0) — check already-scheduled debug screenshot`)
     }
 
-    // Mark posted in DB
+    // Mark posted
     await supabaseAdmin.from('video_jobs').update({
       status: 'posted',
       scheduled_for: scheduledFor.toISOString(),
       posted_at: new Date().toISOString(),
     }).eq('id', jobId)
-
     console.log(`[post] ✓ Job ${jobId} posted — scheduled ${scheduledFor.toUTCString()}`)
 
   } catch (e) {
