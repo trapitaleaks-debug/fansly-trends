@@ -16,7 +16,7 @@ import { sendTelegram } from '../lib/telegram'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
-const SESSION_FILE = path.join(__dirname, 'sessions', 'fancore.json')
+const SESSION_R2_KEY = 'sessions/fancore.json'
 const POST_HOUR_UTC = 22
 const DAILY_LIMIT = 2
 
@@ -106,15 +106,19 @@ async function loginFanCore(page: Page): Promise<void> {
   console.log('  ✓ FanCore logged in')
 }
 
+// Store session in R2 so it survives Railway container restarts between deploys
 async function saveSession(page: Page): Promise<void> {
-  fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true })
-  fs.writeFileSync(SESSION_FILE, JSON.stringify(await page.context().cookies(), null, 2))
+  const cookies = JSON.stringify(await page.context().cookies())
+  await uploadToR2(SESSION_R2_KEY, Buffer.from(cookies), 'application/json').catch(() => {})
 }
 
 async function loadSession(page: Page): Promise<boolean> {
-  if (!fs.existsSync(SESSION_FILE)) return false
   try {
-    await page.context().addCookies(JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8')))
+    const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: SESSION_R2_KEY }))
+    const chunks: Uint8Array[] = []
+    for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk)
+    const cookies = JSON.parse(Buffer.concat(chunks).toString())
+    await page.context().addCookies(cookies)
     await page.goto(FANCORE_URL, { waitUntil: 'domcontentloaded' })
     return !page.url().includes('/signin')
   } catch {
@@ -192,11 +196,20 @@ export async function postVideoJob(jobId: string): Promise<void> {
       await saveSession(page)
     }
 
-    // Navigate to Bulk Posting — use networkidle so sidebar models are fully loaded
+    // Navigate to Bulk Posting — networkidle ensures sidebar models API call completes
     await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'networkidle', timeout: 30_000 })
     // Click the model entry in the left sidebar — wait up to 30s for it to render
     const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
-    await modelEntry.waitFor({ state: 'visible', timeout: 30_000 })
+    try {
+      await modelEntry.waitFor({ state: 'visible', timeout: 30_000 })
+    } catch {
+      // Debug: save screenshot of what the page looks like when sidebar fails to load
+      await page.screenshot({ type: 'png' }).then(buf =>
+        uploadToR2(`debug/post-${jobId}-sidebar.png`, buf, 'image/png')
+      ).catch(() => {})
+      console.log(`[post] sidebar debug screenshot → debug/post-${jobId}-sidebar.png`)
+      throw new Error(`Sidebar: @${handle} not visible after 30s — check debug/post-${jobId}-sidebar.png in R2`)
+    }
     await modelEntry.click()
     await page.waitForTimeout(2000)
 
