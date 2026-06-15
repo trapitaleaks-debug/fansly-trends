@@ -474,39 +474,23 @@ export async function postVideoJob(jobId: string): Promise<void> {
     const datePreSubmit = await schedInput.inputValue().catch(() => '')
     console.log(`[post] pre-submit: btn disabled=${submitDisabled} aria-disabled=${submitAriaDisabled} date="${datePreSubmit}"`)
 
-    // Inspect Vue component state on the slot — find what FanCore's reactive state actually holds
-    const vueState = await page.evaluate(() => {
-      // Walk up from the per-slot submit button to find the Vue component root
-      const btn = document.querySelector('button.bulk-submit-btn') as HTMLElement | null
-      if (!btn) return { error: 'no button' }
-      let el: HTMLElement | null = btn
-      for (let depth = 0; depth < 15; depth++) {
-        if (!el) break
-        const vm = (el as any).__vue__ || (el as any).__vueParentComponent || (el as any)._vei
-        if ((el as any).__vue__) {
-          const v = (el as any).__vue__
-          return { found: 'vue2', depth, data: JSON.stringify(v.$data || {}).slice(0, 500), computed: Object.keys(v.$options?.computed || {}).slice(0, 10) }
-        }
-        if ((el as any).__vueParentComponent) {
-          const v = (el as any).__vueParentComponent
-          return { found: 'vue3', depth, setupState: JSON.stringify(v.setupState || {}).slice(0, 500), propsKeys: Object.keys(v.props || {}).slice(0, 10) }
-        }
-        el = el.parentElement
+    // Verify the form that OWNS this submit button actually contains the scheduled_at input with our value.
+    // FormData(form) reads ONLY inputs inside the form element — if the input is outside, fd.get('scheduled_at') = null.
+    const formCheck = await submitBtn.evaluate((btn: Element) => {
+      const b = btn as HTMLButtonElement
+      const form = b.form || b.closest('form') as HTMLFormElement | null
+      if (!form) return { error: 'no form found' }
+      const sched = form.querySelector('input[name="scheduled_at"]') as HTMLInputElement | null
+      const fdSched = new FormData(form).get('scheduled_at')
+      return {
+        formCls: form.className.slice(0, 60),
+        hasSchedInput: !!sched,
+        schedValue: sched?.value ?? '',
+        fdValue: String(fdSched ?? ''),
+        statusText: (form.querySelector('.bulk-form-status') as HTMLElement)?.textContent?.trim() ?? '',
       }
-      return { found: 'none', btnOuterHtml: btn.outerHTML.slice(0, 200) }
     }).catch((e: Error) => ({ evalError: e.message }))
-    console.log(`[post] pre-submit: Vue state: ${JSON.stringify(vueState)}`)
-
-    // CDP-level request interception — captures service worker requests invisible to page.on('request')
-    const cdpRequests: string[] = []
-    const cdpSession = await page.context().newCDPSession(page).catch(() => null)
-    if (cdpSession) {
-      await cdpSession.send('Fetch.enable', { patterns: [{ requestStage: 'Request' as const }] }).catch(() => {})
-      cdpSession.on('Fetch.requestPaused', async (event: any) => {
-        cdpRequests.push(`${event.request.method} ${event.request.url.slice(0, 120)}`)
-        await cdpSession.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {})
-      })
-    }
+    console.log(`[post] pre-submit form check: ${JSON.stringify(formCheck)}`)
 
     // Monitor ALL HTTP requests during submit — captures file upload URL if FanCore does it at submit time
     const submitRequests: string[] = []
@@ -518,16 +502,25 @@ export async function postVideoJob(jobId: string): Promise<void> {
     await submitBtn.click()
     console.log('[post] submit clicked — waiting for FanCore upload (90s)')
 
-    await page.waitForTimeout(90000)
+    // Read status banner immediately (FanCore sets this on validation errors)
+    await page.waitForTimeout(1000)
+    const statusAfterClick = await page.locator('.bulk-form-status').first().textContent().catch(() => '')
+    const allStatuses = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.bulk-form-status')).map(el => ({
+        text: (el as HTMLElement).textContent?.trim() ?? '',
+        visible: (el as HTMLElement).offsetParent !== null,
+        display: (el as HTMLElement).style.display,
+      }))
+    ).catch(() => [])
+    console.log(`[post] form status after click: "${statusAfterClick}" all=${JSON.stringify(allStatuses)}`)
+
+    await page.waitForTimeout(89000)
 
     page.off('request', submitListener)
-    if (cdpSession) await cdpSession.send('Fetch.disable').catch(() => {})
 
     const wsLogsAfterSubmit = wsLogs.slice(wsLogsBeforeSubmit)
     const postPutRequests = submitRequests.filter(r => r.startsWith('POST') || r.startsWith('PUT'))
-    const cdpPostPut = cdpRequests.filter(r => r.startsWith('POST') || r.startsWith('PUT'))
-    console.log(`[post] submit: POST/PUT HTTP (page): ${JSON.stringify(postPutRequests)}`)
-    console.log(`[post] submit: POST/PUT CDP: ${JSON.stringify(cdpPostPut)}`)
+    console.log(`[post] submit: POST/PUT HTTP: ${JSON.stringify(postPutRequests)}`)
     console.log(`[post] submit: new WS logs: ${JSON.stringify(wsLogsAfterSubmit.slice(-30))}`)
     console.log(`[post] submit: page console: ${JSON.stringify(pageConsoleLogs.slice(-15))}`)
 
