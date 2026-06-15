@@ -192,11 +192,11 @@ export async function postVideoJob(jobId: string): Promise<void> {
       await saveSession(page)
     }
 
-    // Navigate directly to Bulk Posting, then select model in sidebar
-    await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(2000)
-    const modelEntry = page.locator(`text=@${handle}`).first()
-    await modelEntry.waitFor({ state: 'visible', timeout: 10_000 })
+    // Navigate to Bulk Posting — use networkidle so sidebar models are fully loaded
+    await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'networkidle', timeout: 30_000 })
+    // Click the model entry in the left sidebar — wait up to 30s for it to render
+    const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
+    await modelEntry.waitFor({ state: 'visible', timeout: 30_000 })
     await modelEntry.click()
     await page.waitForTimeout(2000)
 
