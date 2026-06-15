@@ -466,20 +466,19 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
                       {/* Info */}
                       <button onClick={() => setSelectedPostId(post.id)} className="flex-1 min-w-0 text-left">
-                        <p className="text-xs text-[#666] truncate">@{post.creator_username}</p>
-                        <div className="flex flex-wrap gap-1 mt-0.5">
+                        <div className="flex flex-wrap items-center gap-1">
                           {idea.niches.map(n => <span key={n} className="text-[10px] text-[#555]">{nicheEmoji(n)} {n}</span>)}
+                          {post.text_template && /\p{Extended_Pictographic}/u.test(post.text_template) && (
+                            <span className="text-[9px] font-semibold tracking-wide px-1 py-px rounded border border-amber-400/25 text-amber-400/80">EMOJI</span>
+                          )}
+                          {post.text_template && post.text_template.split('\n').filter((l: string) => l.trim()).length > 1 && (
+                            <span className="text-[9px] font-semibold tracking-wide px-1 py-px rounded border border-blue-400/25 text-blue-400/80">MULTI</span>
+                          )}
                         </div>
+                        {post.text_template && (
+                          <p className="text-[11px] text-[#777] truncate mt-0.5">{post.text_template.split('\n')[0].trim()}</p>
+                        )}
                       </button>
-
-                      {/* Usage count */}
-                      {useCount > 0 && (
-                        <span className="text-[10px] font-mono text-[#555] flex-shrink-0 w-5 text-center">{useCount}×</span>
-                      )}
-
-                      <span className="text-[10px] text-[#444] flex-shrink-0">
-                        {post.likes_current >= 1000 ? `${(post.likes_current / 1000).toFixed(1)}K` : post.likes_current} ♥
-                      </span>
 
                       {/* Done jobs — watch + delete per version */}
                       <div className="flex gap-1 flex-shrink-0 flex-wrap justify-end">
