@@ -12,6 +12,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
+import { sendTelegram } from '../lib/telegram'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
@@ -171,19 +172,17 @@ export async function postVideoJob(jobId: string): Promise<void> {
   const overlayText = (job as unknown as { personalized_text: string | null }).personalized_text ?? ''
 
   const selectedHashtags = await selectHashtags(overlayText, nicheHashtags)
-  const caption = selectedHashtags.map(t => `#${t}`).join(' ')
-  console.log(`[post] Tags for ${jobId}: ${selectedHashtags.join(', ')}`)
+  console.log(`[post] Tags for ${jobId}: ${selectedHashtags.join(' ')}`)
 
   const scheduledFor = await getNextSlot(job.model_id)
-
   console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()}`)
 
-  // Mark as posting to prevent duplicate pickup
   await supabaseAdmin.from('video_jobs').update({ status: 'posting' }).eq('id', jobId)
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
   const browser: Browser = await chromium.launch({ headless: true })
-  const context = await browser.newContext()
+  // UTC timezone: 22:00 entered in the picker = 22:00 UTC, no offset calculation needed
+  const context = await browser.newContext({ timezoneId: 'UTC' })
   const page = await context.newPage()
 
   try {
@@ -193,51 +192,71 @@ export async function postVideoJob(jobId: string): Promise<void> {
       await saveSession(page)
     }
 
-    // Click the model in the left sidebar (shows as display name + @handle below)
-    await page.goto(FANCORE_URL, { waitUntil: 'domcontentloaded' })
+    // Navigate directly to Bulk Posting, then select model in sidebar
+    await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2000)
-    // Sidebar entry contains "@handle" as a child element — click the list item
     const modelEntry = page.locator(`text=@${handle}`).first()
     await modelEntry.waitFor({ state: 'visible', timeout: 10_000 })
     await modelEntry.click()
-    await page.waitForTimeout(1500)
-
-    // Click "Bulk Posting" in the left nav
-    await page.locator('text=Bulk Posting').first().click()
     await page.waitForTimeout(2000)
 
-    // The page shows "Schedule a new post" forms already open.
-    // Use the first form's elements.
-    const firstForm = page.locator('text=Schedule a new post').first().locator('..')
-
-    // Upload video via the hidden file input inside the media drop zone
+    // Download video from R2
     const videoPath = path.join(tmpDir, 'output.mp4')
     await downloadFromR2(job.output_r2_key, videoPath)
-    const fileInput = page.locator('input[type="file"]').first()
+
+    // All fields below target the first form slot with .nth(0)
+
+    // 1. Tags — space-separated with # prefix
+    const tagsInput = page.locator('input[placeholder*="petite"], input[placeholder*="kawaii"], input[placeholder*="fyp"]').nth(0)
+    await tagsInput.fill(selectedHashtags.map(t => `#${t}`).join(' '))
+
+    // 2. Schedule for — browser is UTC so 22:00 entered = 22:00 UTC
+    //    The field is a datetime-local input displayed as dd/mm/yyyy in UTC locale.
+    //    fill() with ISO format YYYY-MM-DDTHH:mm is what Playwright expects for datetime-local.
+    const yyyy = scheduledFor.getUTCFullYear()
+    const mm = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
+    const dd = String(scheduledFor.getUTCDate()).padStart(2, '0')
+    const hh = String(scheduledFor.getUTCHours()).padStart(2, '0')  // always '22'
+    const min = String(scheduledFor.getUTCMinutes()).padStart(2, '0') // always '00'
+    const scheduleInput = page.locator('input[placeholder*="dd/mm"]').nth(0)
+    await scheduleInput.fill(`${yyyy}-${mm}-${dd}T${hh}:${min}`)
+    await page.waitForTimeout(300)
+    // If the input is a custom picker that ignored the fill, type in its native display format
+    const filledVal = await scheduleInput.inputValue().catch(() => '')
+    if (!filledVal || filledVal.trim() === '') {
+      await scheduleInput.click({ clickCount: 3 })
+      await page.keyboard.type(`${dd}/${mm}/${yyyy}, ${hh}:${min}`)
+    }
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+
+    // 3. Walls — open dropdown, check "Posts" (POSTS badge, not FOLLOWERS), click Done
+    await page.locator('text=Select walls...').nth(0).click()
+    await page.waitForTimeout(500)
+    // Posts wall row has "POSTS" badge — click the row to toggle the checkbox
+    await page.locator('label', { hasText: 'Posts' }).filter({ hasNot: page.locator('text=FOLLOWERS') }).first().click()
+    await page.waitForTimeout(300)
+    await page.locator('text=Done').first().click()
+    await page.waitForTimeout(500)
+
+    // 4. Media — upload video file
+    const fileInput = page.locator('input[type="file"]').nth(0)
     await fileInput.setInputFiles(videoPath)
     await page.waitForTimeout(3000)
 
-    // Caption field (leave empty — overlay text is burned into the video)
-    // Tags field — comma-separated hashtags (FanCore strips # automatically)
-    const tagsInput = firstForm.locator('input[placeholder*="petite"], input[placeholder*="kawaii"], input[placeholder*="fyp"]').first()
-    await tagsInput.fill(selectedHashtags.join(', '))
-
-    // Schedule for — FanCore uses dd/mm/yyyy, HH:mm format
-    const dd = String(scheduledFor.getUTCDate()).padStart(2, '0')
-    const mm = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
-    const yyyy = scheduledFor.getUTCFullYear()
-    const hh = String(scheduledFor.getUTCHours()).padStart(2, '0')
-    const min = String(scheduledFor.getUTCMinutes()).padStart(2, '0')
-    const dateStr = `${dd}/${mm}/${yyyy}, ${hh}:${min}`
-
-    const scheduleInput = firstForm.locator('input[placeholder*="dd/mm"]').first()
-    await scheduleInput.click()
-    await scheduleInput.fill(dateStr)
-    await page.keyboard.press('Escape') // close any datepicker popup
-
-    // Click "+ Schedule Post"
-    await firstForm.locator('button', { hasText: /Schedule Post/i }).click()
+    // 5. Click "+ Schedule Post"
+    await page.locator('button', { hasText: /Schedule Post/i }).nth(0).click()
     await page.waitForTimeout(2000)
+
+    // 6. Check "Already Scheduled" tab for failures — send Telegram alert if any
+    await page.locator('text=Already Scheduled').first().click()
+    await page.waitForTimeout(2000)
+    const failedTabText = await page.locator('text=/Failed\\s*\\(\\d+\\)/').first().textContent().catch(() => 'Failed (0)')
+    const failedCount = parseInt(failedTabText?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
+    if (failedCount > 0) {
+      await sendTelegram(`⚠️ FanCore posting error: ${failedCount} failed post(s) for @${handle}. Check Already Scheduled tab manually.`)
+      throw new Error(`FanCore: ${failedCount} failed posts for @${handle}`)
+    }
 
     // Mark posted in DB
     await supabaseAdmin.from('video_jobs').update({
