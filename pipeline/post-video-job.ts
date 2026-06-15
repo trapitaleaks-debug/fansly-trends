@@ -283,6 +283,15 @@ export async function postVideoJob(jobId: string): Promise<void> {
     // Register upload XHR listener BEFORE triggering file chooser — FanCore uploads video to
     // their CDN asynchronously after setFiles, and we MUST NOT click submit until it completes.
     // "Upload timed out" error in FanCore = we clicked submit while upload was still in progress.
+    // Log ALL POST/PUT requests so we can find FanCore's upload URL on first run
+    const allPostUrls: string[] = []
+    const requestListener = (req: any) => {
+      if (req.method() === 'POST' || req.method() === 'PUT') {
+        allPostUrls.push(`${req.method()} ${req.url().slice(0, 120)}`)
+      }
+    }
+    page.on('request', requestListener)
+
     const uploadDone = page.waitForResponse(
       r => {
         const m = r.request().method()
@@ -326,6 +335,10 @@ export async function postVideoJob(jobId: string): Promise<void> {
     // Wait for the actual upload XHR to complete before clicking submit.
     // Primary: XHR watcher. Secondary: wait for the "Medias" panel FanCore shows after upload.
     const uploadResult = await uploadDone
+    // Dump all POST/PUT requests we saw — helps identify FanCore's upload URL for filter tuning
+    page.off('request', requestListener)
+    console.log(`[post] all POST/PUT URLs seen: ${JSON.stringify(allPostUrls)}`)
+
     if (uploadResult.startsWith('watcher-miss')) {
       // URL pattern didn't match — wait for "Medias" panel OR fall back to 45s
       console.log(`[post] media: upload XHR not caught (${uploadResult}) — waiting for Medias panel`)
@@ -363,20 +376,25 @@ export async function postVideoJob(jobId: string): Promise<void> {
     }).catch(() => [])
     console.log(`[post] schedule buttons: ${JSON.stringify(schedBtns)}`)
 
-    // The per-slot submit button is typically the last "Schedule Post" button in the form section
-    // (the tab button "Schedule Posts" comes first in DOM, then the per-slot buttons)
-    // Use the LAST match, or specifically target buttons NOT inside a tab nav.
+    // Use the PER-SLOT "Schedule Post" button (class contains "bulk-submit-btn"), NOT the global
+    // bulkSubmitBtn (which submits all slots and requires all slots to be filled).
+    // The per-slot button is the first button with class "bulk-submit-btn" in the DOM.
     const submitBtn = await (async () => {
-      // Try: button with exact text "Schedule Post" (not "Schedule Posts" tab)
+      // Primary: per-slot button identified by class — skip the global bulkSubmitBtn
+      const perSlot = page.locator('button[class*="bulk-submit-btn"]')
+      if (await perSlot.count() > 0) {
+        console.log(`[post] submit: using per-slot bulk-submit-btn (${await perSlot.count()} found)`)
+        return perSlot.first()
+      }
+      // Fallback 1: second "Schedule Post" (nth(1) skips global bulkSubmitBtn, gets slot 1 button)
       const exact = page.locator('button').filter({ hasText: /^Schedule Post$/ })
-      if (await exact.count() > 0) return exact.nth(0)
-      // Try: any visible button in the form body (not tab nav)
-      const inForm = page.locator('form button, .schedule-form button, [class*="slot"] button, [class*="card"] button').filter({ hasText: /schedule/i })
-      if (await inForm.count() > 0) return inForm.nth(0)
-      // Fallback: last button with "schedule" in text
-      const all = page.locator('button').filter({ hasText: /schedule post/i })
-      const cnt = await all.count()
-      if (cnt > 0) return all.nth(cnt - 1)
+      const cnt = await exact.count()
+      if (cnt > 1) {
+        console.log(`[post] submit: using nth(1) of ${cnt} Schedule Post buttons`)
+        return exact.nth(1)
+      }
+      // Fallback 2: any "Schedule Post" button
+      if (cnt > 0) return exact.nth(0)
       return page.locator('button', { hasText: /Schedule Post/i }).nth(0)
     })()
     await submitBtn.click()
