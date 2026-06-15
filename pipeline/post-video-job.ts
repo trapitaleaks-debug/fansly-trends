@@ -248,89 +248,57 @@ export async function postVideoJob(jobId: string): Promise<void> {
     const tagsInput = page.locator('input[placeholder*="petite"], input[placeholder*="kawaii"], input[placeholder*="fyp"]').nth(0)
     await tagsInput.fill(selectedHashtags.map(t => `#${t}`).join(' '))
 
-    // 2. Schedule for — the field is read-only (custom datepicker); must interact with the popup UI
-    const yyyy = scheduledFor.getUTCFullYear()
-    const mm = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
-    const dd = String(scheduledFor.getUTCDate()).padStart(2, '0')
+    // 2. Schedule for — field is read-only (mdm-cal custom datepicker).
+    //    Scroll into view first so the calendar opens within the viewport,
+    //    then interact with mdm-cal-specific selectors.
     const targetDay = scheduledFor.getUTCDate()
+    const schedInput = page.locator('input[placeholder*="dd/mm"]').nth(0)
+    await schedInput.scrollIntoViewIfNeeded()
+    await page.waitForTimeout(300)
+    // Click the input with force:true (it has pointer-events:none as display field)
+    await schedInput.click({ force: true }).catch(async () => {
+      await schedInput.locator('xpath=..').click({ force: true }).catch(() => {})
+    })
+    await page.waitForTimeout(1000)
 
-    // Attempt 1: flatpickr programmatic API (works with no UI interaction)
-    const fpOk = await page.evaluate((ts: number) => {
-      const inp = Array.from(document.querySelectorAll<HTMLInputElement>('input'))
-        .find(i => i.placeholder?.includes('dd/mm') || i.placeholder?.includes('/yyyy'))
-      if (!inp) return false
-      const fp = (inp as HTMLInputElement & { _flatpickr?: { setDate(d: Date, trigger: boolean): void } })._flatpickr
-      if (!fp) return false
-      fp.setDate(new Date(ts), true)
-      return true
-    }, scheduledFor.getTime())
-    console.log(`[post] flatpickr API: ${fpOk}`)
+    // Debug screenshot (fullPage so we can see the calendar even if it's below fold)
+    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
+      uploadToR2(`debug/post-${jobId}-datepicker.png`, buf, 'image/png')
+    ).catch(() => {})
 
-    if (!fpOk) {
-      // Attempt 2: open calendar popup, interact with day grid + time columns
-      // Save a debug screenshot BEFORE interacting so we can see the page state on Railway
-      await page.screenshot({ type: 'png' }).then(buf =>
-        uploadToR2(`debug/post-${jobId}-before-datepicker.png`, buf, 'image/png')
-      ).catch(() => {})
-      console.log(`[post] pre-datepicker screenshot → debug/post-${jobId}-before-datepicker.png`)
+    // Select the correct day (mdm-cal-day class; fallback to generic day selector)
+    await page.locator(`[class*="mdm-cal-day"]:not([class*="prev"]):not([class*="next"]):not([class*="disabled"]), [class*="mdm-cal"] [class*="day"]:not([class*="disabled"])`)
+      .filter({ hasText: new RegExp(`^${targetDay}$`) }).first()
+      .click({ force: true }).catch(e => console.log(`[post] day click: ${e.message}`))
+    await page.waitForTimeout(400)
 
-      // The Schedule for input may have pointer-events:none (custom picker display field)
-      // Use force:true to bypass actionability checks, or click the wrapper element
-      const schedInput = page.locator('input[placeholder*="dd/mm"]').nth(0)
-      await schedInput.click({ force: true }).catch(async () => {
-        // Fallback: click the wrapper div containing the input
-        await schedInput.locator('xpath=..').click({ force: true }).catch(() => {})
-      })
-      await page.waitForTimeout(1000)
+    // Set hour = 22 in the mdm-cal time column
+    await page.locator(`[class*="mdm-cal"] *`).filter({ hasText: /^22$/ }).first()
+      .click({ force: true }).catch(e => console.log(`[post] hour click: ${e.message}`))
+    await page.waitForTimeout(300)
 
-      // Save screenshot after attempting to open the calendar
-      await page.screenshot({ type: 'png' }).then(buf =>
-        uploadToR2(`debug/post-${jobId}-datepicker.png`, buf, 'image/png')
-      ).catch(() => {})
-      console.log(`[post] debug screenshot → debug/post-${jobId}-datepicker.png`)
+    // Set minute = 00 in the mdm-cal time column
+    await page.locator(`[class*="mdm-cal"] *`).filter({ hasText: /^00$/ }).first()
+      .click({ force: true }).catch(e => console.log(`[post] minute click: ${e.message}`))
+    await page.waitForTimeout(300)
 
-      // Click the correct day (exclude grayed-out other-month cells)
-      const daySel = [
-        `.flatpickr-day:not(.prevMonthDay):not(.nextMonthDay):not(.disabled)`,
-        `td.rdtDay:not(.rdtOld):not(.rdtNew):not(.rdtDisabled)`,
-        `[class*="day"]:not([class*="prev"]):not([class*="next"]):not([class*="other"]):not([class*="disabled"])`,
-      ].join(', ')
-      await page.locator(daySel).filter({ hasText: new RegExp(`^${targetDay}$`) }).first()
-        .click().catch(e => console.log(`[post] day click failed: ${e.message}`))
-      await page.waitForTimeout(400)
+    // Click the mdm-cal Done button to confirm the selection (id=mdmCalDone)
+    await page.locator('#mdmCalDone, .mdm-cal-done').first()
+      .click({ force: true }).catch(e => console.log(`[post] cal-done click: ${e.message}`))
+    await page.waitForTimeout(500)
 
-      // Set hour = 22: try clicking scrollable list item, fall back to number input
-      await page.locator(`[class*="hour"]:not(input), [class*="Hour"]:not(input), td.rdtHour`)
-        .filter({ hasText: /^22$/ }).first()
-        .click().catch(async () => {
-          await page.locator(`input.flatpickr-hour, input[aria-label*="hour"], input[aria-label*="Hour"]`).first().fill('22').catch(() => {})
-        })
-      await page.waitForTimeout(300)
-
-      // Set minute = 00: same
-      await page.locator(`[class*="minute"]:not(input), [class*="Minute"]:not(input), td.rdtMin`)
-        .filter({ hasText: /^00$/ }).first()
-        .click().catch(async () => {
-          await page.locator(`input.flatpickr-minute, input[aria-label*="minute"], input[aria-label*="Minute"]`).last().fill('00').catch(() => {})
-        })
-      await page.waitForTimeout(300)
-
-      // Debug screenshot after time selection
-      await page.screenshot({ type: 'png' }).then(buf =>
-        uploadToR2(`debug/post-${jobId}-datepicker-after.png`, buf, 'image/png')
-      ).catch(() => {})
-
-      await page.keyboard.press('Escape')
-      await page.waitForTimeout(500)
-    }
+    // Debug screenshot after calendar interaction
+    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
+      uploadToR2(`debug/post-${jobId}-datepicker-after.png`, buf, 'image/png')
+    ).catch(() => {})
 
     // 3. Walls — open dropdown, check "Posts" (POSTS badge, not FOLLOWERS), click Done
+    //    Use :not(#mdmCalDone) to avoid the calendar's Done button which stays in DOM (hidden)
     await page.locator('text=Select walls...').nth(0).click()
     await page.waitForTimeout(500)
-    // Posts wall row has "POSTS" badge — click the row to toggle the checkbox
     await page.locator('label', { hasText: 'Posts' }).filter({ hasNot: page.locator('text=FOLLOWERS') }).first().click()
     await page.waitForTimeout(300)
-    await page.locator('text=Done').first().click()
+    await page.locator('button:has-text("Done"):not(#mdmCalDone)').first().click()
     await page.waitForTimeout(500)
 
     // 4. Media — upload video file
