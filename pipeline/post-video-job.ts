@@ -295,6 +295,13 @@ export async function postVideoJob(jobId: string): Promise<void> {
       uploadToR2(`debug/post-${jobId}-datepicker.png`, buf, 'image/png')
     ).catch(() => {})
 
+    // Dump calendar HTML to console to discover actual element classes
+    const calHtml = await page.evaluate(() => {
+      const el = document.querySelector('[class*="mdm-cal"], [class*="mdm_cal"], [class*="calendar"], [id*="cal"]')
+      return el ? el.outerHTML.slice(0, 4000) : 'NO calendar element found'
+    }).catch(() => 'evaluate failed')
+    console.log(`[post] calendar DOM: ${calHtml}`)
+
     // Select the correct day (mdm-cal-day class; fallback to generic day selector)
     await page.locator(`[class*="mdm-cal-day"]:not([class*="prev"]):not([class*="next"]):not([class*="disabled"]), [class*="mdm-cal"] [class*="day"]:not([class*="disabled"])`)
       .filter({ hasText: new RegExp(`^${targetDay}$`) }).first()
