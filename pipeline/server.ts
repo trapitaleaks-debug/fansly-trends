@@ -86,6 +86,30 @@ app.get('/debug/emoji', async (_req, res) => {
 
 // ─── Manual video job trigger ─────────────────────────────────────────────────
 
+// ─── Manual scrape trigger ────────────────────────────────────────────────────
+
+app.post('/scrape', (_req, res) => {
+  if (scraperRunning) {
+    res.json({ message: 'Scraper already running' })
+    return
+  }
+  scraperRunning = true
+  res.json({ message: 'Scrape started' })
+  console.log('[scrape] Manual trigger — starting FYP scrape...')
+  const child = spawn(
+    'npx', ['ts-node', '--project', 'scraper/tsconfig.json', 'scraper/index.ts'],
+    { cwd: path.resolve(__dirname, '..'), env: process.env, stdio: 'inherit' }
+  )
+  child.on('exit', (code) => {
+    scraperRunning = false
+    console.log(`[scrape] Exited with code ${code}`)
+  })
+  child.on('error', (err) => {
+    scraperRunning = false
+    console.error('[scrape] Spawn error:', err.message)
+  })
+})
+
 app.post('/jobs/process', async (_req, res) => {
   const { data: jobs } = await supabaseAdmin
     .from('video_jobs')
