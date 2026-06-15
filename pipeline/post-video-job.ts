@@ -278,16 +278,45 @@ export async function postVideoJob(jobId: string): Promise<void> {
       console.log('[post] walls: already pre-selected, skipping dropdown')
     }
 
-    // 4. Media — trigger filechooser by clicking the upload area, then set the file
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent('filechooser'),
-      page.locator('text=Drop media here').first().click(),
-    ])
-    await fileChooser.setFiles(videoPath)
-    console.log('[post] media: file set via filechooser')
-    await page.waitForTimeout(8000) // allow server-side processing / preview to render
+    // 4. Media — upload video. Dump file inputs first for debugging.
+    const fileInputInfo = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('input[type="file"]')).map((inp, i) => ({
+        i, accept: inp.accept, id: inp.id, cls: inp.className.slice(0, 60),
+        w: Math.round(inp.getBoundingClientRect().width),
+      }))
+    ).catch(() => [])
+    console.log(`[post] file inputs: ${JSON.stringify(fileInputInfo)}`)
 
-    // Debug screenshot before submit — shows what we're about to submit
+    // Primary: filechooser — handles custom upload UIs
+    let uploadMethod = 'none'
+    try {
+      const [fileChooser] = await Promise.all([
+        page.waitForEvent('filechooser', { timeout: 10000 }),
+        page.locator('text=/[Dd]rop media|[Cc]lick to upload/').first().click(),
+      ])
+      await fileChooser.setFiles(videoPath)
+      uploadMethod = 'filechooser'
+    } catch {
+      // Fallback: directly set on each file input until one accepts it
+      const count = await page.locator('input[type="file"]').count()
+      console.log(`[post] filechooser failed — trying direct setInputFiles on ${count} inputs`)
+      for (let i = 0; i < Math.min(count, 4); i++) {
+        try {
+          await page.locator('input[type="file"]').nth(i).setInputFiles(videoPath)
+          uploadMethod = `direct[${i}]`
+          break
+        } catch { /* try next */ }
+      }
+    }
+    console.log(`[post] media: uploaded via ${uploadMethod} — waiting 10s for processing`)
+    await page.waitForTimeout(10000)
+
+    // Screenshot after upload to verify media was attached
+    await page.screenshot({ type: 'png', fullPage: false }).then(buf =>
+      uploadToR2(`debug/post-${jobId}-after-upload.png`, buf, 'image/png')
+    ).catch(() => {})
+
+    // Full-page screenshot before submit
     await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
       uploadToR2(`debug/post-${jobId}-before-submit.png`, buf, 'image/png')
     ).catch(() => {})
@@ -342,8 +371,9 @@ export async function postVideoJob(jobId: string): Promise<void> {
       await sendTelegram(`⚠️ FanCore posting error: ${failedCount} failed post(s) for @${handle}. Check Already Scheduled tab manually.`)
       throw new Error(`FanCore: ${failedCount} failed posts for @${handle}`)
     }
-    if (scheduledCount === 0 && allCount === 0) {
-      throw new Error(`FanCore: post for @${handle} not found in Already Scheduled after submit — check debug screenshot`)
+    // Require at least 1 Scheduled post — Sent posts are already published and don't count
+    if (scheduledCount === 0) {
+      throw new Error(`FanCore: no Scheduled post found after submit (All=${allCount} Scheduled=0) — post was not created. Check after-upload + already-scheduled debug screenshots.`)
     }
 
     // Mark posted in DB
