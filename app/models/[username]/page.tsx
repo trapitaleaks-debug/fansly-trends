@@ -198,7 +198,13 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     setDeletingJobId(jobId)
     await fetch(`/api/video-jobs/${jobId}`, { method: 'DELETE' })
     setDeletingJobId(null)
-    fetchMatchedIdeas()
+    setMatchedIdeas(prev => prev.map(idea => ({
+      ...idea,
+      trends_posts: {
+        ...idea.trends_posts,
+        video_jobs: (idea.trends_posts.video_jobs ?? []).filter(j => j.id !== jobId),
+      },
+    })))
   }
 
   async function generateAll() {
