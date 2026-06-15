@@ -262,37 +262,84 @@ export async function postVideoJob(jobId: string): Promise<void> {
     console.log(`[post] schedule-input filled: ${dtValue}`)
     await page.waitForTimeout(300)
 
-    // Debug screenshot after calendar interaction
-    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
-      uploadToR2(`debug/post-${jobId}-datepicker-after.png`, buf, 'image/png')
-    ).catch(() => {})
-
-    // 3. Walls — open dropdown, check "Posts" (POSTS badge, not FOLLOWERS), click Done
-    //    Use :not(#mdmCalDone) to avoid the calendar's Done button which stays in DOM (hidden)
-    await page.locator('text=Select walls...').nth(0).click()
-    await page.waitForTimeout(500)
-    await page.locator('label', { hasText: 'Posts' }).filter({ hasNot: page.locator('text=FOLLOWERS') }).first().click()
-    await page.waitForTimeout(300)
-    await page.locator('button:has-text("Done"):not(#mdmCalDone)').first().click()
-    await page.waitForTimeout(500)
+    // 3. Walls — open dropdown, select Posts, click Done
+    //    If already pre-selected (no "Select walls..." text), skip opening the dropdown
+    const wallsDropdown = page.locator('text=Select walls...').nth(0)
+    const wallsNeedsOpen = await wallsDropdown.isVisible({ timeout: 3000 }).catch(() => false)
+    if (wallsNeedsOpen) {
+      await wallsDropdown.click()
+      await page.waitForTimeout(500)
+      await page.locator('label', { hasText: 'Posts' }).filter({ hasNot: page.locator('text=FOLLOWERS') }).first().click()
+      await page.waitForTimeout(300)
+      await page.locator('button:has-text("Done"):not(#mdmCalDone)').first().click()
+      await page.waitForTimeout(500)
+      console.log('[post] walls: opened dropdown and selected Posts')
+    } else {
+      console.log('[post] walls: already pre-selected, skipping dropdown')
+    }
 
     // 4. Media — upload video file
     const fileInput = page.locator('input[type="file"]').nth(0)
     await fileInput.setInputFiles(videoPath)
     await page.waitForTimeout(3000)
 
-    // 5. Click "+ Schedule Post"
-    await page.locator('button', { hasText: /Schedule Post/i }).nth(0).click()
+    // Debug screenshot before submit — shows what we're about to submit
+    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
+      uploadToR2(`debug/post-${jobId}-before-submit.png`, buf, 'image/png')
+    ).catch(() => {})
+
+    // 5. Find and click the per-slot "Schedule Post" submit button.
+    //    Dump all matching buttons first so we can diagnose selector issues.
+    const schedBtns = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('button')).filter(b => {
+        const t = b.textContent?.toLowerCase() ?? ''
+        return t.includes('schedule') || t.includes('post')
+      }).map(b => ({ text: b.textContent?.trim().slice(0, 50), cls: b.className, id: b.id, visible: b.offsetParent !== null }))
+    }).catch(() => [])
+    console.log(`[post] schedule buttons: ${JSON.stringify(schedBtns)}`)
+
+    // The per-slot submit button is typically the last "Schedule Post" button in the form section
+    // (the tab button "Schedule Posts" comes first in DOM, then the per-slot buttons)
+    // Use the LAST match, or specifically target buttons NOT inside a tab nav.
+    const submitBtn = await (async () => {
+      // Try: button with exact text "Schedule Post" (not "Schedule Posts" tab)
+      const exact = page.locator('button').filter({ hasText: /^Schedule Post$/ })
+      if (await exact.count() > 0) return exact.nth(0)
+      // Try: any visible button in the form body (not tab nav)
+      const inForm = page.locator('form button, .schedule-form button, [class*="slot"] button, [class*="card"] button').filter({ hasText: /schedule/i })
+      if (await inForm.count() > 0) return inForm.nth(0)
+      // Fallback: last button with "schedule" in text
+      const all = page.locator('button').filter({ hasText: /schedule post/i })
+      const cnt = await all.count()
+      if (cnt > 0) return all.nth(cnt - 1)
+      return page.locator('button', { hasText: /Schedule Post/i }).nth(0)
+    })()
+    await submitBtn.click()
     await page.waitForTimeout(2000)
 
-    // 6. Check "Already Scheduled" tab for failures — send Telegram alert if any
+    // 6. Check "Already Scheduled" tab — count total posts before/after to verify our post was added
     await page.locator('text=Already Scheduled').first().click()
     await page.waitForTimeout(2000)
+
+    // Screenshot after navigating to Already Scheduled
+    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
+      uploadToR2(`debug/post-${jobId}-already-scheduled.png`, buf, 'image/png')
+    ).catch(() => {})
+
+    const allTabText = await page.locator('text=/All\\s*\\(\\d+\\)/').first().textContent().catch(() => 'All (0)')
+    const scheduledTabText = await page.locator('text=/Scheduled\\s*\\(\\d+\\)/').first().textContent().catch(() => 'Scheduled (0)')
     const failedTabText = await page.locator('text=/Failed\\s*\\(\\d+\\)/').first().textContent().catch(() => 'Failed (0)')
+    const allCount = parseInt(allTabText?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
+    const scheduledCount = parseInt(scheduledTabText?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
     const failedCount = parseInt(failedTabText?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
+    console.log(`[post] Already Scheduled: All=${allCount} Scheduled=${scheduledCount} Failed=${failedCount}`)
+
     if (failedCount > 0) {
       await sendTelegram(`⚠️ FanCore posting error: ${failedCount} failed post(s) for @${handle}. Check Already Scheduled tab manually.`)
       throw new Error(`FanCore: ${failedCount} failed posts for @${handle}`)
+    }
+    if (scheduledCount === 0 && allCount === 0) {
+      throw new Error(`FanCore: post for @${handle} not found in Already Scheduled after submit — check debug screenshot`)
     }
 
     // Mark posted in DB
