@@ -86,12 +86,23 @@ RULES:
 }
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
-  const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
-  const body = res.Body
-  if (!body) throw new Error(`R2 key not found: ${key}`)
-  const chunks: Uint8Array[] = []
-  for await (const chunk of body as AsyncIterable<Uint8Array>) chunks.push(chunk)
-  fs.writeFileSync(destPath, Buffer.concat(chunks))
+  const ac = new AbortController()
+  const t = setTimeout(() => ac.abort(new Error(`R2 download timed out: ${key}`)), 120_000)
+  try {
+    const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }), {
+      abortSignal: ac.signal,
+    })
+    const body = res.Body
+    if (!body) throw new Error(`R2 key not found: ${key}`)
+    const chunks: Uint8Array[] = []
+    for await (const chunk of body as AsyncIterable<Uint8Array>) {
+      if (ac.signal.aborted) throw ac.signal.reason
+      chunks.push(chunk)
+    }
+    fs.writeFileSync(destPath, Buffer.concat(chunks))
+  } finally {
+    clearTimeout(t)
+  }
 }
 
 async function loginFanCore(page: Page): Promise<void> {
@@ -208,6 +219,14 @@ export async function postVideoJob(jobId: string): Promise<void> {
   // UTC timezone so 22:00 entered in date picker = 22:00 UTC
   const { context } = await createContext(browser)
   const page = await context.newPage()
+  page.setDefaultTimeout(60_000)
+  page.setDefaultNavigationTimeout(30_000)
+
+  // Master 7-minute timeout — if anything hangs (R2 stall, Playwright deadlock), close the browser
+  const masterTimer = setTimeout(() => {
+    console.error('[post] ✗ Master 7-min timeout fired — closing browser')
+    browser.close().catch(() => {})
+  }, 7 * 60_000)
 
   try {
     // Navigate to /bulk-posts and verify auth — storageState may have expired tokens
@@ -361,7 +380,8 @@ export async function postVideoJob(jobId: string): Promise<void> {
     }).eq('id', jobId)
     throw e
   } finally {
-    await browser.close()
+    clearTimeout(masterTimer)
+    await browser.close().catch(() => {})
     fs.rmSync(tmpDir, { recursive: true, force: true })
   }
 }
