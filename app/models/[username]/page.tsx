@@ -27,6 +27,8 @@ interface VideoJob {
   output_r2_key: string | null
   thumbnail_r2_key: string | null
   personalized_text: string | null
+  clip_id: string | null
+  model_clips: { id: string; filename: string | null } | null
 }
 
 interface MatchedIdea {
@@ -65,8 +67,9 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [generatedFilter, setGeneratedFilter] = useState<GeneratedFilter>('not_generated')
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null)
 
-  const [generatingIds, setGeneratingIds] = useState<Record<string, 'pending' | 'done' | 'error'>>({})
+  const [generatingIds, setGeneratingIds] = useState<Record<string, 'pending' | 'error'>>({})
   const [generatingAll, setGeneratingAll] = useState(false)
+  const [deletingJobId, setDeletingJobId] = useState<string | null>(null)
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [contentTags, setContentTags] = useState<string[]>([])
@@ -183,12 +186,23 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ post_id: postId }),
     })
-    setGeneratingIds(prev => ({ ...prev, [postId]: res.ok ? 'done' : 'error' }))
-    if (res.ok) fetchMatchedIdeas()
+    if (res.ok) {
+      setGeneratingIds(prev => { const n = { ...prev }; delete n[postId]; return n })
+      fetchMatchedIdeas()
+    } else {
+      setGeneratingIds(prev => ({ ...prev, [postId]: 'error' }))
+    }
+  }
+
+  async function deleteJob(jobId: string) {
+    setDeletingJobId(jobId)
+    await fetch(`/api/video-jobs/${jobId}`, { method: 'DELETE' })
+    setDeletingJobId(null)
+    fetchMatchedIdeas()
   }
 
   async function generateAll() {
-    const targets = notGeneratedIdeas.filter(idea => !generatingIds[idea.trends_posts.id])
+    const targets = filteredIdeas.filter(idea => !generatingIds[idea.trends_posts.id])
     if (!targets.length) return
     setGeneratingAll(true)
     await Promise.all(targets.map(idea => generateIdea(idea.trends_posts.id)))
@@ -457,29 +471,39 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                         {post.likes_current >= 1000 ? `${(post.likes_current / 1000).toFixed(1)}K` : post.likes_current} ♥
                       </span>
 
-                      {/* Watch buttons for done jobs */}
-                      <div className="flex gap-1 flex-shrink-0">
+                      {/* Done jobs — watch + delete per version */}
+                      <div className="flex gap-1 flex-shrink-0 flex-wrap justify-end">
                         {jobs.filter(j => j.status === 'done' && j.output_r2_key).map((j, i) => (
-                          <button key={j.id} onClick={() => openWatch(j)}
-                            className="text-[10px] font-medium px-2 py-1 rounded-lg border border-green-500/30 text-green-400 hover:bg-green-500/10 transition-colors">
-                            ▶ {i + 1}
-                          </button>
+                          <span key={j.id} className="flex items-center gap-0.5 border border-green-500/30 rounded-lg overflow-hidden">
+                            <button
+                              onClick={() => openWatch(j)}
+                              title={j.model_clips?.filename ?? undefined}
+                              className="text-[10px] font-medium px-2 py-1 text-green-400 hover:bg-green-500/10 transition-colors">
+                              ▶ {i + 1}
+                            </button>
+                            <button
+                              onClick={() => deleteJob(j.id)}
+                              disabled={deletingJobId === j.id}
+                              className="text-[10px] text-[#444] hover:text-red-400 disabled:opacity-40 transition-colors px-1.5 py-1 border-l border-green-500/20">
+                              {deletingJobId === j.id ? '…' : '×'}
+                            </button>
+                          </span>
                         ))}
-                        {jobs.some(j => j.status === 'processing') && (
-                          <span className="text-[10px] text-[#555] px-1">rendering…</span>
+                        {jobs.some(j => j.status === 'pending' || j.status === 'processing') && (
+                          <span className="text-[10px] text-[#555] self-center px-1">queued…</span>
                         )}
                       </div>
 
                       {/* Generate button */}
-                      <button onClick={() => generateIdea(post.id)} disabled={genState === 'pending' || generatingAll}
-                        className={`text-[10px] font-medium px-2 py-1 rounded-lg border flex-shrink-0 transition-colors disabled:opacity-50 ${
-                          genState === 'done' ? 'border-green-500/30 text-green-400'
-                          : genState === 'error' ? 'border-red-500/30 text-red-400'
-                          : genState === 'pending' ? 'border-[#2a2a2a] text-[#555]'
+                      <button
+                        onClick={() => generateIdea(post.id)}
+                        disabled={genState === 'pending' || generatingAll || jobs.some(j => j.status === 'pending' || j.status === 'processing')}
+                        className={`text-[10px] font-medium px-2 py-1 rounded-lg border flex-shrink-0 transition-colors disabled:opacity-40 ${
+                          genState === 'error' ? 'border-red-500/30 text-red-400'
                           : useCount > 0 ? 'border-[#2a2a2a] text-[#555] hover:border-[#3a3a3a] hover:text-white'
                           : 'border-[#D41020]/40 text-[#D41020] hover:bg-[#D41020]/10'
                         }`}>
-                        {genState === 'pending' ? '...' : genState === 'done' ? 'queued ✓' : genState === 'error' ? 'error' : useCount > 0 ? 'regenerate' : 'generate'}
+                        {genState === 'pending' ? '…' : genState === 'error' ? 'error' : useCount > 0 ? 'generate' : 'generate'}
                       </button>
                     </div>
 

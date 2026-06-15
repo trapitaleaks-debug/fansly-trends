@@ -6,23 +6,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { post_id, placeholder } = await request.json()
   if (!post_id) return NextResponse.json({ error: 'post_id required' }, { status: 400 })
 
-  const [{ data: model }, { data: post }, { data: idea }] = await Promise.all([
+  const [{ data: model }, { data: post }] = await Promise.all([
     supabaseAdmin.from('trends_models').select('id, placeholder_options').eq('fansly_username', username.toLowerCase()).single(),
     supabaseAdmin.from('trends_posts').select('text_template').eq('id', post_id).single(),
-    supabaseAdmin.from('trends_ideas').select('id, tags').eq('post_id', post_id).maybeSingle(),
   ])
 
   if (!model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
   if (!post?.text_template) return NextResponse.json({ error: 'Post has no template' }, { status: 400 })
 
-  // Replace [placeholder] with chosen option (caller can pass explicit placeholder, otherwise use first option)
   const options: string[] = model.placeholder_options ?? []
   const chosen = placeholder ?? options[0] ?? ''
   const personalizedText = post.text_template.replace(/\[placeholder\]/gi, chosen)
 
-  // Pick clip from content bank, preferring one matching the idea's tags
+  // Round-robin clip selection: pick the first content bank clip not yet used for this post+model combo
   let clipId: string | null = null
-  const ideaTags: string[] = idea?.tags ?? []
 
   const { data: pipelineModel } = await supabaseAdmin
     .from('pipeline_models')
@@ -31,35 +28,37 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     .single()
 
   if (pipelineModel) {
-    const { data: allFootage } = await supabaseAdmin
-      .from('pipeline_content_bank')
-      .select('id, r2_key, label, trim_end, tags')
-      .eq('model_id', pipelineModel.id)
-      .order('created_at')
+    const [{ data: allFootage }, { data: existingJobs }, { data: existingModelClips }] = await Promise.all([
+      supabaseAdmin.from('pipeline_content_bank').select('id, r2_key, label, trim_end, tags').eq('model_id', pipelineModel.id).order('created_at'),
+      supabaseAdmin.from('video_jobs').select('clip_id').eq('post_id', post_id).eq('model_id', model.id),
+      supabaseAdmin.from('model_clips').select('id, r2_key').eq('model_id', model.id),
+    ])
 
     const footage = allFootage ?? []
+    const usedClipIds = new Set((existingJobs ?? []).map(j => j.clip_id).filter(Boolean) as string[])
+    const r2KeyToClipId = new Map((existingModelClips ?? []).map(mc => [mc.r2_key as string, mc.id as string]))
 
-    // Find best clip: prefer one whose tags overlap with idea tags; fall back to "all"-tagged or first
-    const tagged = ideaTags.length > 0 && !ideaTags.includes('all')
-      ? footage.find(f => (f.tags ?? []).some((t: string) => ideaTags.includes(t)))
-      : null
-    const allTagged = footage.find(f => (f.tags ?? []).includes('all'))
-    const chosen_footage = tagged ?? allTagged ?? footage[0] ?? null
+    // Pick first footage whose slot is empty; wrap to first if all occupied
+    const chosen_footage =
+      footage.find(f => {
+        const existingClipId = r2KeyToClipId.get(f.r2_key)
+        return !existingClipId || !usedClipIds.has(existingClipId)
+      }) ?? footage[0] ?? null
 
     if (chosen_footage) {
-      const { data: existing } = await supabaseAdmin
-        .from('model_clips')
-        .select('id')
-        .eq('model_id', model.id)
-        .eq('r2_key', chosen_footage.r2_key)
-        .maybeSingle()
-
-      if (existing) {
-        clipId = existing.id
+      const existingClipId = r2KeyToClipId.get(chosen_footage.r2_key)
+      if (existingClipId) {
+        clipId = existingClipId
       } else {
         const { data: newClip } = await supabaseAdmin
           .from('model_clips')
-          .insert({ model_id: model.id, r2_key: chosen_footage.r2_key, filename: chosen_footage.label ?? chosen_footage.r2_key.split('/').pop(), duration_seconds: chosen_footage.trim_end ?? null, tags: chosen_footage.tags ?? [] })
+          .insert({
+            model_id: model.id,
+            r2_key: chosen_footage.r2_key,
+            filename: chosen_footage.label ?? chosen_footage.r2_key.split('/').pop(),
+            duration_seconds: chosen_footage.trim_end ?? null,
+            tags: chosen_footage.tags ?? [],
+          })
           .select('id')
           .single()
         if (newClip) clipId = newClip.id
