@@ -8,7 +8,6 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
-import Anthropic from '@anthropic-ai/sdk'
 import { r2, uploadToR2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
@@ -30,59 +29,43 @@ const BANNED_HASHTAGS = new Set([
   'furry','hentai','femboy','ladyboy','shemale','trans',
 ])
 
-async function selectHashtags(overlayText: string, nicheHashtags: string[]): Promise<string[]> {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
-  let trendingImpact: string[] = []
-  let trendingRising: string[] = []
+// V1 formula: 5 Most Viewed + 3 Highest Impact + 2 Lowest Saturation = 10 total
+// All pulled mechanically from fansly-tags.vercel.app — no Claude, no model-specific tags.
+// V2 will layer in FanCore FYP Analytics → Tags (model-specific performance data).
+async function selectHashtags(): Promise<string[]> {
+  const FALLBACK = ['fansly', 'fyp', 'foryou', 'viral', 'model', 'subscribe', 'exclusive', 'content', 'creator', 'onlyfans']
   try {
     const res = await fetch('https://fansly-tags.vercel.app/api/tags', {
       headers: { 'Cache-Control': 'no-store' },
     } as RequestInit)
-    if (res.ok) {
-      const data = await res.json() as { highestImpact?: { tag: string }[]; fastestRising?: { tag: string }[] }
-      trendingImpact = (data.highestImpact ?? []).map(t => t.tag).filter(t => !BANNED_HASHTAGS.has(t.toLowerCase())).slice(0, 20)
-      trendingRising = (data.fastestRising ?? []).map(t => t.tag).filter(t => !BANNED_HASHTAGS.has(t.toLowerCase())).slice(0, 15)
+    if (!res.ok) throw new Error(`fansly-tags API ${res.status}`)
+    const data = await res.json() as {
+      mostViewed?: { tag: string }[]
+      highestImpact?: { tag: string }[]
+      lowestSaturation?: { tag: string }[]
     }
-  } catch { /* skip — use niche tags as fallback */ }
 
-  const prompt = `Select exactly 10 hashtags for this Fansly video post. Return ONLY a JSON array of 10 strings, lowercase, no # symbol. Nothing else.
-
-VIDEO OVERLAY TEXT: "${overlayText}"
-
-MODEL NICHE TAGS: ${nicheHashtags.join(', ') || 'none'}
-
-CURRENTLY TRENDING — Highest Impact:
-${trendingImpact.join(', ') || 'unavailable'}
-
-CURRENTLY TRENDING — Fastest Rising:
-${trendingRising.join(', ') || 'unavailable'}
-
-RULES:
-- Pick 2–3 from Highest Impact that match the video's content/vibe
-- Pick 1–2 from Fastest Rising if relevant
-- Fill remaining slots with niche-specific tags that fit this video
-- Always vary — do not return the same 10 every time
-- Do NOT use banned tags: anal, trans, deepthroat, creampie, gangbang, bdsm, etc.`
-
-  try {
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 150,
-      messages: [{ role: 'user', content: prompt }],
-    })
-    const text = (response.content[0] as { type: string; text: string }).text.trim()
-    const match = text.match(/\[[\s\S]*?\]/)
-    if (match) {
-      const tags: string[] = JSON.parse(match[0])
-      return tags.filter(t => !BANNED_HASHTAGS.has(t.toLowerCase())).slice(0, 10)
+    const used = new Set<string>()
+    const pickN = (list: { tag: string }[] | undefined, n: number): string[] => {
+      const out: string[] = []
+      for (const item of (list ?? [])) {
+        if (out.length >= n) break
+        const t = item.tag.toLowerCase()
+        if (!BANNED_HASHTAGS.has(t) && !used.has(t)) { out.push(t); used.add(t) }
+      }
+      return out
     }
+
+    const mostViewed     = pickN(data.mostViewed, 5)
+    const highestImpact  = pickN(data.highestImpact, 3)
+    const lowestSat      = pickN(data.lowestSaturation, 2)
+    const tags = [...mostViewed, ...highestImpact, ...lowestSat]
+    console.log(`[post] hashtags: mostViewed=[${mostViewed}] highestImpact=[${highestImpact}] lowestSat=[${lowestSat}]`)
+    return tags.length === 10 ? tags : [...tags, ...FALLBACK].slice(0, 10)
   } catch (e) {
-    console.error('  ⚠ selectHashtags failed:', (e as Error).message)
+    console.error('[post] selectHashtags failed:', (e as Error).message)
+    return FALLBACK
   }
-
-  // Fallback: model's niche hashtags
-  return nicheHashtags.slice(0, 10)
 }
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
@@ -191,21 +174,19 @@ export async function postVideoJob(jobId: string): Promise<void> {
   // Load job + model
   const { data: job, error: jobErr } = await supabaseAdmin
     .from('video_jobs')
-    .select('id, model_id, personalized_text, output_r2_key, trends_models(fansly_username, hashtags)')
+    .select('id, model_id, output_r2_key, trends_models(fansly_username)')
     .eq('id', jobId)
     .single()
 
   if (jobErr || !job) throw new Error(`postVideoJob: job not found — ${jobErr?.message}`)
   if (!job.output_r2_key) throw new Error(`postVideoJob: no output_r2_key for job ${jobId}`)
 
-  const modelMeta = (job as unknown as { trends_models: { fansly_username: string; hashtags: string[] } | null }).trends_models
+  const modelMeta = (job as unknown as { trends_models: { fansly_username: string } | null }).trends_models
   if (!modelMeta) throw new Error(`postVideoJob: no model data for job ${jobId}`)
 
   const handle = modelMeta.fansly_username
-  const nicheHashtags: string[] = modelMeta.hashtags ?? []
-  const overlayText = (job as unknown as { personalized_text: string | null }).personalized_text ?? ''
 
-  const selectedHashtags = await selectHashtags(overlayText, nicheHashtags)
+  const selectedHashtags = await selectHashtags()
   console.log(`[post] Tags for ${jobId}: ${selectedHashtags.join(' ')}`)
 
   const scheduledFor = await getNextSlot(job.model_id)
@@ -297,10 +278,14 @@ export async function postVideoJob(jobId: string): Promise<void> {
       console.log('[post] walls: already pre-selected, skipping dropdown')
     }
 
-    // 4. Media — upload video file
-    const fileInput = page.locator('input[type="file"]').nth(0)
-    await fileInput.setInputFiles(videoPath)
-    await page.waitForTimeout(3000)
+    // 4. Media — trigger filechooser by clicking the upload area, then set the file
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('text=Drop media here').first().click(),
+    ])
+    await fileChooser.setFiles(videoPath)
+    console.log('[post] media: file set via filechooser')
+    await page.waitForTimeout(8000) // allow server-side processing / preview to render
 
     // Debug screenshot before submit — shows what we're about to submit
     await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
