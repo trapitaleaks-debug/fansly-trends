@@ -8,6 +8,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { chromium, type Browser, type Page } from 'playwright'
+import Anthropic from '@anthropic-ai/sdk'
 import { r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
@@ -17,6 +18,71 @@ const FANCORE_URL = 'https://fancore-production.up.railway.app'
 const SESSION_FILE = path.join(__dirname, 'sessions', 'fancore.json')
 const POST_HOUR_UTC = 22
 const DAILY_LIMIT = 2
+
+const BANNED_HASHTAGS = new Set([
+  'anal','analsex','deepthroat','blowjob','bj','handjob','rimjob','rimming','fisting',
+  'fuck','hardfuck','dp','doublepenetration','hardcore','cum','cumshot','creampie',
+  'facial','squirt','squirting','bigdick','hugedick','bigcock','hugecock','monstercock',
+  'bbc','bwc','porn','sex','sextape','hotwife','swingers','gangbang','taboo','incest',
+  'stepsister','stepbrother','stepmom','stepdad','nude','naked','xxx','bdsm','bondage',
+  'dominatrix','cuckold','feet','footfetish','scat','piss','pissing','futa','futanari',
+  'furry','hentai','femboy','ladyboy','shemale','trans',
+])
+
+async function selectHashtags(overlayText: string, nicheHashtags: string[]): Promise<string[]> {
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+  let trendingImpact: string[] = []
+  let trendingRising: string[] = []
+  try {
+    const res = await fetch('https://fansly-tags.vercel.app/api/tags', {
+      headers: { 'Cache-Control': 'no-store' },
+    } as RequestInit)
+    if (res.ok) {
+      const data = await res.json() as { highestImpact?: { tag: string }[]; fastestRising?: { tag: string }[] }
+      trendingImpact = (data.highestImpact ?? []).map(t => t.tag).filter(t => !BANNED_HASHTAGS.has(t.toLowerCase())).slice(0, 20)
+      trendingRising = (data.fastestRising ?? []).map(t => t.tag).filter(t => !BANNED_HASHTAGS.has(t.toLowerCase())).slice(0, 15)
+    }
+  } catch { /* skip — use niche tags as fallback */ }
+
+  const prompt = `Select exactly 10 hashtags for this Fansly video post. Return ONLY a JSON array of 10 strings, lowercase, no # symbol. Nothing else.
+
+VIDEO OVERLAY TEXT: "${overlayText}"
+
+MODEL NICHE TAGS: ${nicheHashtags.join(', ') || 'none'}
+
+CURRENTLY TRENDING — Highest Impact:
+${trendingImpact.join(', ') || 'unavailable'}
+
+CURRENTLY TRENDING — Fastest Rising:
+${trendingRising.join(', ') || 'unavailable'}
+
+RULES:
+- Pick 2–3 from Highest Impact that match the video's content/vibe
+- Pick 1–2 from Fastest Rising if relevant
+- Fill remaining slots with niche-specific tags that fit this video
+- Always vary — do not return the same 10 every time
+- Do NOT use banned tags: anal, trans, deepthroat, creampie, gangbang, bdsm, etc.`
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 150,
+      messages: [{ role: 'user', content: prompt }],
+    })
+    const text = (response.content[0] as { type: string; text: string }).text.trim()
+    const match = text.match(/\[[\s\S]*?\]/)
+    if (match) {
+      const tags: string[] = JSON.parse(match[0])
+      return tags.filter(t => !BANNED_HASHTAGS.has(t.toLowerCase())).slice(0, 10)
+    }
+  } catch (e) {
+    console.error('  ⚠ selectHashtags failed:', (e as Error).message)
+  }
+
+  // Fallback: model's niche hashtags
+  return nicheHashtags.slice(0, 10)
+}
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
   const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
@@ -101,8 +167,13 @@ export async function postVideoJob(jobId: string): Promise<void> {
   if (!modelMeta) throw new Error(`postVideoJob: no model data for job ${jobId}`)
 
   const handle = modelMeta.fansly_username
-  const hashtags: string[] = modelMeta.hashtags ?? []
-  const caption = hashtags.map(t => `#${t}`).join(' ')
+  const nicheHashtags: string[] = modelMeta.hashtags ?? []
+  const overlayText = (job as unknown as { personalized_text: string | null }).personalized_text ?? ''
+
+  const selectedHashtags = await selectHashtags(overlayText, nicheHashtags)
+  const caption = selectedHashtags.map(t => `#${t}`).join(' ')
+  console.log(`[post] Tags for ${jobId}: ${selectedHashtags.join(', ')}`)
+
   const scheduledFor = await getNextSlot(job.model_id)
 
   console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()}`)
