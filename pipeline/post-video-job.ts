@@ -249,17 +249,46 @@ export async function postVideoJob(jobId: string): Promise<void> {
     await tagsInput.fill(selectedHashtags.map(t => `#${t}`).join(' '))
 
     // 2. Schedule for — field is read-only (mdm-cal custom datepicker).
-    //    Scroll into view first so the calendar opens within the viewport,
-    //    then interact with mdm-cal-specific selectors.
+    //    Save a pre-picker screenshot first to diagnose selector issues in Railway.
+    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
+      uploadToR2(`debug/post-${jobId}-before-datepicker.png`, buf, 'image/png')
+    ).catch(() => {})
+
     const targetDay = scheduledFor.getUTCDate()
-    const schedInput = page.locator('input[placeholder*="dd/mm"]').nth(0)
-    await schedInput.scrollIntoViewIfNeeded()
-    await page.waitForTimeout(300)
-    // Click the input with force:true (it has pointer-events:none as display field)
-    await schedInput.click({ force: true }).catch(async () => {
-      await schedInput.locator('xpath=..').click({ force: true }).catch(() => {})
-    })
-    await page.waitForTimeout(1000)
+
+    // Try multiple strategies to open the calendar:
+    //   1. Click the black calendar icon button (svg/img next to the input)
+    //   2. Click any input-like element near "Schedule for" label
+    //   3. Force-click any date-placeholder input
+    const calendarOpened = await (async () => {
+      // Strategy 1: click the calendar icon button (typically an SVG or img trigger)
+      const calIconBtn = page.locator('button[class*="cal"], button[aria-label*="date"], button[aria-label*="calendar"], [class*="datepick"] button, [class*="schedule"] button, [class*="mdm-cal"] button').first()
+      const calIconVisible = await calIconBtn.isVisible().catch(() => false)
+      if (calIconVisible) {
+        await calIconBtn.click({ force: true })
+        await page.waitForTimeout(800)
+        return true
+      }
+      // Strategy 2: find input by any date-related placeholder or near "Schedule for"
+      const dateInputs = await page.locator('input[placeholder*="/"], input[placeholder*="date"], input[placeholder*="Date"], input[readonly][class*="date"], input[readonly][class*="mdm"]').all()
+      if (dateInputs.length > 0) {
+        await dateInputs[0].scrollIntoViewIfNeeded().catch(() => {})
+        await dateInputs[0].click({ force: true }).catch(() => {})
+        await page.waitForTimeout(800)
+        return true
+      }
+      // Strategy 3: click any element whose text or placeholder contains the date format pattern
+      // or click a wrapper div with mdm-cal in class
+      const mdmTrigger = page.locator('[class*="mdm-cal-trigger"], [class*="mdm-cal-input"], [class*="date-picker"]').first()
+      const mdmVisible = await mdmTrigger.isVisible().catch(() => false)
+      if (mdmVisible) {
+        await mdmTrigger.click({ force: true })
+        await page.waitForTimeout(800)
+        return true
+      }
+      return false
+    })()
+    console.log(`[post] calendar open strategy: ${calendarOpened}`)
 
     // Debug screenshot (fullPage so we can see the calendar even if it's below fold)
     await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
