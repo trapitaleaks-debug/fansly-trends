@@ -145,12 +145,24 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const trimStart = bankItem?.trim_start ?? 0
     const trimEnd = bankItem?.trim_end ?? null
 
-    // 2. Get duration of trimmed segment
-    const fullDurationRaw = execSync(
-      `ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${rawPath}"`,
-      { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } }
-    ).toString().trim()
-    const fullDuration = parseFloat(fullDurationRaw) || 10
+    // 2. Get duration — probe format first, then video stream (WebM from MediaRecorder often lacks format duration)
+    let fullDuration = 0
+    try {
+      const fmtDur = execSync(
+        `ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${rawPath}"`,
+        { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } }
+      ).toString().trim()
+      fullDuration = parseFloat(fmtDur) || 0
+    } catch { /* ignore */ }
+    if (!fullDuration || fullDuration < 0.1) {
+      try {
+        const strmDur = execSync(
+          `ffprobe -v quiet -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${rawPath}"`,
+          { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } }
+        ).toString().trim()
+        fullDuration = parseFloat(strmDur) || 15
+      } catch { fullDuration = 15 }
+    }
     const duration = trimEnd != null ? trimEnd - trimStart : fullDuration - trimStart
 
     // 3. Try to extract audio from trending post's source video
@@ -182,9 +194,9 @@ export async function processVideoJob(jobId: string): Promise<void> {
 
     const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
     const vf = dtFilter ? `-vf "${dtFilter}"` : ''
-    // -ss before -i = fast input seek; -t limits output duration to the trimmed segment
+    // -ss before -i = fast input seek; -t limits duration (omit when file is pre-trimmed)
     const seekFlag = trimStart > 0 ? `-ss ${trimStart.toFixed(3)}` : ''
-    const durFlag = `-t ${duration.toFixed(3)}`
+    const durFlag = (trimEnd != null || trimStart > 0) ? `-t ${duration.toFixed(3)}` : ''
     const rawInput = `${seekFlag} -i "${rawPath}" ${durFlag}`
     const videoIn = hasAudio ? `${ffmpegBin()} ${rawInput} -i "${audioPath}"` : `${ffmpegBin()} ${rawInput}`
     const audioMap = hasAudio ? `-c:a aac -shortest` : `-an`

@@ -141,6 +141,54 @@ function TagChips({ tags, presetTags, onChange }: { tags: string[]; presetTags: 
   )
 }
 
+async function trimVideoClientSide(
+  file: File,
+  trimStart: number,
+  trimEnd: number,
+  onProgress: (msg: string) => void
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video')
+    const objectUrl = URL.createObjectURL(file)
+    video.src = objectUrl
+    video.preload = 'auto'
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const captureStreamFn = (video as any).captureStream?.bind(video) || (video as any).mozCaptureStream?.bind(video)
+    if (!captureStreamFn) { URL.revokeObjectURL(objectUrl); reject(new Error('captureStream not supported in this browser')); return }
+
+    video.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Video load error')) }
+    video.onloadedmetadata = () => {
+      // 10Mbps VP9 gives dramatically better quality than browser default (~1-2Mbps)
+      const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+        .find(t => { try { return MediaRecorder.isTypeSupported(t) } catch { return false } }) ?? 'video/webm'
+      const stream: MediaStream = captureStreamFn()
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 10_000_000 })
+      const chunks: Blob[] = []
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+      recorder.onstop = () => {
+        URL.revokeObjectURL(objectUrl)
+        resolve(new Blob(chunks, { type: mimeType.split(';')[0] }))
+      }
+      video.currentTime = trimStart
+      video.onseeked = () => {
+        video.onseeked = null
+        const duration = trimEnd - trimStart
+        let remaining = Math.ceil(duration)
+        onProgress(`Trimming... ${remaining}s`)
+        const tick = setInterval(() => { remaining = Math.max(0, remaining - 1); onProgress(`Trimming... ${remaining}s`) }, 1000)
+        recorder.start(250)
+        video.play()
+        const check = () => {
+          if (video.currentTime >= trimEnd) { clearInterval(tick); video.pause(); recorder.stop() }
+          else requestAnimationFrame(check)
+        }
+        requestAnimationFrame(check)
+      }
+    }
+    video.load()
+  })
+}
+
 export default function ContentBank({ username }: { username: string }) {
   const [pipelineModelId, setPipelineModelId] = useState<string | null>(null)
   const [items, setItems] = useState<ContentBankItem[]>([])
@@ -201,22 +249,43 @@ export default function ContentBank({ username }: { username: string }) {
     if (!file || !pipelineModelId) return
     setUploading(true)
     setUploadError(null)
-    setTrimProgress('Uploading...')
 
-    // Upload the original file directly — no client-side re-encoding.
-    // trim_start/trim_end are stored in the DB and applied by ffmpeg at render time.
+    let blob: Blob
+    try {
+      blob = await trimVideoClientSide(file, trimStart, trimEnd, setTrimProgress)
+    } catch (e) {
+      setUploadError((e as Error).message)
+      setUploading(false); setTrimProgress(null); return
+    }
+
+    setTrimProgress('Uploading...')
+    const filename = file.name.replace(/\.[^.]+$/, '.webm')
+    // File is pre-trimmed; store trim_start=0, trim_end=null so ffmpeg uses full file
     const res = await fetch('/api/pipeline/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_id: pipelineModelId, type: 'own_footage', filename: file.name, label: null, trim_start: trimStart, trim_end: trimEnd }),
+      body: JSON.stringify({ model_id: pipelineModelId, type: 'own_footage', filename, label: null, trim_start: 0, trim_end: null }),
     })
     if (!res.ok) { setUploadError('Failed to get upload URL'); setUploading(false); setTrimProgress(null); return }
     const { uploadUrl } = await res.json()
-    const contentType = file.type || 'video/mp4'
-    const put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': contentType } })
+
+    const xhr = new XMLHttpRequest()
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100)
+        setTrimProgress(`Uploading... ${pct}%`)
+      }
+    }
+    await new Promise<void>((resolve, reject) => {
+      xhr.onload = () => { if (xhr.status >= 200 && xhr.status < 300) resolve(); else reject(new Error(`Upload failed: ${xhr.status}`)) }
+      xhr.onerror = () => reject(new Error('Upload network error'))
+      xhr.open('PUT', uploadUrl)
+      xhr.setRequestHeader('Content-Type', 'video/webm')
+      xhr.send(blob)
+    }).catch(e => { setUploadError((e as Error).message); setUploading(false); setTrimProgress(null) })
+
     setUploading(false)
     setTrimProgress(null)
-    if (!put.ok) { setUploadError('Upload to storage failed'); return }
     setFile(null); setShowTrim(false)
     fetchItems()
   }
