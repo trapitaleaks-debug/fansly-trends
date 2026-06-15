@@ -203,31 +203,9 @@ export async function postVideoJob(jobId: string): Promise<void> {
   page.setDefaultTimeout(60_000)
   page.setDefaultNavigationTimeout(30_000)
 
-  // Intercept ALL fetch + XHR BEFORE page JS runs — captures upload URLs even if fetch is called
-  // from within the bundled framework code that captured the original reference at startup.
-  await page.addInitScript(() => {
-    const origFetch = (window as any)._origFetch || window.fetch
-    ;(window as any)._origFetch = origFetch
-    window.fetch = async function (...args: any[]) {
-      const url = typeof args[0] === 'string' ? args[0] : (args[0] as any)?.url || ''
-      const method = (args[1]?.method || 'GET').toUpperCase()
-      console.log(`[FC-FETCH] ${method} ${url.slice(0, 200)}`)
-      const r = await origFetch.apply(window, args)
-      console.log(`[FC-FETCH-RESP] ${method} ${url.slice(0, 100)} => ${r.status}`)
-      return r
-    }
-    const proto = XMLHttpRequest.prototype as any
-    const origOpen = proto.open
-    const origSend = proto.send
-    proto.open = function (method: string, url: string, ...rest: any[]) {
-      this.__url = url; this.__method = method
-      return origOpen.apply(this, [method, url, ...rest])
-    }
-    proto.send = function (...rest: any[]) {
-      console.log(`[FC-XHR] ${this.__method} ${(this.__url || '').slice(0, 200)}`)
-      return origSend.apply(this, rest)
-    }
-  })
+  // NOTE: addInitScript fetch/XHR patching was removed — it broke FanCore's drag-and-drop
+  // handler. The slot state was never set when window.fetch was monkey-patched before page load,
+  // causing the per-slot submit button to be a no-op (no post created at all).
 
   // Capture ALL WebSocket frames — FanCore may upload file data via WS binary frames.
   const wsLogs: string[] = []
@@ -403,9 +381,8 @@ export async function postVideoJob(jobId: string): Promise<void> {
       }))
     ).catch(() => [])
     console.log(`[post] media: file input state: ${JSON.stringify(fileInputState)}`)
-    const fetchLogsAfterSelect = pageConsoleLogs.filter(l => l.includes('FC-FETCH') || l.includes('FC-XHR'))
-    console.log(`[post] media: POST/PUT after select: ${JSON.stringify(fetchLogsAfterSelect.filter(l => l.includes(' POST ') || l.includes(' PUT ')))}`)
     console.log(`[post] media: WS logs after select: ${JSON.stringify(wsLogs)}`)
+    console.log(`[post] media: page console after select: ${JSON.stringify(pageConsoleLogs.slice(-10))}`)
 
     // Check whether the slot shows media preview — use visible-only check to avoid false positives
     // from Already Scheduled tab entries in the DOM.
@@ -454,11 +431,9 @@ export async function postVideoJob(jobId: string): Promise<void> {
       if (cnt > 0) return exact.nth(0)
       return page.locator('button', { hasText: /Schedule Post/i }).nth(0)
     })()
-    // Snapshot fetch/WS state BEFORE clicking submit (so we can diff what changes after)
-    const fetchLogsBeforeSubmit = pageConsoleLogs.filter(l => l.includes('FC-FETCH') || l.includes('FC-XHR')).length
     const wsLogsBeforeSubmit = wsLogs.length
 
-    // Monitor HTTP requests during submit (complements the WS monitoring already active)
+    // Monitor ALL HTTP requests during submit — captures file upload URL if FanCore does it at submit time
     const submitRequests: string[] = []
     const submitListener = (req: any) => {
       submitRequests.push(`${req.method()} ${req.url().slice(0, 140)}`)
@@ -466,20 +441,17 @@ export async function postVideoJob(jobId: string): Promise<void> {
     page.on('request', submitListener)
 
     await submitBtn.click()
-    console.log('[post] submit clicked — waiting for FanCore to process (90s)')
+    console.log('[post] submit clicked — waiting for FanCore upload (90s)')
 
-    // Wait for FanCore to upload and finalize — give extra time in case upload is via WS binary frames
     await page.waitForTimeout(90000)
 
     page.off('request', submitListener)
 
-    // Log ALL diagnostics captured since submit
-    const fetchLogsAfterSubmit = pageConsoleLogs.filter(l => l.includes('FC-FETCH') || l.includes('FC-XHR'))
     const wsLogsAfterSubmit = wsLogs.slice(wsLogsBeforeSubmit)
-    console.log(`[post] submit: HTTP requests: ${JSON.stringify(submitRequests.slice(-20))}`)
-    console.log(`[post] submit: new fetch/XHR logs: ${JSON.stringify(fetchLogsAfterSubmit.slice(fetchLogsBeforeSubmit).slice(-20))}`)
+    const postPutRequests = submitRequests.filter(r => r.startsWith('POST') || r.startsWith('PUT'))
+    console.log(`[post] submit: POST/PUT HTTP: ${JSON.stringify(postPutRequests)}`)
     console.log(`[post] submit: new WS logs: ${JSON.stringify(wsLogsAfterSubmit.slice(-30))}`)
-    console.log(`[post] submit: page console logs (all): ${JSON.stringify(pageConsoleLogs.filter(l => !l.includes('FC-FETCH') && !l.includes('FC-XHR')).slice(-20))}`)
+    console.log(`[post] submit: page console: ${JSON.stringify(pageConsoleLogs.slice(-15))}`)
 
     // 6. Check "Already Scheduled" tab — count total posts before/after to verify our post was added
     await page.locator('text=Already Scheduled').first().click()
