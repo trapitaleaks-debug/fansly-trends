@@ -203,6 +203,59 @@ export async function postVideoJob(jobId: string): Promise<void> {
   page.setDefaultTimeout(60_000)
   page.setDefaultNavigationTimeout(30_000)
 
+  // Intercept ALL fetch + XHR BEFORE page JS runs — captures upload URLs even if fetch is called
+  // from within the bundled framework code that captured the original reference at startup.
+  await page.addInitScript(() => {
+    const origFetch = (window as any)._origFetch || window.fetch
+    ;(window as any)._origFetch = origFetch
+    window.fetch = async function (...args: any[]) {
+      const url = typeof args[0] === 'string' ? args[0] : (args[0] as any)?.url || ''
+      const method = (args[1]?.method || 'GET').toUpperCase()
+      console.log(`[FC-FETCH] ${method} ${url.slice(0, 200)}`)
+      const r = await origFetch.apply(window, args)
+      console.log(`[FC-FETCH-RESP] ${method} ${url.slice(0, 100)} => ${r.status}`)
+      return r
+    }
+    const proto = XMLHttpRequest.prototype as any
+    const origOpen = proto.open
+    const origSend = proto.send
+    proto.open = function (method: string, url: string, ...rest: any[]) {
+      this.__url = url; this.__method = method
+      return origOpen.apply(this, [method, url, ...rest])
+    }
+    proto.send = function (...rest: any[]) {
+      console.log(`[FC-XHR] ${this.__method} ${(this.__url || '').slice(0, 200)}`)
+      return origSend.apply(this, rest)
+    }
+  })
+
+  // Capture ALL WebSocket frames — FanCore may upload file data via WS binary frames.
+  const wsLogs: string[] = []
+  page.on('websocket', ws => {
+    wsLogs.push(`OPEN:${ws.url().slice(0, 80)}`)
+    ws.on('framesent', f => {
+      const p = f.payload
+      const size = typeof p === 'string' ? p.length : ((p as any)?.byteLength ?? 0)
+      const preview = typeof p === 'string' ? p.slice(0, 80) : `[binary:${size}b]`
+      wsLogs.push(`SENT:${preview}`)
+    })
+    ws.on('framereceived', f => {
+      const p = f.payload
+      const size = typeof p === 'string' ? p.length : ((p as any)?.byteLength ?? 0)
+      const preview = typeof p === 'string' ? p.slice(0, 80) : `[binary:${size}b]`
+      wsLogs.push(`RECV:${preview}`)
+    })
+  })
+
+  // Capture page console output — FanCore may log upload progress or errors.
+  const pageConsoleLogs: string[] = []
+  page.on('console', msg => {
+    pageConsoleLogs.push(`${msg.type()}:${msg.text().slice(0, 150)}`)
+  })
+  page.on('pageerror', err => {
+    pageConsoleLogs.push(`PAGEERR:${err.message.slice(0, 150)}`)
+  })
+
   // Master 12-minute timeout — if anything hangs (R2 stall, Playwright deadlock), close the browser
   // Budget: R2 download (2min) + upload wait (1.5min) + form fill (1min) + verify (1min) + buffer
   const masterTimer = setTimeout(() => {
@@ -279,69 +332,71 @@ export async function postVideoJob(jobId: string): Promise<void> {
       console.log('[post] walls: already pre-selected, skipping dropdown')
     }
 
-    // 4. Media — upload video via drag-and-drop simulation.
-    // filechooser.setFiles doesn't trigger FanCore's handler (no POST/PUT seen = file not processed).
-    // Solution: serve the file via page.route (fake HTTPS, no CORS) → fetch in browser →
-    // create DataTransfer with real File → dispatch drag events to FanCore's drop zone.
+    // 4. Media — upload via file chooser dialog (same mechanism as manual upload per user's video).
+    //    Drag-and-drop approach: FanCore shows preview but "0 media" on submit every time.
+    //    Filechooser: uses CDP setInputFiles (isTrusted=true) which triggers FanCore's real handler.
     let uploadMethod = 'none'
-
-    const fakeUrl = 'https://media-upload-local.internal/upload.mp4'
     const videoName = path.basename(videoPath)
-    await page.route(fakeUrl, async route => {
-      const buffer = fs.readFileSync(videoPath)
-      await route.fulfill({
-        status: 200,
-        contentType: 'video/mp4',
-        headers: { 'Content-Length': String(buffer.length), 'Access-Control-Allow-Origin': '*' },
-        body: buffer,
-      })
-    })
+    const videoSizeMB = Math.round(fs.statSync(videoPath).size / 1024 / 1024)
+    console.log(`[post] media: uploading ${videoName} (${videoSizeMB}MB) via filechooser`)
 
-    try {
-      // Fetch video in browser context and build DataTransfer
-      console.log(`[post] media: loading ${videoName} (${Math.round(fs.statSync(videoPath).size / 1024 / 1024)}MB) into browser`)
-      const dataTransfer = await page.evaluateHandle(async ([url, name]: [string, string]) => {
-        const res = await fetch(url)
-        const buf = await res.arrayBuffer()
-        const file = new File([buf], name, { type: 'video/mp4' })
-        const dt = new DataTransfer()
-        dt.items.add(file)
-        return dt
-      }, [fakeUrl, videoName] as [string, string])
+    // Check for a pre-existing hidden file input first (some implementations keep one in DOM always)
+    const preExistingInput = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('input[type="file"]')).length
+    )
+    console.log(`[post] media: pre-existing file inputs: ${preExistingInput}`)
 
-      await page.unroute(fakeUrl)
-
-      // Dispatch drag events to FanCore's drop zone
-      const dropZone = page.locator('text=/[Dd]rop media/').first()
-      await dropZone.waitFor({ state: 'visible', timeout: 10000 })
-      await dropZone.dispatchEvent('dragenter', { dataTransfer })
-      await page.waitForTimeout(100)
-      await dropZone.dispatchEvent('dragover', { dataTransfer })
-      await page.waitForTimeout(100)
-      await dropZone.dispatchEvent('drop', { dataTransfer })
-      uploadMethod = 'drag-and-drop'
-      console.log('[post] media: drag-and-drop dispatched')
-    } catch (dndErr) {
-      await page.unroute(fakeUrl).catch(() => {})
-      console.log(`[post] media: drag-and-drop failed (${(dndErr as Error).message}) — trying filechooser`)
+    if (preExistingInput > 0) {
+      // Direct setInputFiles bypasses the dialog entirely — fastest path
       try {
-        const [fileChooser] = await Promise.all([
-          page.waitForEvent('filechooser', { timeout: 10000 }),
-          page.locator('text=/[Dd]rop media|[Cc]lick to upload/').first().click(),
-        ])
-        await fileChooser.setFiles(videoPath)
-        uploadMethod = 'filechooser-fallback'
-      } catch (fcErr) {
-        console.log(`[post] media: filechooser also failed: ${(fcErr as Error).message}`)
+        await page.setInputFiles('input[type="file"]', videoPath)
+        uploadMethod = 'direct-setInputFiles'
+        console.log('[post] media: direct setInputFiles on pre-existing input')
+      } catch (e) {
+        console.log(`[post] media: direct setInputFiles failed: ${(e as Error).message}`)
       }
     }
 
-    // Wait for FanCore to process the drop — "1 media" count appears in the Medias section
+    if (uploadMethod === 'none') {
+      // Click the drop zone to open file dialog, intercept, set file
+      try {
+        const [fileChooser] = await Promise.all([
+          page.waitForEvent('filechooser', { timeout: 15000 }),
+          page.locator('text=/[Dd]rop media|[Cc]lick to upload/').first().click(),
+        ])
+        await fileChooser.setFiles(videoPath)
+        uploadMethod = 'filechooser'
+        console.log('[post] media: filechooser setFiles called')
+      } catch (fcErr) {
+        console.log(`[post] media: filechooser failed: ${(fcErr as Error).message}`)
+      }
+    }
+
+    // Wait 5s for FanCore to process the file selection, then check state
+    await page.waitForTimeout(5000)
+
+    // Diagnostic: check file inputs, fetch/XHR logs, WebSocket state
+    const fileInputState = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('input[type="file"]')).map((i) => ({
+        id: (i as HTMLInputElement).id,
+        cls: (i as HTMLInputElement).className.slice(0, 60),
+        filesCount: (i as HTMLInputElement).files?.length ?? 0,
+        fileName: (i as HTMLInputElement).files?.[0]?.name ?? 'none',
+      }))
+    ).catch(() => [])
+    console.log(`[post] media: file input state after selection: ${JSON.stringify(fileInputState)}`)
+    console.log(`[post] media: fetch/XHR logs (0-5s after select): ${JSON.stringify(pageConsoleLogs.filter(l => l.includes('FC-FETCH') || l.includes('FC-XHR')).slice(-20))}`)
+    console.log(`[post] media: WS logs (0-5s after select): ${JSON.stringify(wsLogs.slice(-20))}`)
+
+    // Confirm "Selected Media (1)" appears in the slot — the specific string FanCore shows
+    // after a file is properly attached (NOT to be confused with "1 media" in Already Scheduled tab).
     try {
-      await page.waitForSelector('text=/1 media|Selected Media/', { timeout: 20000 })
-      console.log('[post] media: confirmed 1 media in slot — upload will happen at submit')
+      await page.waitForSelector('text=/Selected Media.*1|1.*media|Medias.*1/', { timeout: 20000 })
+      console.log('[post] media: confirmed Selected Media in slot')
     } catch {
-      console.log('[post] media: no confirmation of media — screenshot will show state')
+      // Check slot 1 inner text to see what's actually there
+      const slot1Text = await page.locator('[class*="slot"], [class*="card"], [class*="bulk"]').first().innerText().catch(() => '')
+      console.log(`[post] media: no Selected Media found — slot1 text: ${slot1Text.slice(0, 300)}`)
     }
 
     // Screenshot after upload to verify media was attached
@@ -385,7 +440,11 @@ export async function postVideoJob(jobId: string): Promise<void> {
       if (cnt > 0) return exact.nth(0)
       return page.locator('button', { hasText: /Schedule Post/i }).nth(0)
     })()
-    // Monitor ALL requests during submit — captures FanCore's upload URL + CDN timing
+    // Snapshot fetch/WS state BEFORE clicking submit (so we can diff what changes after)
+    const fetchLogsBeforeSubmit = pageConsoleLogs.filter(l => l.includes('FC-FETCH') || l.includes('FC-XHR')).length
+    const wsLogsBeforeSubmit = wsLogs.length
+
+    // Monitor HTTP requests during submit (complements the WS monitoring already active)
     const submitRequests: string[] = []
     const submitListener = (req: any) => {
       submitRequests.push(`${req.method()} ${req.url().slice(0, 140)}`)
@@ -393,13 +452,20 @@ export async function postVideoJob(jobId: string): Promise<void> {
     page.on('request', submitListener)
 
     await submitBtn.click()
-    console.log('[post] submit clicked — waiting for FanCore upload to complete')
+    console.log('[post] submit clicked — waiting for FanCore to process (90s)')
 
-    // Wait up to 90s for FanCore to upload and process (upload happens at submit time)
+    // Wait for FanCore to upload and finalize — give extra time in case upload is via WS binary frames
     await page.waitForTimeout(90000)
 
     page.off('request', submitListener)
-    console.log(`[post] submit network: ${JSON.stringify(submitRequests.slice(-20))}`)
+
+    // Log ALL diagnostics captured since submit
+    const fetchLogsAfterSubmit = pageConsoleLogs.filter(l => l.includes('FC-FETCH') || l.includes('FC-XHR'))
+    const wsLogsAfterSubmit = wsLogs.slice(wsLogsBeforeSubmit)
+    console.log(`[post] submit: HTTP requests: ${JSON.stringify(submitRequests.slice(-20))}`)
+    console.log(`[post] submit: new fetch/XHR logs: ${JSON.stringify(fetchLogsAfterSubmit.slice(fetchLogsBeforeSubmit).slice(-20))}`)
+    console.log(`[post] submit: new WS logs: ${JSON.stringify(wsLogsAfterSubmit.slice(-30))}`)
+    console.log(`[post] submit: page console logs (all): ${JSON.stringify(pageConsoleLogs.filter(l => !l.includes('FC-FETCH') && !l.includes('FC-XHR')).slice(-20))}`)
 
     // 6. Check "Already Scheduled" tab — count total posts before/after to verify our post was added
     await page.locator('text=Already Scheduled').first().click()
