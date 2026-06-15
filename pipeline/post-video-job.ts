@@ -291,8 +291,10 @@ export async function postVideoJob(jobId: string): Promise<void> {
     const dtValue = `${yyyy}-${mm}-${dd}T${hh}:${min}`
     const schedInput = page.locator('input.schedule-input[type="datetime-local"]').nth(0)
     await schedInput.fill(dtValue)
-    console.log(`[post] schedule-input filled: ${dtValue}`)
+    // Tab away to commit the value into Vue's reactive state
+    await schedInput.press('Tab')
     await page.waitForTimeout(300)
+    console.log(`[post] schedule-input filled: ${dtValue}`)
 
     // 3. Walls — open dropdown, select Posts, click Done
     //    If already pre-selected (no "Select walls..." text), skip opening the dropdown
@@ -309,6 +311,13 @@ export async function postVideoJob(jobId: string): Promise<void> {
     } else {
       console.log('[post] walls: already pre-selected, skipping dropdown')
     }
+
+    // Re-fill schedule date after walls close — some Vue re-renders reset the field
+    await schedInput.fill(dtValue)
+    await schedInput.press('Tab')
+    await page.waitForTimeout(300)
+    const dateAfterWalls = await schedInput.inputValue().catch(() => '')
+    console.log(`[post] schedule-input after walls: "${dateAfterWalls}" (expected "${dtValue}")`)
 
     // 4. Media — try 4 approaches in order, log which succeeded.
     //    Key insight: 'input.bulk-file-input' are the per-slot upload inputs (3 found, one per slot).
@@ -458,6 +467,12 @@ export async function postVideoJob(jobId: string): Promise<void> {
       return page.locator('button', { hasText: /Schedule Post/i }).nth(0)
     })()
     const wsLogsBeforeSubmit = wsLogs.length
+
+    // Pre-submit: verify button enabled state and date field value
+    const submitDisabled = await submitBtn.evaluate((btn: Element) => (btn as HTMLButtonElement).disabled)
+    const submitAriaDisabled = await submitBtn.getAttribute('aria-disabled').catch(() => null)
+    const datePreSubmit = await schedInput.inputValue().catch(() => '')
+    console.log(`[post] pre-submit: btn disabled=${submitDisabled} aria-disabled=${submitAriaDisabled} date="${datePreSubmit}"`)
 
     // Monitor ALL HTTP requests during submit — captures file upload URL if FanCore does it at submit time
     const submitRequests: string[] = []
