@@ -7,7 +7,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { chromium, type Browser, type Page } from 'playwright'
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import Anthropic from '@anthropic-ai/sdk'
 import { r2, uploadToR2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
@@ -106,24 +106,43 @@ async function loginFanCore(page: Page): Promise<void> {
   console.log('  ✓ FanCore logged in')
 }
 
-// Store session in R2 so it survives Railway container restarts between deploys
+// Store full storageState (cookies + localStorage) in R2.
+// FanCore uses JWT in localStorage so addCookies() alone is not enough.
 async function saveSession(page: Page): Promise<void> {
-  const cookies = JSON.stringify(await page.context().cookies())
-  await uploadToR2(SESSION_R2_KEY, Buffer.from(cookies), 'application/json').catch(() => {})
+  try {
+    const state = await page.context().storageState()
+    await uploadToR2(SESSION_R2_KEY, Buffer.from(JSON.stringify(state)), 'application/json')
+    console.log('  ✓ Session saved to R2')
+  } catch (e) {
+    console.error('  ⚠ saveSession failed:', (e as Error).message)
+  }
 }
 
-async function loadSession(page: Page): Promise<boolean> {
+async function loadStorageState(): Promise<object | null> {
   try {
     const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: SESSION_R2_KEY }))
     const chunks: Uint8Array[] = []
     for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk)
-    const cookies = JSON.parse(Buffer.concat(chunks).toString())
-    await page.context().addCookies(cookies)
-    await page.goto(FANCORE_URL, { waitUntil: 'domcontentloaded' })
-    return !page.url().includes('/signin')
+    return JSON.parse(Buffer.concat(chunks).toString())
   } catch {
-    return false
+    return null
   }
+}
+
+// Returns a new browser context — pre-loaded with saved storageState if available.
+// Caller must check if session is valid and login if not.
+async function createContext(browser: Browser): Promise<{ context: BrowserContext; hadSavedSession: boolean }> {
+  const savedState = await loadStorageState()
+  if (savedState) {
+    console.log('  ✓ Loaded session from R2')
+    const context = await browser.newContext({
+      timezoneId: 'UTC',
+      storageState: savedState as import('playwright').BrowserContextOptions['storageState'],
+    })
+    return { context, hadSavedSession: true }
+  }
+  console.log('  ℹ No saved session — will login fresh')
+  return { context: await browser.newContext({ timezoneId: 'UTC' }), hadSavedSession: false }
 }
 
 // Returns the next 22:00 UTC datetime where this model has fewer than DAILY_LIMIT posts scheduled
@@ -185,19 +204,25 @@ export async function postVideoJob(jobId: string): Promise<void> {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
   const browser: Browser = await chromium.launch({ headless: true })
-  // UTC timezone: 22:00 entered in the picker = 22:00 UTC, no offset calculation needed
-  const context = await browser.newContext({ timezoneId: 'UTC' })
+  // createContext loads saved storageState from R2 (cookies + localStorage)
+  // UTC timezone so 22:00 entered in date picker = 22:00 UTC
+  const { context } = await createContext(browser)
   const page = await context.newPage()
 
   try {
-    const sessionRestored = await loadSession(page)
-    if (!sessionRestored) {
+    // Navigate to /bulk-posts and verify auth — storageState may have expired tokens
+    await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    if (page.url().includes('/signin')) {
+      console.log('  ℹ Session expired — logging in fresh')
       await loginFanCore(page)
       await saveSession(page)
+      await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    } else {
+      console.log('  ✓ Session valid')
     }
+    // Wait for sidebar models API call to complete after domcontentloaded
+    await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {})
 
-    // Navigate to Bulk Posting — networkidle ensures sidebar models API call completes
-    await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'networkidle', timeout: 30_000 })
     // Click the model entry in the left sidebar — wait up to 30s for it to render
     const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
     try {
