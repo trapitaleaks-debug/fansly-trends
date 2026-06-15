@@ -1,8 +1,5 @@
 'use client'
-import { useState, useEffect, useRef, useCallback } from 'react'
-
-// Tags are managed via /api/settings/content-tags — not hardcoded here
-
+import { useState, useEffect, useCallback } from 'react'
 
 export interface ContentBankItem {
   id: string
@@ -12,86 +9,6 @@ export interface ContentBankItem {
   trim_start: number
   trim_end: number | null
   created_at: string
-}
-
-function TrimSelector({ file, onConfirm, onCancel, uploading, trimProgress }: {
-  file: File
-  onConfirm: (start: number, end: number) => void
-  onCancel: () => void
-  uploading: boolean
-  trimProgress?: string | null
-}) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const [objectUrl, setObjectUrl] = useState('')
-  const [videoDuration, setVideoDuration] = useState(0)
-  const [trimStart, setTrimStart] = useState(0)
-  const [trimEnd, setTrimEnd] = useState(0)
-
-  useEffect(() => {
-    const url = URL.createObjectURL(file)
-    setObjectUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [file])
-
-  function onLoaded() {
-    const dur = videoRef.current?.duration ?? 0
-    setVideoDuration(dur)
-    setTrimEnd(Math.min(15, dur))
-  }
-
-  function updateStart(raw: number) {
-    const start = Math.min(raw, videoDuration - 7)
-    let end = trimEnd
-    if (end < start + 7) end = start + 7
-    if (end > start + 15) end = start + 15
-    if (end > videoDuration) end = videoDuration
-    setTrimStart(start); setTrimEnd(end)
-    if (videoRef.current) videoRef.current.currentTime = start
-  }
-
-  function updateEnd(raw: number) {
-    const end = Math.min(Math.max(raw, trimStart + 7), Math.min(trimStart + 15, videoDuration))
-    setTrimEnd(end)
-    if (videoRef.current) videoRef.current.currentTime = end
-  }
-
-  const selDuration = trimEnd - trimStart
-  const valid = videoDuration > 0 && selDuration >= 7 && selDuration <= 15
-
-  return (
-    <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-[#888]">Select 7–15 seconds to upload</p>
-        <span className={`text-xs font-mono ${valid ? 'text-green-400' : 'text-yellow-400'}`}>
-          {selDuration > 0 ? `${selDuration.toFixed(1)}s` : '—'}
-        </span>
-      </div>
-      {objectUrl && <video ref={videoRef} src={objectUrl} className="w-full rounded-lg max-h-44 object-contain bg-black" onLoadedMetadata={onLoaded} muted controls />}
-      {videoDuration > 0 && (
-        <div className="space-y-3">
-          <div className="relative h-5 bg-[#1a1a1a] rounded overflow-hidden">
-            <div className="absolute inset-y-0 bg-violet-500/20 border-l-2 border-r-2 border-violet-500"
-              style={{ left: `${(trimStart / videoDuration) * 100}%`, width: `${((trimEnd - trimStart) / videoDuration) * 100}%` }} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><p className="text-[10px] text-[#555] mb-1">Start: {trimStart.toFixed(1)}s</p>
-              <input type="range" min={0} max={Math.max(0, videoDuration - 7)} step={0.1} value={trimStart} onChange={e => updateStart(parseFloat(e.target.value))} className="w-full accent-violet-500" />
-            </div>
-            <div><p className="text-[10px] text-[#555] mb-1">End: {trimEnd.toFixed(1)}s</p>
-              <input type="range" min={Math.min(7, videoDuration)} max={videoDuration} step={0.1} value={trimEnd} onChange={e => updateEnd(parseFloat(e.target.value))} className="w-full accent-violet-500" />
-            </div>
-          </div>
-        </div>
-      )}
-      <div className="flex gap-2">
-        <button onClick={() => onConfirm(trimStart, trimEnd)} disabled={!valid || uploading}
-          className="flex-1 text-xs bg-white text-black px-3 py-2 rounded-lg hover:bg-[#e5e5e5] disabled:opacity-40 transition-colors">
-          {trimProgress ?? (uploading ? 'Uploading...' : 'Confirm & Upload')}
-        </button>
-        <button onClick={onCancel} disabled={uploading} className="text-xs text-[#555] hover:text-white px-3 py-2 transition-colors disabled:opacity-40">Cancel</button>
-      </div>
-    </div>
-  )
 }
 
 function TagChips({ tags, presetTags, onChange }: { tags: string[]; presetTags: string[]; onChange: (t: string[]) => void }) {
@@ -141,62 +58,11 @@ function TagChips({ tags, presetTags, onChange }: { tags: string[]; presetTags: 
   )
 }
 
-async function trimVideoClientSide(
-  file: File,
-  trimStart: number,
-  trimEnd: number,
-  onProgress: (msg: string) => void
-): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement('video')
-    const objectUrl = URL.createObjectURL(file)
-    video.src = objectUrl
-    video.preload = 'auto'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const captureStreamFn = (video as any).captureStream?.bind(video) || (video as any).mozCaptureStream?.bind(video)
-    if (!captureStreamFn) { URL.revokeObjectURL(objectUrl); reject(new Error('captureStream not supported in this browser')); return }
-
-    video.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Video load error')) }
-    video.onloadedmetadata = () => {
-      // 10Mbps VP9 gives dramatically better quality than browser default (~1-2Mbps)
-      const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-        .find(t => { try { return MediaRecorder.isTypeSupported(t) } catch { return false } }) ?? 'video/webm'
-      const stream: MediaStream = captureStreamFn()
-      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 10_000_000 })
-      const chunks: Blob[] = []
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
-      recorder.onstop = () => {
-        URL.revokeObjectURL(objectUrl)
-        resolve(new Blob(chunks, { type: mimeType.split(';')[0] }))
-      }
-      video.currentTime = trimStart
-      video.onseeked = () => {
-        video.onseeked = null
-        const duration = trimEnd - trimStart
-        let remaining = Math.ceil(duration)
-        onProgress(`Trimming... ${remaining}s`)
-        const tick = setInterval(() => { remaining = Math.max(0, remaining - 1); onProgress(`Trimming... ${remaining}s`) }, 1000)
-        recorder.start(250)
-        video.play()
-        const check = () => {
-          if (video.currentTime >= trimEnd) { clearInterval(tick); video.pause(); recorder.stop() }
-          else requestAnimationFrame(check)
-        }
-        requestAnimationFrame(check)
-      }
-    }
-    video.load()
-  })
-}
-
 export default function ContentBank({ username }: { username: string }) {
   const [pipelineModelId, setPipelineModelId] = useState<string | null>(null)
   const [items, setItems] = useState<ContentBankItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [file, setFile] = useState<File | null>(null)
-  const [showTrim, setShowTrim] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [trimProgress, setTrimProgress] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [savingTagsId, setSavingTagsId] = useState<string | null>(null)
@@ -234,7 +100,6 @@ export default function ContentBank({ username }: { username: string }) {
     if (res.ok) {
       const data = await res.json()
       setPipelineModelId(data.model?.id ?? null)
-      // Filter to videos only (own_footage), sort ascending so #1 is oldest
       const bank: ContentBankItem[] = (data.model?.content_bank ?? [])
         .filter((i: { type: string }) => i.type === 'own_footage')
         .sort((a: ContentBankItem, b: ContentBankItem) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
@@ -245,48 +110,22 @@ export default function ContentBank({ username }: { username: string }) {
 
   useEffect(() => { fetchItems() }, [fetchItems])
 
-  async function handleUpload(trimStart: number, trimEnd: number) {
-    if (!file || !pipelineModelId) return
+  async function handleFileChange(file: File) {
+    if (!pipelineModelId) return
     setUploading(true)
     setUploadError(null)
 
-    let blob: Blob
-    try {
-      blob = await trimVideoClientSide(file, trimStart, trimEnd, setTrimProgress)
-    } catch (e) {
-      setUploadError((e as Error).message)
-      setUploading(false); setTrimProgress(null); return
-    }
-
-    setTrimProgress('Uploading...')
-    const filename = file.name.replace(/\.[^.]+$/, '.webm')
-    // File is pre-trimmed; store trim_start=0, trim_end=null so ffmpeg uses full file
     const res = await fetch('/api/pipeline/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_id: pipelineModelId, type: 'own_footage', filename, label: null, trim_start: 0, trim_end: null }),
+      body: JSON.stringify({ model_id: pipelineModelId, type: 'own_footage', filename: file.name, label: null, trim_start: 0, trim_end: null }),
     })
-    if (!res.ok) { setUploadError('Failed to get upload URL'); setUploading(false); setTrimProgress(null); return }
+    if (!res.ok) { setUploadError('Failed to get upload URL'); setUploading(false); return }
     const { uploadUrl } = await res.json()
 
-    const xhr = new XMLHttpRequest()
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100)
-        setTrimProgress(`Uploading... ${pct}%`)
-      }
-    }
-    await new Promise<void>((resolve, reject) => {
-      xhr.onload = () => { if (xhr.status >= 200 && xhr.status < 300) resolve(); else reject(new Error(`Upload failed: ${xhr.status}`)) }
-      xhr.onerror = () => reject(new Error('Upload network error'))
-      xhr.open('PUT', uploadUrl)
-      xhr.setRequestHeader('Content-Type', 'video/webm')
-      xhr.send(blob)
-    }).catch(e => { setUploadError((e as Error).message); setUploading(false); setTrimProgress(null) })
-
+    const put = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'video/mp4' } })
     setUploading(false)
-    setTrimProgress(null)
-    setFile(null); setShowTrim(false)
+    if (!put.ok) { setUploadError('Upload failed'); return }
     fetchItems()
   }
 
@@ -312,7 +151,6 @@ export default function ContentBank({ username }: { username: string }) {
 
   async function handleTagsChange(item: ContentBankItem, newTags: string[]) {
     if (!pipelineModelId) return
-    // optimistic
     setItems(prev => prev.map(i => i.id === item.id ? { ...i, tags: newTags } : i))
     setSavingTagsId(item.id)
     await fetch(`/api/pipeline/content-bank/${pipelineModelId}`, {
@@ -327,7 +165,7 @@ export default function ContentBank({ username }: { username: string }) {
 
   return (
     <div className="space-y-4">
-      {/* Tag library — always visible */}
+      {/* Tag library */}
       <div className="space-y-2">
         <p className="text-[10px] text-[#444] uppercase tracking-wider">Tag library</p>
         <div className="flex flex-wrap gap-1.5 items-center">
@@ -349,26 +187,23 @@ export default function ContentBank({ username }: { username: string }) {
 
       {!pipelineModelId ? <p className="text-xs text-[#444]">Videos not available for this model.</p> : (<>
       {/* Upload zone */}
-      {showTrim && file ? (
-        <TrimSelector file={file} onConfirm={handleUpload} onCancel={() => { setShowTrim(false); setFile(null) }} uploading={uploading} trimProgress={trimProgress} />
-      ) : (
-        <label className="flex items-center justify-center border-2 border-dashed border-[#2a2a2a] hover:border-[#3a3a3a] rounded-lg py-5 cursor-pointer transition-colors">
-          <span className="text-xs text-[#555] hover:text-[#888] pointer-events-none">Click to add a video — you&apos;ll trim it before uploading</span>
-          <input type="file" accept="video/*" className="hidden" onChange={e => {
-            const f = e.target.files?.[0]; e.target.value = ''
-            if (!f) return
-            setFile(f); setUploadError(null); setShowTrim(true)
-          }} />
-        </label>
-      )}
+      <label className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg py-5 cursor-pointer transition-colors ${uploading ? 'border-[#2a2a2a] opacity-50 pointer-events-none' : 'border-[#2a2a2a] hover:border-[#3a3a3a]'}`}>
+        <span className="text-xs text-[#555] hover:text-[#888] pointer-events-none">
+          {uploading ? 'Uploading...' : 'Click to upload a pre-trimmed clip'}
+        </span>
+        <span className="text-[10px] text-[#333] pointer-events-none mt-0.5">Trim on iPhone first (Photos app), then upload here</span>
+        <input type="file" accept="video/*" className="hidden" disabled={uploading} onChange={e => {
+          const f = e.target.files?.[0]; e.target.value = ''
+          if (f) handleFileChange(f)
+        }} />
+      </label>
       {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
 
       {/* Video list */}
-      {items.length === 0 && !showTrim && <p className="text-xs text-[#444]">No videos uploaded yet</p>}
+      {items.length === 0 && <p className="text-xs text-[#444]">No videos uploaded yet</p>}
       <div className="space-y-3">
         {items.map((item, idx) => (
           <div key={item.id} className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg overflow-hidden">
-            {/* Row header */}
             <div className="flex items-center gap-3 px-3 py-2.5">
               <button onClick={() => togglePreview(item)}
                 className="flex items-center gap-2 min-w-0 flex-1 text-left group">
@@ -387,7 +222,6 @@ export default function ContentBank({ username }: { username: string }) {
               </button>
             </div>
 
-            {/* Inline video preview */}
             {expandedId === item.id && (
               <div className="px-3 pb-3">
                 {signedUrls[item.id] ? (
@@ -398,7 +232,6 @@ export default function ContentBank({ username }: { username: string }) {
               </div>
             )}
 
-            {/* Tags */}
             <div className="px-3 pb-3">
               <TagChips tags={item.tags ?? []} presetTags={presetTags} onChange={newTags => handleTagsChange(item, newTags)} />
             </div>
