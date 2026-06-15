@@ -257,7 +257,8 @@ function parseContentDiscovery(json: Record<string, unknown>): FanslyPost[] {
       duration,
       post_date: postDate,
       is_video: true,
-      media_id: String(innerMedia.id ?? '') || null,
+      // Use mediaOfferId (accountMedia.id) as stable dedup key — innerMedia.id is often absent
+      media_id: String(s.mediaOfferId ?? innerMedia.id ?? am.id ?? '') || null,
     })
   }
   return posts

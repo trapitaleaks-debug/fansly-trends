@@ -13,7 +13,7 @@ const RAW_COLLECT_PER_ACCOUNT = 300
 const HASHTAG_TOP_N = 150
 const HASHTAG_PAGES_PER_TAG = 12
 const MIN_POSTS_PER_ACCOUNT = 500   // each account targets this many raw posts from its hashtags
-const MAX_POSTS_PER_CREATOR = 20    // max posts per creator in DB at any time
+const MAX_POSTS_PER_CREATOR = 50    // max posts per creator in DB at any time
 
 const BANNED_HASHTAGS = new Set([
   // explicit acts
