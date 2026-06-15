@@ -9,6 +9,7 @@ dotenv.config({ path: '.env.local' })
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { spawn } from 'child_process'
 import express from 'express'
 import cron from 'node-cron'
 import { runPipelineForModel } from './index'
@@ -306,6 +307,41 @@ cron.schedule(cycleCron, async () => {
   } catch (e) {
     console.error('[cron] Cycle error:', (e as Error).message)
   }
+})
+
+// ─── FYP Scraper cron (hourly — replaces GitHub Actions) ─────────────────────
+// The scraper calls process.exit() so it must run as a child process, not imported.
+let scraperRunning = false
+cron.schedule('0 * * * *', () => {
+  if (scraperRunning) {
+    console.log('[cron:scrape] Skipping — previous run still active')
+    return
+  }
+  scraperRunning = true
+  console.log('[cron:scrape] Starting FYP scrape...')
+  const child = spawn(
+    'npx', ['ts-node', '--project', 'scraper/tsconfig.json', 'scraper/index.ts'],
+    { cwd: path.resolve(__dirname, '..'), env: process.env, stdio: 'inherit' }
+  )
+  child.on('exit', (code) => {
+    scraperRunning = false
+    console.log(`[cron:scrape] Exited with code ${code}`)
+  })
+  child.on('error', (err) => {
+    scraperRunning = false
+    console.error('[cron:scrape] Spawn error:', err.message)
+  })
+})
+
+// ─── Velocity check cron (2am UTC daily — replaces GitHub Actions) ────────────
+cron.schedule('0 2 * * *', () => {
+  console.log('[cron:velocity] Starting velocity check...')
+  const child = spawn(
+    'npx', ['ts-node', '--project', 'scraper/tsconfig.json', 'scraper/velocity.ts'],
+    { cwd: path.resolve(__dirname, '..'), env: process.env, stdio: 'inherit' }
+  )
+  child.on('exit', (code) => console.log(`[cron:velocity] Exited with code ${code}`))
+  child.on('error', (err) => console.error('[cron:velocity] Spawn error:', err.message))
 })
 
 // ─── Start ────────────────────────────────────────────────────────────────────

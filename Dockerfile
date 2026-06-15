@@ -54,6 +54,9 @@ WORKDIR /app
 
 COPY package*.json ./
 RUN npm ci
+# Playwright v1.x doesn't auto-download browsers on npm install — must be explicit.
+# System chromium dependencies are already installed above via apt-get.
+RUN npx playwright install chromium
 
 COPY . .
 
