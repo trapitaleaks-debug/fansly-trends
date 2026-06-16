@@ -19,54 +19,6 @@ const SESSION_R2_KEY = 'sessions/fancore.json'
 const POST_HOUR_UTC = 22
 const DAILY_LIMIT = 2
 
-const BANNED_HASHTAGS = new Set([
-  'anal','analsex','deepthroat','blowjob','bj','handjob','rimjob','rimming','fisting',
-  'fuck','hardfuck','dp','doublepenetration','hardcore','cum','cumshot','creampie',
-  'facial','squirt','squirting','bigdick','hugedick','bigcock','hugecock','monstercock',
-  'bbc','bwc','porn','sex','sextape','hotwife','swingers','gangbang','taboo','incest',
-  'stepsister','stepbrother','stepmom','stepdad','nude','naked','xxx','bdsm','bondage',
-  'dominatrix','cuckold','feet','footfetish','scat','piss','pissing','futa','futanari',
-  'furry','hentai','femboy','ladyboy','shemale','trans',
-])
-
-// V1 formula: 5 Most Viewed + 3 Highest Impact + 2 Lowest Saturation = 10 total
-// All pulled mechanically from fansly-tags.vercel.app — no Claude, no model-specific tags.
-// V2 will layer in FanCore FYP Analytics → Tags (model-specific performance data).
-async function selectHashtags(): Promise<string[]> {
-  const FALLBACK = ['fansly', 'fyp', 'foryou', 'viral', 'model', 'subscribe', 'exclusive', 'content', 'creator', 'onlyfans']
-  try {
-    const res = await fetch('https://fansly-tags.vercel.app/api/tags', {
-      headers: { 'Cache-Control': 'no-store' },
-    } as RequestInit)
-    if (!res.ok) throw new Error(`fansly-tags API ${res.status}`)
-    const data = await res.json() as {
-      mostViewed?: { tag: string }[]
-      highestImpact?: { tag: string }[]
-      lowestSaturation?: { tag: string }[]
-    }
-
-    const used = new Set<string>()
-    const pickN = (list: { tag: string }[] | undefined, n: number): string[] => {
-      const out: string[] = []
-      for (const item of (list ?? [])) {
-        if (out.length >= n) break
-        const t = item.tag.toLowerCase()
-        if (!BANNED_HASHTAGS.has(t) && !used.has(t)) { out.push(t); used.add(t) }
-      }
-      return out
-    }
-
-    const mostViewed     = pickN(data.mostViewed, 5)
-    const highestImpact  = pickN(data.highestImpact, 3)
-    const lowestSat      = pickN(data.lowestSaturation, 2)
-    const tags = [...mostViewed, ...highestImpact, ...lowestSat]
-    console.log(`[post] hashtags: mostViewed=[${mostViewed}] highestImpact=[${highestImpact}] lowestSat=[${lowestSat}]`)
-    return tags.length === 10 ? tags : [...tags, ...FALLBACK].slice(0, 10)
-  } catch (e) {
-    console.error('[post] selectHashtags failed:', (e as Error).message)
-    return FALLBACK
-  }
-}
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
   const ac = new AbortController()
@@ -186,9 +138,6 @@ export async function postVideoJob(jobId: string): Promise<void> {
 
   const handle = modelMeta.fansly_username
 
-  const selectedHashtags = await selectHashtags()
-  console.log(`[post] Tags for ${jobId}: ${selectedHashtags.join(' ')}`)
-
   const scheduledFor = await getNextSlot(job.model_id)
   console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()}`)
 
@@ -281,14 +230,10 @@ export async function postVideoJob(jobId: string): Promise<void> {
     // fd.get('scheduled_at') returns null and FanCore shows "Pick a date/time first."
     const slotForm = page.locator('form').filter({ has: page.locator('button.bulk-submit-btn') }).first()
     const schedInput = slotForm.locator('input[name="scheduled_at"]')
-    const tagsInput  = slotForm.locator('input[name="tags"]')
     const fileInput  = slotForm.locator('input.bulk-file-input')
     const submitBtn  = slotForm.locator('button.bulk-submit-btn')
 
-    // 1. Tags
-    await tagsInput.fill(selectedHashtags.map(t => `#${t}`).join(' '))
-
-    // 2. Schedule date — fill + dispatch change so FanCore's closure sees it
+    // 1. Schedule date — fill + dispatch change so FanCore's closure sees it
     const yyyy = scheduledFor.getUTCFullYear()
     const mm   = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
     const dd   = String(scheduledFor.getUTCDate()).padStart(2, '0')
