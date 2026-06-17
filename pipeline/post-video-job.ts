@@ -16,8 +16,11 @@ import { sendTelegram } from '../lib/telegram'
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
 const SESSION_R2_KEY = 'sessions/fancore.json'
-const POST_HOUR_UTC = 22
-const DAILY_LIMIT = 2
+// Slot system: each model has 2 video slots per day, both at 22:00 UTC.
+// Videos fill slots sequentially — 3 videos generated = slots 1+2 today, slot 1 tomorrow.
+// If the current time is already past 22:00 UTC, today's slots are skipped entirely.
+const SLOT_HOUR_UTC = 22
+const SLOTS_PER_DAY  = 2
 
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
@@ -91,7 +94,7 @@ async function createContext(browser: Browser): Promise<{ context: BrowserContex
   return { context: await browser.newContext({ timezoneId: 'UTC' }), hadSavedSession: false }
 }
 
-// Returns the next 22:00 UTC datetime where this model has fewer than DAILY_LIMIT posts scheduled
+// Returns the next available slot datetime (22:00 UTC) for this model, respecting SLOTS_PER_DAY.
 async function getNextSlot(modelId: string): Promise<Date> {
   const { data } = await supabaseAdmin
     .from('video_jobs')
@@ -110,12 +113,12 @@ async function getNextSlot(modelId: string): Promise<Date> {
 
   const now = new Date()
   // Start from today's 22:00 UTC; if that's already past, start from tomorrow's
-  let candidate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), POST_HOUR_UTC, 0, 0, 0))
+  let candidate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), SLOT_HOUR_UTC, 0, 0, 0))
   if (candidate <= now) candidate = new Date(candidate.getTime() + 86_400_000)
 
   for (let i = 0; i < 30; i++) {
     const key = `${candidate.getUTCFullYear()}-${candidate.getUTCMonth()}-${candidate.getUTCDate()}`
-    if ((counts.get(key) ?? 0) < DAILY_LIMIT) return candidate
+    if ((counts.get(key) ?? 0) < SLOTS_PER_DAY) return candidate
     candidate = new Date(candidate.getTime() + 86_400_000)
   }
 
