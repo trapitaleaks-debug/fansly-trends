@@ -229,11 +229,30 @@ export async function postVideoJob(jobId: string): Promise<void> {
     // inputs inside the form's DOM subtree — if the date input is in a different form,
     // fd.get('scheduled_at') returns null and FanCore shows "Pick a date/time first."
     const slotForm = page.locator('form').filter({ has: page.locator('button.bulk-submit-btn') }).first()
-    const schedInput = slotForm.locator('input[name="scheduled_at"]')
-    const fileInput  = slotForm.locator('input.bulk-file-input')
-    const submitBtn  = slotForm.locator('button.bulk-submit-btn')
+    const schedInput  = slotForm.locator('input[name="scheduled_at"]')
+    const captionInput = slotForm.locator('textarea[name="caption"]')
+    const fileInput   = slotForm.locator('input.bulk-file-input')
+    const submitBtn   = slotForm.locator('button.bulk-submit-btn')
 
-    // 1. Schedule date — fill + dispatch change so FanCore's closure sees it
+    // 1. Hashtags — type "hey" in caption to give the generator context, click generate,
+    //    wait for tags to populate, then clear the caption so the post has hashtags only.
+    await captionInput.fill('hey')
+    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
+    await page.waitForTimeout(200)
+    await slotForm.locator('button.bulk-regen-tags').click()
+    console.log('[post] hashtags: generate button clicked')
+    // Poll until tags field is non-empty (up to 20s)
+    const tagsPopulated = await page.waitForFunction(
+      () => (document.querySelectorAll('input[name="tags"]')[0] as HTMLInputElement)?.value?.trim().length > 0,
+      { timeout: 20000 }
+    ).then(() => true).catch(() => false)
+    const generatedTags = await slotForm.locator('input[name="tags"]').inputValue().catch(() => '')
+    console.log(`[post] hashtags: populated=${tagsPopulated} tags="${generatedTags}"`)
+    // Clear caption — post with hashtags only
+    await captionInput.fill('')
+    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
+
+    // 2. Schedule date — fill + dispatch change so FanCore's closure sees it
     const yyyy = scheduledFor.getUTCFullYear()
     const mm   = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
     const dd   = String(scheduledFor.getUTCDate()).padStart(2, '0')
