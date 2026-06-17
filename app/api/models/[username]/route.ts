@@ -12,7 +12,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
       *,
       trends_suggestions(status, generated_at)
     `)
-    .eq('fansly_username', username.toLowerCase())
+    .ilike('fansly_username', username)
     .single()
 
   if (error) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
@@ -44,7 +44,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   const { data: model } = await supabaseAdmin
     .from('trends_models')
     .select('id')
-    .eq('fansly_username', username.toLowerCase())
+    .ilike('fansly_username', username)
     .single()
 
   if (!model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
@@ -73,7 +73,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   const { error } = await supabaseAdmin
     .from('trends_models')
     .delete()
-    .eq('fansly_username', username.toLowerCase())
+    .ilike('fansly_username', username)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
