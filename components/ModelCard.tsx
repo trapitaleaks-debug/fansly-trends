@@ -23,7 +23,7 @@ export default function ModelCard({ model }: { model: ModelSummary }) {
         {model.model_number != null && (
           <span className="text-xs text-[#444] w-6 text-right shrink-0">{model.model_number}</span>
         )}
-        <span className="text-sm font-medium text-white">@{model.fansly_username}</span>
+        <span className="text-sm font-medium text-white">{model.fansly_username}</span>
         {model.niches.length > 0 && (
           <span className="text-xs text-[#555]">
             {model.niches.map(n => nicheEmoji(n)).join(' ')}
