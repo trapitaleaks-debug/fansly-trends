@@ -4,7 +4,8 @@ import { supabaseAdmin } from '@/lib/supabase'
 export async function GET() {
   const { data, error } = await supabaseAdmin
     .from('trends_models')
-    .select('id, fansly_username, fansly_url, niches, created_at, updated_at')
+    .select('id, fansly_username, fansly_url, niches, model_number, created_at, updated_at')
+    .order('model_number', { ascending: true, nullsFirst: false })
     .order('fansly_username')
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -14,6 +15,7 @@ export async function GET() {
     fansly_username: m.fansly_username,
     fansly_url: m.fansly_url,
     niches: m.niches ?? [],
+    model_number: m.model_number ?? null,
     created_at: m.created_at,
     updated_at: m.updated_at,
   }))
