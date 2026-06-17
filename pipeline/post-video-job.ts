@@ -129,7 +129,7 @@ export async function postVideoJob(jobId: string): Promise<void> {
   // Load job + model
   const { data: job, error: jobErr } = await supabaseAdmin
     .from('video_jobs')
-    .select('id, model_id, output_r2_key, trends_models(fansly_username)')
+    .select('id, model_id, output_r2_key, scheduled_for, trends_models(fansly_username)')
     .eq('id', jobId)
     .single()
 
@@ -141,10 +141,13 @@ export async function postVideoJob(jobId: string): Promise<void> {
 
   const handle = modelMeta.fansly_username
 
-  const scheduledFor = await getNextSlot(job.model_id)
-  console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()}`)
+  // Use pre-set scheduled_for if already computed, otherwise calculate the next slot
+  const existingSlot = (job as unknown as { scheduled_for: string | null }).scheduled_for
+  const scheduledFor = existingSlot ? new Date(existingSlot) : await getNextSlot(job.model_id)
+  console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()} (${existingSlot ? 'pre-set' : 'computed'})`)
 
-  await supabaseAdmin.from('video_jobs').update({ status: 'posting' }).eq('id', jobId)
+  // Reserve slot in DB immediately — before browser launch — so concurrent calls see it
+  await supabaseAdmin.from('video_jobs').update({ status: 'posting', scheduled_for: scheduledFor.toISOString() }).eq('id', jobId)
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
   const browser: Browser = await chromium.launch({ headless: true })
