@@ -216,10 +216,12 @@ export async function postVideoJob(jobId: string): Promise<void> {
   }, 12 * 60_000)
 
   try {
-    // Navigate to /bulk-posts and verify auth — storageState may have expired tokens
+    // Navigate to /bulk-posts and verify auth — storageState may have expired tokens.
+    // FanCore doesn't always redirect to /signin on expiry — check for the sign-in form directly.
     await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    if (page.url().includes('/signin')) {
-      console.log('  ℹ Session expired — logging in fresh')
+    const hasLoginForm = await page.locator('input[name="password"]').isVisible({ timeout: 3_000 }).catch(() => false)
+    if (page.url().includes('/signin') || hasLoginForm) {
+      console.log(`  ℹ Session expired (url=${page.url()}, loginForm=${hasLoginForm}) — logging in fresh`)
       await loginFanCore(page)
       await saveSession(page)
       await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
