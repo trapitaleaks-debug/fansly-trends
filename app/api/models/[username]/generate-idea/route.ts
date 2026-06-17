@@ -10,7 +10,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const durationSeconds = Math.min(15, Math.max(3, typeof duration === 'number' ? Math.round(duration) : 5))
 
   const [{ data: model }, { data: post }] = await Promise.all([
-    supabaseAdmin.from('trends_models').select('id, placeholder_options').eq('fansly_username', username.toLowerCase()).single(),
+    supabaseAdmin.from('trends_models').select('id, placeholder_options').ilike('fansly_username', username).single(),
     supabaseAdmin.from('trends_posts').select('text_template').eq('id', post_id).single(),
   ])
 
@@ -27,7 +27,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { data: pipelineModel } = await supabaseAdmin
     .from('pipeline_models')
     .select('id')
-    .eq('handle', username.toLowerCase())
+    .ilike('handle', username)
     .single()
 
   if (pipelineModel) {

@@ -8,7 +8,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ use
   const { data: model } = await supabaseAdmin
     .from('trends_models')
     .select('niches')
-    .eq('fansly_username', username.toLowerCase())
+    .ilike('fansly_username', username)
     .single()
 
   if (!model || !model.niches?.length) {

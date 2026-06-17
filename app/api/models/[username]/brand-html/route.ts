@@ -9,7 +9,7 @@ export async function POST(request: NextRequest, { params }: Params) {
   const { data: model } = await supabaseAdmin
     .from('trends_models')
     .select('id')
-    .eq('fansly_username', username.toLowerCase())
+    .ilike('fansly_username', username)
     .single()
 
   if (!model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
@@ -45,7 +45,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   const { data: model } = await supabaseAdmin
     .from('trends_models')
     .select('id')
-    .eq('fansly_username', username.toLowerCase())
+    .ilike('fansly_username', username)
     .single()
 
   if (!model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })

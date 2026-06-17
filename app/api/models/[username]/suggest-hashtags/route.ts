@@ -10,7 +10,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
   const { data: model } = await supabaseAdmin
     .from('trends_models')
     .select('branding_file_md, hashtags')
-    .eq('fansly_username', username.toLowerCase())
+    .ilike('fansly_username', username)
     .single()
 
   if (!model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })

@@ -9,7 +9,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
   const { data: pipelineModel } = await supabaseAdmin
     .from('pipeline_models')
     .select('id')
-    .eq('handle', username.toLowerCase())
+    .ilike('handle', username)
     .single()
 
   if (!pipelineModel) return NextResponse.json({ footage: [] })

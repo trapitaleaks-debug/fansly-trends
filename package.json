@@ -15,7 +15,9 @@
     "pipeline:run": "ts-node --project pipeline/tsconfig.json pipeline/index.ts",
     "pipeline:watch": "ts-node --project pipeline/tsconfig.json pipeline/index.ts --watch",
     "pipeline:sheet": "ts-node --project pipeline/tsconfig.json pipeline/sheet.ts",
-    "pipeline:post": "ts-node --project pipeline/tsconfig.json pipeline/post-approved.ts"
+    "pipeline:post": "ts-node --project pipeline/tsconfig.json pipeline/post-approved.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:pipeline": "tsc --noEmit --project pipeline/tsconfig.json"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.101.0",
