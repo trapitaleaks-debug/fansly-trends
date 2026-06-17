@@ -24,6 +24,8 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
   const [savingTemplate, setSavingTemplate] = useState(false)
   const [ideaId, setIdeaId] = useState<string | null>(null)
   const [ideaNiches, setIdeaNiches] = useState<string[]>([])
+  const [ideaTags, setIdeaTags] = useState<string[]>([])
+  const [contentTags, setContentTags] = useState<string[]>([])
   const [bookmarking, setBookmarking] = useState(false)
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const templateTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -39,8 +41,13 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
         if (post?.trends_ideas?.[0]) {
           setIdeaId(post.trends_ideas[0].id)
           setIdeaNiches(post.trends_ideas[0].niches ?? [])
+          setIdeaTags(post.trends_ideas[0].tags ?? [])
         }
       })
+
+    fetch('/api/settings/content-tags')
+      .then(r => r.json())
+      .then(d => setContentTags(d.tags ?? []))
 
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', handler)
@@ -81,21 +88,27 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
       ? ideaNiches.filter(n => n !== niche)
       : [...ideaNiches, niche]
     setIdeaNiches(next)
-
     if (ideaId) {
-      // Auto-save when already bookmarked
-      const res = await fetch('/api/ideas', {
-        method: 'POST',
+      await fetch(`/api/ideas/${ideaId}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ post_id: postId, niches: next, notes }),
+        body: JSON.stringify({ niches: next }),
       })
-      const data = await res.json()
-      setPost(p => p ? {
-        ...p,
-        trends_ideas: [{ id: data.idea?.id ?? ideaId, niches: next, tags: [], notes }],
-      } : p)
       onBookmarkChange()
     }
+  }
+
+  async function toggleIdeaTag(tag: string) {
+    if (!ideaId) return
+    const next = ideaTags.includes(tag)
+      ? ideaTags.filter(t => t !== tag)
+      : [...ideaTags, tag]
+    setIdeaTags(next)
+    await fetch(`/api/ideas/${ideaId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags: next }),
+    })
   }
 
   async function handleBookmark() {
@@ -249,7 +262,7 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
                   <span className="text-xs text-yellow-400 font-medium">★ Saved to Ideas</span>
                   <span className="text-[10px] text-[#444]">— tap niches to update</span>
                 </div>
-                {/* Niche picker — always visible, auto-saves on toggle */}
+                {/* Niche picker */}
                 <div className="flex flex-wrap gap-1.5">
                   {niches.map(n => (
                     <button
@@ -261,6 +274,25 @@ export default function PostModal({ postId, onClose, onBookmarkChange }: Props) 
                     </button>
                   ))}
                 </div>
+
+                {/* Tag picker */}
+                {contentTags.length > 0 && (
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] text-[#444]">Content type</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {contentTags.map(tag => (
+                        <button
+                          key={tag}
+                          onClick={() => toggleIdeaTag(tag)}
+                          className={`text-[10px] font-medium px-2.5 py-1 rounded-full border transition-colors ${ideaTags.includes(tag) ? 'bg-violet-500/20 border-violet-500/40 text-violet-300' : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}
+                        >
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={handleRemoveBookmark}
                   className="text-xs text-[#444] hover:text-red-400 transition-colors"

@@ -76,14 +76,10 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [selectedDuration, setSelectedDuration] = useState(5)
 
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [contentTags, setContentTags] = useState<string[]>([])
   const [watchJob, setWatchJob] = useState<{ id: string; url: string | null; text: string | null; loading: boolean } | null>(null)
   const { niches: allNiches, badgeClass, nicheEmoji } = useNiches()
 
   useEffect(() => { fetchModel() }, [username])
-  useEffect(() => {
-    fetch('/api/settings/content-tags').then(r => r.json()).then(d => setContentTags(d.tags ?? []))
-  }, [])
 
   async function fetchModel(silent = false) {
     if (!silent) setLoading(true)
@@ -110,6 +106,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   }, [username])
 
   useEffect(() => { if (!loading) fetchMatchedIdeas() }, [loading, fetchMatchedIdeas])
+
 
   // Auto-poll when any job for this model is pending/processing
   useEffect(() => {
@@ -152,19 +149,6 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     const next = placeholderOptions.filter(o => o !== opt)
     setPlaceholderOptions(next)
     savePlaceholders(next)
-  }
-
-  async function toggleIdeaTag(ideaId: string, tag: string, currentTags: string[]) {
-    let next: string[]
-    if (currentTags.includes(tag)) {
-      next = currentTags.filter(t => t !== tag)
-    } else if (tag === 'all') {
-      next = ['all'] // selecting "all" clears specific tags
-    } else {
-      next = [...currentTags.filter(t => t !== 'all'), tag] // selecting specific tag clears "all"
-    }
-    setMatchedIdeas(prev => prev.map(i => i.id === ideaId ? { ...i, tags: next } : i))
-    await fetch(`/api/ideas/${ideaId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tags: next }) })
   }
 
   async function handleDelete() {
@@ -517,18 +501,6 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                       </button>
                     </div>
 
-                    {/* Template tags row */}
-                    <div className="flex items-center gap-2 px-4 pb-2.5 pl-16">
-                      <span className="text-[10px] text-[#444] flex-shrink-0">Content:</span>
-                      <div className="flex flex-wrap gap-1">
-                        {['all', ...contentTags].map(tag => (
-                          <button key={tag} onClick={() => toggleIdeaTag(idea.id, tag, idea.tags ?? [])}
-                            className={`text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${(idea.tags ?? []).includes(tag) ? 'bg-violet-500/20 border-violet-500/40 text-violet-300' : 'border-[#2a2a2a] text-[#444] hover:border-[#3a3a3a] hover:text-[#666]'}`}>
-                            {tag}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                   </div>
                 )
               })}
