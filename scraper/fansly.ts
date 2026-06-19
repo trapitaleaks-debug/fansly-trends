@@ -286,12 +286,13 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
   // leaves the scraper unauthenticated — and Fansly then returns `success:true` with
   // an EMPTY feed (not a 401), silently yielding 0 posts every run. Keep updating to
   // the latest authenticated request so we always end up with a usable header set.
-  page.on('request', async (request) => {
+  // NOTE: must use request.headers() (synchronous) NOT request.allHeaders() (async).
+  // allHeaders() returns a Promise — if browser.close() fires before it resolves,
+  // capturedHeaders never gets set and every run yields 0 posts.
+  page.on('request', (request) => {
     if (!request.url().includes('apiv3.fansly.com')) return
-    try {
-      const h = await request.allHeaders()
-      if (h['authorization'] && h['fansly-client-check']) capturedHeaders = h
-    } catch { /* */ }
+    const h = request.headers()
+    if (h['authorization'] && h['fansly-client-check']) capturedHeaders = h
   })
 
   // Try saved session
@@ -320,6 +321,7 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
   }
 
   await saveSession(context, page, acc.email)
+  await page.waitForTimeout(1500) // let synchronous request listeners drain
   await browser.close()
   console.log('  🌐 Browser closed — auth headers captured, switching to direct API')
 
