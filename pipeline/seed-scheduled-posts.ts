@@ -77,21 +77,44 @@ async function run() {
   const now = new Date()
   const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
 
+  // FanCore auto-selects the first sidebar model on page load. Clicking an already-selected
+  // model deselects it (FanCore toggle behaviour), giving Scheduled(0). Track the currently
+  // selected handle and skip the click when we're already on the right model.
+  let currentlySelected: string | null = await page.evaluate(() => {
+    const walker = document.createTreeWalker(document.body, 4)
+    let node: Node | null
+    while ((node = walker.nextNode())) {
+      const t = (node as Text).textContent?.trim() ?? ''
+      if (t.startsWith('@') && t.length > 1) return t.slice(1)
+    }
+    return null
+  })
+  console.log(`  auto-selected on load: @${currentlySelected ?? 'none'}`)
+
   for (const handle of handles) {
     const modelId = usernameToId.get(handle)
     if (!modelId) { console.warn(`⚠ @${handle} no CRM match — skip`); continue }
     console.log(`→ @${handle} (id=${modelId})`)
 
-    // Re-navigate for each model to avoid stale sidebar state across iterations
-    await page.goto(`${FANCORE_URL}/bulk-posts/already`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
-
-    // Click the model in the sidebar — find by @username text
-    const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
-    const visible = await modelEntry.isVisible({ timeout: 8_000 }).catch(() => false)
-    if (!visible) { console.warn(`  ⚠ not in sidebar`); continue }
-    await modelEntry.click()
-    await page.waitForTimeout(1500)
+    if (currentlySelected !== handle) {
+      // Click the model in the sidebar — find by @username text
+      const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
+      const visible = await modelEntry.isVisible({ timeout: 8_000 }).catch(() => false)
+      if (!visible) {
+        // Sidebar may be stale — re-navigate and retry once
+        await page.goto(`${FANCORE_URL}/bulk-posts/already`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+        await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
+        const visible2 = await modelEntry.isVisible({ timeout: 5_000 }).catch(() => false)
+        if (!visible2) { console.warn(`  ⚠ not in sidebar`); continue }
+        // After re-navigate, auto-selected model changed — update tracking
+        currentlySelected = null
+      }
+      await modelEntry.click()
+      await page.waitForTimeout(800) // let click propagate so FanCore's XHR starts
+      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
+      await page.waitForTimeout(300) // let DOM update after XHR settles
+      currentlySelected = handle
+    }
 
     // Click "Scheduled (N)" sub-tab
     const scheduledBtn = page.locator('button').filter({ hasText: /^Scheduled \(\d+\)$/ }).first()
