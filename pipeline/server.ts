@@ -365,6 +365,29 @@ cron.schedule('0 * * * *', () => {
   })
 })
 
+// ─── FanCore CRM scraper cron (hourly — keeps scheduled_posts in sync) ──────
+let crmScraperRunning = false
+cron.schedule('0 * * * *', () => {
+  if (crmScraperRunning) {
+    console.log('[cron:crm-scrape] Skipping — previous run still active')
+    return
+  }
+  crmScraperRunning = true
+  console.log('[cron:crm-scrape] Starting FanCore scheduled_posts sync...')
+  const child = spawn(
+    'npx', ['ts-node', '--project', 'pipeline/tsconfig.json', 'pipeline/seed-scheduled-posts.ts'],
+    { cwd: path.resolve(__dirname, '..'), env: process.env, stdio: 'inherit' }
+  )
+  child.on('exit', (code) => {
+    crmScraperRunning = false
+    console.log(`[cron:crm-scrape] Exited with code ${code}`)
+  })
+  child.on('error', (err) => {
+    crmScraperRunning = false
+    console.error('[cron:crm-scrape] Spawn error:', err.message)
+  })
+})
+
 // ─── Velocity check cron (2am UTC daily — replaces GitHub Actions) ────────────
 cron.schedule('0 2 * * *', () => {
   console.log('[cron:velocity] Starting velocity check...')
