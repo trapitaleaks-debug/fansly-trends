@@ -103,16 +103,14 @@ async function run() {
       if (!visible) {
         // Sidebar may be stale — re-navigate and retry once
         await page.goto(`${FANCORE_URL}/bulk-posts/already`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-        await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
+        await page.waitForTimeout(2000)
         const visible2 = await modelEntry.isVisible({ timeout: 5_000 }).catch(() => false)
         if (!visible2) { console.warn(`  ⚠ not in sidebar`); continue }
         // After re-navigate, auto-selected model changed — update tracking
         currentlySelected = null
       }
       await modelEntry.click()
-      await page.waitForTimeout(800) // let click propagate so FanCore's XHR starts
-      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
-      await page.waitForTimeout(300) // let DOM update after XHR settles
+      await page.waitForTimeout(2500) // FanCore SPA: fixed wait for XHR + React re-render
       currentlySelected = handle
     }
 
