@@ -196,8 +196,12 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const encodeFlags = `-c:v libx264 -preset fast -crf 20 -pix_fmt yuv420p -r 30 -movflags +faststart`
     console.log(`  Rendering overlay: "${overlayText}"`)
 
+    // Scale to 1080p before text overlay — 4K HEVC from iPhone 15 Pro exhausts Railway memory
+    // scale=1080:-2: width capped at 1080 (always even), height proportional rounded to even
+    // avoids min(iw,1080) which uses a comma that ffmpeg 5.1.x's filter parser mistakes for a filter separator
+    const scaleFilter = `scale=1080:-2:flags=lanczos`
     const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
-    const vf = dtFilter ? `-vf "${dtFilter}"` : ''
+    const vf = dtFilter ? `-vf "${scaleFilter},${dtFilter}"` : `-vf "${scaleFilter}"`
     // -ss before -i for fast input seek; -t goes AFTER all inputs as an output option
     // (if placed between two -i flags ffmpeg treats it as an input option on the second input, not the output)
     const seekFlag = trimStart > 0 ? `-ss ${trimStart.toFixed(3)}` : ''
@@ -230,11 +234,17 @@ export async function processVideoJob(jobId: string): Promise<void> {
       console.error(`[job] FanCore post failed for ${jobId}:`, (e as Error).message)
     )
   } catch (e) {
-    const msg = (e as Error).message
+    const err = e as Error & { stderr?: Buffer }
+    // ffmpeg stderr starts with hundreds of chars of version/config header before the real error.
+    // Take the last 1000 chars of stderr (where the actual error line lives), fallback to message.
+    const rawStderr = err.stderr?.toString().trim() ?? ''
+    const msg = rawStderr
+      ? rawStderr.slice(-1000)
+      : err.message.slice(-1000)
     console.error(`[job] ✗ Failed ${jobId}:`, msg)
     await supabaseAdmin.from('video_jobs').update({
       status: 'error',
-      error_message: msg.slice(0, 500),
+      error_message: msg,
     }).eq('id', jobId)
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true })
