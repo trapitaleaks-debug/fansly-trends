@@ -32,10 +32,12 @@ export const calculateMetadata: CalculateMetadataFunction<VideoCompositionProps>
 function WordStagger({
   words,
   startFrame,
+  windowFrames,
   brandConfig,
 }: {
   words: string[]
   startFrame: number
+  windowFrames: number
   brandConfig: VideoBrandConfig | null
 }) {
   const frame = useCurrentFrame()
@@ -46,6 +48,13 @@ function WordStagger({
     ? `"${brandConfig.font_primary}", "Arial Black", sans-serif`
     : '"Arial Black", sans-serif'
 
+  // Stagger uses 70% of the caption window so all words finish well before it ends.
+  // Single-word captions get no stagger (instant).
+  const staggerDelay = words.length > 1
+    ? Math.max(1, Math.floor((windowFrames * 0.7) / words.length))
+    : 0
+  const fadeDuration = Math.min(8, Math.max(2, staggerDelay))
+
   return (
     <div
       style={{
@@ -53,17 +62,17 @@ function WordStagger({
         flexWrap: 'wrap',
         justifyContent: 'center',
         alignItems: 'center',
-        gap: '0.15em',
+        gap: '0.4em',
         padding: '0 40px',
       }}
     >
       {words.map((word, wi) => {
-        const wordFrame = startFrame + wi * 3
-        const opacity = interpolate(frame, [wordFrame, wordFrame + 8], [0, 1], {
+        const wordFrame = startFrame + wi * staggerDelay
+        const opacity = interpolate(frame, [wordFrame, wordFrame + fadeDuration], [0, 1], {
           extrapolateLeft: 'clamp',
           extrapolateRight: 'clamp',
         })
-        const translateY = interpolate(frame, [wordFrame, wordFrame + 8], [14, 0], {
+        const translateY = interpolate(frame, [wordFrame, wordFrame + fadeDuration], [14, 0], {
           extrapolateLeft: 'clamp',
           extrapolateRight: 'clamp',
         })
@@ -161,6 +170,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
             : totalFrames
         if (frame < startFrame || frame >= endFrame) return null
         const words = line.text.split(' ').filter(Boolean)
+        const windowFrames = endFrame - startFrame
         return (
           <AbsoluteFill
             key={i}
@@ -171,7 +181,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
               flexDirection: 'column',
             }}
           >
-            <WordStagger words={words} startFrame={startFrame} brandConfig={brandConfig} />
+            <WordStagger words={words} startFrame={startFrame} windowFrames={windowFrames} brandConfig={brandConfig} />
           </AbsoluteFill>
         )
       })}
