@@ -107,9 +107,10 @@ export async function postVideoJob(jobId: string): Promise<void> {
 
   const handle = modelMeta.fansly_username
 
-  // Use pre-set scheduled_for if already computed, otherwise calculate the next slot
+  // Use pre-set scheduled_for if already computed and still in the future, otherwise calculate next slot
   const existingSlot = (job as unknown as { scheduled_for: string | null }).scheduled_for
-  const scheduledFor = existingSlot ? new Date(existingSlot) : await getNextSlot(job.model_id)
+  const existingDate = existingSlot ? new Date(existingSlot) : null
+  const scheduledFor = existingDate && existingDate > new Date() ? existingDate : await getNextSlot(job.model_id)
   console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()} (${existingSlot ? 'pre-set' : 'computed'})`)
 
   // Reserve slot in DB immediately — before browser launch — so concurrent calls see it
