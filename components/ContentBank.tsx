@@ -315,6 +315,27 @@ export default function ContentBank({ username }: { username: string }) {
         </div>
       )}
 
+      {/* Tag coverage counter */}
+      {presetTags.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[10px] text-[#444] uppercase tracking-wider">Content coverage</p>
+          <div className="flex flex-wrap gap-1.5">
+            {presetTags.map(tag => {
+              const count = items.filter(i => i.tags.includes(tag)).length
+              return count > 0 ? (
+                <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/20 border border-violet-500/40 text-violet-300">
+                  {tag} — {count}
+                </span>
+              ) : (
+                <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-orange-500/10 border border-orange-500/30 text-orange-400">
+                  {tag} — 0
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Video list */}
       {items.length === 0 && <p className="text-xs text-[#444]">No videos uploaded yet</p>}
       {items.length > 0 && (

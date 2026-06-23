@@ -15,6 +15,24 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ use
     return NextResponse.json({ ideas: [] })
   }
 
+  // Collect model's content bank tag set (via pipeline_models.handle)
+  const { data: pipelineModel } = await supabaseAdmin
+    .from('pipeline_models')
+    .select('id')
+    .ilike('handle', username)
+    .maybeSingle()
+
+  const contentBankTags = new Set<string>()
+  if (pipelineModel) {
+    const { data: bankItems } = await supabaseAdmin
+      .from('pipeline_content_bank')
+      .select('tags')
+      .eq('model_id', pipelineModel.id)
+    for (const item of bankItems ?? []) {
+      for (const t of (item.tags ?? []) as string[]) contentBankTags.add(t)
+    }
+  }
+
   // Fetch all ideas; filter those sharing at least one niche with the model
   const { data: ideas, error } = await supabaseAdmin
     .from('trends_ideas')
@@ -24,9 +42,15 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ use
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   const modelNiches = new Set(model.niches)
-  const matched = (ideas ?? []).filter((idea: { niches: string[] }) =>
-    (idea.niches ?? []).some((n: string) => modelNiches.has(n))
-  )
+  const matched = (ideas ?? [])
+    .filter((idea: { niches: string[] }) =>
+      (idea.niches ?? []).some((n: string) => modelNiches.has(n))
+    )
+    .filter((idea: { tags: string[] }) => {
+      // If model has no tagged content bank clips, skip tag filter (show all niche-matched ideas)
+      if (contentBankTags.size === 0) return true
+      return (idea.tags ?? []).some((t: string) => contentBankTags.has(t))
+    })
 
   return NextResponse.json({ ideas: matched, modelNiches: model.niches })
 }
