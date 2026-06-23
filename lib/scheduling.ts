@@ -24,6 +24,8 @@ export async function getNextSlot(modelId: string): Promise<Date> {
   }
 
   const now = new Date()
+  // FanCore rejects posts scheduled too close to current time — require 45-min buffer
+  const earliest = new Date(now.getTime() + 45 * 60 * 1000)
 
   for (let dayOffset = 0; dayOffset < 30; dayOffset++) {
     const y = now.getUTCFullYear(), mo = now.getUTCMonth(), d = now.getUTCDate() + dayOffset
@@ -37,7 +39,7 @@ export async function getNextSlot(modelId: string): Promise<Date> {
       const minute = Math.floor(Math.random() * 60)
       const candidate = new Date(Date.UTC(y, mo, d, hour, minute, 0, 0))
 
-      if (candidate <= now) continue
+      if (candidate <= earliest) continue
       if (taken.some(s => Math.abs(s.getTime() - candidate.getTime()) < SLOT_MIN_GAP_MS)) continue
 
       return candidate
