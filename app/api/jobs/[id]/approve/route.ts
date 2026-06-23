@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const PIPELINE_SERVICE_URL = process.env.PIPELINE_SERVICE_URL ?? 'http://localhost:3001'
+import { supabaseAdmin } from '@/lib/supabase'
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const res = await fetch(`${PIPELINE_SERVICE_URL}/jobs/post/${id}`, { method: 'POST' })
-  if (!res.ok) return NextResponse.json({ error: 'Pipeline error' }, { status: 502 })
+  const { error } = await supabaseAdmin
+    .from('video_jobs')
+    .update({ status: 'approved' })
+    .eq('id', id)
+    .in('status', ['done'])
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
 }

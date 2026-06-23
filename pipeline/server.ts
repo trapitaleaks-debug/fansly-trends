@@ -296,6 +296,33 @@ cron.schedule('* * * * *', async () => {
   }
 })
 
+// Every minute: post one approved video_job to FanCore (sequential — one Playwright at a time)
+let postingRunning = false
+cron.schedule('* * * * *', async () => {
+  if (postingRunning) return
+  postingRunning = true
+  try {
+    const { data: jobs } = await supabaseAdmin
+      .from('video_jobs')
+      .select('id')
+      .eq('status', 'approved')
+      .order('created_at', { ascending: true })
+      .limit(1)
+
+    if (!jobs || jobs.length === 0) return
+
+    const job = jobs[0]
+    console.log(`[cron:post] Posting job ${job.id}`)
+    await postVideoJob(job.id).catch(e =>
+      console.error(`[cron:post] Failed ${job.id}:`, (e as Error).message)
+    )
+  } catch (e) {
+    console.error('[cron:post] Error:', (e as Error).message)
+  } finally {
+    postingRunning = false
+  }
+})
+
 // Every 2 min: pick up any queued runs dropped by a restart/deploy
 cron.schedule('*/2 * * * *', async () => {
   try {
