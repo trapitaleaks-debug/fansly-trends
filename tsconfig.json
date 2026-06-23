@@ -30,5 +30,10 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "pipeline/remotion/VideoComposition.tsx",
+    "pipeline/remotion/Root.tsx",
+    "pipeline/remotion/index.ts"
+  ]
 }

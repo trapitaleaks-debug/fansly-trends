@@ -1,8 +1,8 @@
 /**
  * Video job renderer — processes video_jobs table rows.
  * Takes own footage from model_clips + personalized_text overlay,
- * renders via Hyperframes (Linux/Railway) or ffmpeg drawtext (Mac dev),
- * optionally extracts audio from the trending post's source video.
+ * renders via Remotion (React-based, word-stagger animation, emoji, per-brand fonts).
+ * ffmpeg is retained for .mov normalization, footage scaling, audio extraction, and thumbnail.
  */
 
 import fs from 'fs'
@@ -14,19 +14,12 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
 import { type BrandConfig } from './compose'
 import { postVideoJob } from './post-video-job'
+import { renderWithRemotion } from './remotion-renderer'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
-const FONT = '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'
-const FONT_MAC = '/System/Library/Fonts/Helvetica.ttc'
 
 function ffmpegBin() {
   return process.platform === 'darwin' ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg'
-}
-function fontPath() {
-  return process.platform === 'darwin' ? FONT_MAC : FONT
-}
-function hyperframesBin() {
-  return path.resolve(__dirname, '../node_modules/.bin/hyperframes')
 }
 
 function run(cmd: string) {
@@ -52,42 +45,6 @@ async function downloadBufferFromR2(key: string): Promise<Buffer> {
   const chunks: Uint8Array[] = []
   for await (const chunk of body as AsyncIterable<Uint8Array>) chunks.push(chunk)
   return Buffer.concat(chunks)
-}
-
-function stripEmoji(text: string): string {
-  return text
-    .replace(/\p{Extended_Pictographic}(?:️?(?:‍\p{Extended_Pictographic}️?)*)?️?/gu, '')
-    .replace(/‍/g, '')        // stray zero-width joiners
-    .replace(/[\u{FE00}-\u{FE0F}]/gu, '') // stray variation selectors
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function buildDrawtextFilter(overlayText: string, tmpDir: string): string {
-  const font = fontPath()
-  const MAX_CHARS = 40
-  const baseStyle = `fontfile='${font}':fontsize=70:fontcolor=white:bordercolor=black:borderw=6`
-  const safeText = stripEmoji(overlayText)
-  if (!safeText) return ''
-
-  if (safeText.length <= MAX_CHARS) {
-    const textFile = path.join(tmpDir, 'text_1.txt')
-    fs.writeFileSync(textFile, safeText, 'utf8')
-    return `drawtext=textfile='${textFile}':${baseStyle}:x=(w-text_w)/2:y=h*0.70`
-  }
-
-  const mid = Math.floor(safeText.length / 2)
-  let splitIdx = mid
-  for (let i = mid; i < safeText.length; i++) { if (safeText[i] === ' ') { splitIdx = i; break } }
-  for (let i = mid; i >= 0; i--) { if (safeText[i] === ' ') { splitIdx = i; break } }
-
-  const line1 = safeText.slice(0, splitIdx).trim()
-  const line2 = safeText.slice(splitIdx).trim()
-  const textFile1 = path.join(tmpDir, 'text_1.txt')
-  const textFile2 = path.join(tmpDir, 'text_2.txt')
-  fs.writeFileSync(textFile1, line1, 'utf8')
-  fs.writeFileSync(textFile2, line2, 'utf8')
-  return `drawtext=textfile='${textFile1}':${baseStyle}:x=(w-text_w)/2:y=h*0.65,drawtext=textfile='${textFile2}':${baseStyle}:x=(w-text_w)/2:y=h*0.73`
 }
 
 
@@ -196,34 +153,39 @@ export async function processVideoJob(jobId: string): Promise<void> {
       }
     }
 
-    // 4. Render text overlay
-    // -preset fast: much better quality than ultrafast with acceptable speed on Railway
-    // -crf 20: higher quality (lower = better, 23 was too lossy for source footage)
-    // -pix_fmt yuv420p: standardise pixel format to prevent color range shifts during encode
-    // -r 30: force constant 30fps output — phones shoot VFR which causes stuttering
-    // -movflags +faststart: move MOOV atom to front for fast web playback
-    const encodeFlags = `-c:v libx264 -preset fast -crf 20 -pix_fmt yuv420p -r 30 -movflags +faststart`
-    console.log(`  Rendering overlay: "${overlayText}"`)
-
-    // Scale to 1080p before text overlay — 4K HEVC from iPhone 15 Pro exhausts Railway memory
-    // scale=1080:-2: width capped at 1080 (always even), height proportional rounded to even
-    // avoids min(iw,1080) which uses a comma that ffmpeg 5.1.x's filter parser mistakes for a filter separator
-    const scaleFilter = `scale=1080:-2:flags=lanczos`
-    const dtFilter = overlayText.trim() ? buildDrawtextFilter(overlayText, tmpDir) : null
-    const vf = dtFilter ? `-vf "${scaleFilter},${dtFilter}"` : `-vf "${scaleFilter}"`
-    // -ss before -i for fast input seek; -t goes AFTER all inputs as an output option
-    // (if placed between two -i flags ffmpeg treats it as an input option on the second input, not the output)
+    // 4. Scale footage to 1080p with ffmpeg (reduces Chrome memory; handles VFR → 30fps)
+    // Remotion takes the scaled video as background — scale here so Chrome doesn't have to
+    const scaledPath = path.join(tmpDir, 'scaled.mp4')
     const seekFlag = trimStart > 0 ? `-ss ${trimStart.toFixed(3)}` : ''
-    const videoIn = hasAudio
-      ? `${ffmpegBin()} ${seekFlag} -i "${rawPath}" -i "${audioPath}"`
-      : `${ffmpegBin()} ${seekFlag} -i "${rawPath}"`
-    const audioMap = hasAudio ? `-c:a aac` : `-an`
-    run(`${videoIn} ${vf} -t ${duration.toFixed(3)} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
+    run(
+      `${ffmpegBin()} ${seekFlag} -i "${rawPath}" -vf "scale=1080:-2:flags=lanczos" ` +
+      `-t ${duration.toFixed(3)} -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -r 30 -an -y "${scaledPath}"`
+    )
 
-    // 5. Thumbnail — first frame, no seek (avoids ENOENT on clips shorter than 1s)
+    // 5. Render text overlay + audio via Remotion (React-based — word stagger, emoji, per-brand font)
+    const captionLines = overlayText
+      .split('\n')
+      .map((s: string) => s.trim())
+      .filter(Boolean)
+      .map((text: string, i: number, arr: string[]) => ({
+        text,
+        startSec: arr.length > 1 ? (duration / arr.length) * i : 0,
+      }))
+
+    console.log(`  Rendering with Remotion: ${captionLines.length} caption line(s), font="${brandConfig?.font_primary ?? 'default'}"`)
+    await renderWithRemotion({
+      videoPath: scaledPath,
+      audioPath: hasAudio ? audioPath : undefined,
+      captionLines,
+      brandConfig: brandConfig as import('./remotion/types').VideoBrandConfig | null,
+      durationSec: duration,
+      outputPath: finalPath,
+    })
+
+    // 7. Thumbnail — first frame, no seek (avoids ENOENT on clips shorter than 1s)
     run(`${ffmpegBin()} -i "${finalPath}" -vframes 1 -y "${thumbPath}"`)
 
-    // 6. Upload to R2
+    // 8. Upload to R2
     const outputKey = `video-jobs/${jobId}/output.mp4`
     const thumbKey = `video-jobs/${jobId}/thumb.jpg`
     await uploadToR2(outputKey, fs.readFileSync(finalPath), 'video/mp4')

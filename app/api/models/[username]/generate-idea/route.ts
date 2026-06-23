@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { getNextSlot } from '@/lib/scheduling'
+import Anthropic from '@anthropic-ai/sdk'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ username: string }> }) {
   const { username } = await params
@@ -11,7 +12,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const durationSeconds = Math.min(15, Math.max(3, typeof duration === 'number' ? Math.round(duration) : 5))
 
   const [{ data: model }, { data: post }] = await Promise.all([
-    supabaseAdmin.from('trends_models').select('id, placeholder_options').ilike('fansly_username', username).single(),
+    supabaseAdmin.from('trends_models').select('id, placeholder_options, branding_file_md, notes_for_ai').ilike('fansly_username', username).single(),
     supabaseAdmin.from('trends_posts').select('text_template').eq('id', post_id).single(),
   ])
 
@@ -20,7 +21,38 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const options: string[] = model.placeholder_options ?? []
   const chosen = placeholder ?? options[0] ?? ''
-  const personalizedText = post.text_template.replace(/\[placeholder\]/gi, chosen)
+  let personalizedText = post.text_template.replace(/\[placeholder\]/gi, chosen)
+
+  // AI text personalization: rewrite to match model's voice if branding file exists
+  if (model.branding_file_md) {
+    try {
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+      const msg = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 200,
+        messages: [{
+          role: 'user',
+          content: `You are writing short on-screen text for a vertical video reel for an adult content creator named @${username}.
+
+BRANDING FILE:
+${(model as { branding_file_md: string }).branding_file_md.slice(0, 2000)}
+${(model as { notes_for_ai?: string }).notes_for_ai ? `\nHARD RULES (follow exactly):\n${(model as { notes_for_ai: string }).notes_for_ai}\n` : ''}
+CURRENT TEXT (placeholder already filled in):
+${personalizedText}
+
+Rewrite the text to feel personal and authentic to this specific creator's voice and identity.
+- Keep the EXACT same number of lines
+- Max 6 words per line
+- NO quotation marks, NO hashtags, NO asterisks
+- Return ONLY the rewritten text lines, nothing else`,
+        }],
+      })
+      const rewritten = msg.content[0].type === 'text' ? msg.content[0].text.trim() : ''
+      if (rewritten) personalizedText = rewritten
+    } catch {
+      // fall through — keep [placeholder] swap result
+    }
+  }
 
   let clipId: string | null = null
   let clipIndex: number | null = null

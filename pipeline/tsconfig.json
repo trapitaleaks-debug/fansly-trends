@@ -12,5 +12,5 @@
     "baseUrl": ".."
   },
   "include": ["./**/*.ts", "../lib/**/*.ts", "../scraper/storage.ts", "../scraper/totp.ts"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "./remotion/Root.tsx", "./remotion/VideoComposition.tsx", "./remotion/index.ts"]
 }
