@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import {
   AbsoluteFill,
   Audio,
-  Video,
+  OffthreadVideo,
   continueRender,
   delayRender,
   interpolate,
@@ -147,8 +147,8 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
-      {/* Background video */}
-      <Video
+      {/* Background video — OffthreadVideo extracts frames via ffmpeg (frame-accurate, no Chrome seek artifacts) */}
+      <OffthreadVideo
         src={videoSrc}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
       />
