@@ -53,7 +53,7 @@ function WordStagger({
   const staggerDelay = words.length > 1
     ? Math.max(1, Math.floor((windowFrames * 0.7) / words.length))
     : 0
-  const fadeDuration = Math.min(8, Math.max(2, staggerDelay))
+  const fadeDuration = Math.min(12, Math.max(4, staggerDelay))
 
   return (
     <div
@@ -62,7 +62,7 @@ function WordStagger({
         flexWrap: 'wrap',
         justifyContent: 'center',
         alignItems: 'center',
-        gap: '0.4em',
+        gap: '0.6em',
         padding: '0 40px',
       }}
     >
@@ -72,17 +72,12 @@ function WordStagger({
           extrapolateLeft: 'clamp',
           extrapolateRight: 'clamp',
         })
-        const translateY = interpolate(frame, [wordFrame, wordFrame + fadeDuration], [14, 0], {
-          extrapolateLeft: 'clamp',
-          extrapolateRight: 'clamp',
-        })
         return (
           <span
             key={wi}
             style={{
               display: 'inline-block',
               opacity,
-              transform: `translateY(${translateY}px)`,
               fontSize: 72,
               fontFamily,
               fontWeight: 700,
