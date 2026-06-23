@@ -152,14 +152,6 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
       {/* Trending post audio */}
       {audioSrc && <Audio src={audioSrc} />}
 
-      {/* Vignette overlay */}
-      <AbsoluteFill
-        style={{
-          background:
-            'radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.5) 100%)',
-        }}
-      />
-
       {/* Caption lines — sequential: each replaces the previous */}
       {captionLines.map((line, i) => {
         const startFrame = Math.round(line.startSec * fps)

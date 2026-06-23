@@ -43,7 +43,7 @@ interface MatchedIdea {
   }
 }
 
-type GeneratedFilter = 'not_generated' | 'generated' | 'all'
+type GeneratedFilter = 'not_generated' | 'generated' | 'approved' | 'all'
 
 function ContentBankSection({ username }: { username: string }) {
   const [open, setOpen] = useState(false)
@@ -219,6 +219,27 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     setGeneratingAll(false)
   }
 
+  async function approveJob(jobId: string) {
+    await fetch(`/api/jobs/${jobId}/approve`, { method: 'POST' })
+    setMatchedIdeas(prev => prev.map(idea => ({
+      ...idea,
+      trends_posts: {
+        ...idea.trends_posts,
+        video_jobs: (idea.trends_posts.video_jobs ?? []).map(j =>
+          j.id === jobId ? { ...j, status: 'posting' } : j
+        ),
+      },
+    })))
+  }
+
+  async function approveAll() {
+    const mid = model?.id
+    if (!mid) return
+    const doneJobs = matchedIdeas
+      .flatMap(idea => (idea.trends_posts.video_jobs ?? []).filter(j => j.model_id === mid && j.status === 'done' && j.output_r2_key))
+    await Promise.all(doneJobs.map(j => approveJob(j.id)))
+  }
+
   async function handleBrandHtmlUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -251,16 +272,26 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
   const modelId = model.id
 
-  const hasVideo = (idea: MatchedIdea) =>
+  const generatedIdeas = matchedIdeas.filter(idea =>
     (idea.trends_posts.video_jobs ?? []).some(j =>
-      j.model_id === modelId && (j.status === 'done' || j.status === 'posted') && j.output_r2_key
+      j.model_id === modelId && j.status === 'done' && j.output_r2_key
     )
+  )
+  const approvedIdeas = matchedIdeas.filter(idea =>
+    (idea.trends_posts.video_jobs ?? []).some(j =>
+      j.model_id === modelId && (j.status === 'posting' || j.status === 'posted') && j.output_r2_key
+    )
+  )
+  const notGeneratedIdeas = matchedIdeas.filter(idea =>
+    !(idea.trends_posts.video_jobs ?? []).some(j =>
+      j.model_id === modelId && (j.status === 'done' || j.status === 'posting' || j.status === 'posted') && j.output_r2_key
+    )
+  )
 
-  const notGeneratedIdeas = matchedIdeas.filter(idea => !hasVideo(idea))
-  const generatedIdeas = matchedIdeas.filter(idea => hasVideo(idea))
-
-  const filteredIdeas = generatedFilter === 'not_generated' ? notGeneratedIdeas
-    : generatedFilter === 'generated' ? generatedIdeas
+  const filteredIdeas =
+    generatedFilter === 'not_generated' ? notGeneratedIdeas
+    : generatedFilter === 'generated'   ? generatedIdeas
+    : generatedFilter === 'approved'    ? approvedIdeas
     : matchedIdeas
 
   return (
@@ -417,18 +448,33 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
           {matchedIdeas.length > 0 && (
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="flex gap-1 bg-[#111] border border-[#1e1e1e] rounded-xl p-1 w-fit">
-                {(['not_generated', 'generated', 'all'] as const).map(f => (
+                {(['not_generated', 'generated', 'approved', 'all'] as const).map(f => (
                   <button key={f} onClick={() => setGeneratedFilter(f)}
                     className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${generatedFilter === f ? 'bg-white text-black font-medium' : 'text-[#666] hover:text-[#999]'}`}>
-                    {f === 'all' ? `All (${matchedIdeas.length})` : f === 'not_generated' ? `Not generated (${notGeneratedIdeas.length})` : `Generated (${generatedIdeas.length})`}
+                    {f === 'all'            ? `All (${matchedIdeas.length})`
+                     : f === 'not_generated' ? `Not generated (${notGeneratedIdeas.length})`
+                     : f === 'generated'     ? `Generated (${generatedIdeas.length})`
+                     :                         `Approved (${approvedIdeas.length})`}
                   </button>
                 ))}
               </div>
-              {generatedFilter !== 'all' && filteredIdeas.length > 0 && (
+              {generatedFilter === 'not_generated' && notGeneratedIdeas.length > 0 && (
                 <button onClick={generateAll} disabled={generatingAll}
                   className="text-xs bg-[#D41020] hover:bg-[#b50d1a] disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition-colors">
-                  {generatingAll ? 'Generating...' : generatedFilter === 'not_generated' ? `Generate all (${notGeneratedIdeas.length})` : `Regenerate all (${generatedIdeas.length})`}
+                  {generatingAll ? 'Generating...' : `Generate all (${notGeneratedIdeas.length})`}
                 </button>
+              )}
+              {generatedFilter === 'generated' && generatedIdeas.length > 0 && (
+                <div className="flex gap-2">
+                  <button onClick={generateAll} disabled={generatingAll}
+                    className="text-xs border border-[#2a2a2a] text-[#666] hover:text-white hover:border-[#3a3a3a] disabled:opacity-50 px-3 py-1.5 rounded-lg transition-colors">
+                    {generatingAll ? 'Generating...' : `Regenerate all (${generatedIdeas.length})`}
+                  </button>
+                  <button onClick={approveAll}
+                    className="text-xs bg-[#D41020] hover:bg-[#b50d1a] text-white px-3 py-1.5 rounded-lg transition-colors">
+                    Approve all ({generatedIdeas.length})
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -475,23 +521,35 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                         )}
                       </button>
 
-                      {/* Done jobs — watch + delete per version */}
+                      {/* Job action chips */}
                       <div className="flex gap-1 flex-shrink-0 flex-wrap justify-end">
-                        {jobs.filter(j => (j.status === 'done' || j.status === 'posted') && j.output_r2_key).map((j) => (
-                          <span key={j.id} className="flex items-center gap-0.5 border border-green-500/30 rounded-lg overflow-hidden">
-                            <button
-                              onClick={() => openWatch(j)}
-                              title={j.model_clips?.filename ?? undefined}
-                              className="text-[10px] font-medium px-2 py-1 text-green-400 hover:bg-green-500/10 transition-colors">
-                              ▶{j.clip_index != null ? ` clip#${j.clip_index}` : ''}
-                              {j.duration_seconds != null ? ` ${j.duration_seconds}s` : ''}
+                        {/* done = rendered, awaiting approval */}
+                        {jobs.filter(j => j.status === 'done' && j.output_r2_key).map(j => (
+                          <span key={j.id} className="flex items-center gap-0 border border-amber-500/30 rounded-lg overflow-hidden">
+                            <button onClick={() => openWatch(j)} title={j.model_clips?.filename ?? undefined}
+                              className="text-[10px] font-medium px-2 py-1 text-amber-400 hover:bg-amber-500/10 transition-colors">
+                              ▶{j.clip_index != null ? ` clip#${j.clip_index}` : ''}{j.duration_seconds != null ? ` ${j.duration_seconds}s` : ''}
                             </button>
-                            <button
-                              onClick={() => deleteJob(j.id)}
-                              disabled={deletingJobId === j.id}
-                              className="text-[10px] text-[#444] hover:text-red-400 disabled:opacity-40 transition-colors px-1.5 py-1 border-l border-green-500/20">
+                            <button onClick={() => approveJob(j.id)}
+                              className="text-[10px] px-2 py-1 text-green-400 hover:bg-green-500/10 transition-colors border-l border-amber-500/20">
+                              ✓
+                            </button>
+                            <button onClick={() => deleteJob(j.id)} disabled={deletingJobId === j.id}
+                              className="text-[10px] text-[#444] hover:text-red-400 disabled:opacity-40 transition-colors px-1.5 py-1 border-l border-amber-500/20">
                               {deletingJobId === j.id ? '…' : '×'}
                             </button>
+                          </span>
+                        ))}
+                        {/* posting / posted = approved */}
+                        {jobs.filter(j => (j.status === 'posting' || j.status === 'posted') && j.output_r2_key).map(j => (
+                          <span key={j.id} className="flex items-center gap-0 border border-green-500/30 rounded-lg overflow-hidden">
+                            <button onClick={() => openWatch(j)} title={j.model_clips?.filename ?? undefined}
+                              className="text-[10px] font-medium px-2 py-1 text-green-400 hover:bg-green-500/10 transition-colors">
+                              ▶{j.clip_index != null ? ` clip#${j.clip_index}` : ''}{j.duration_seconds != null ? ` ${j.duration_seconds}s` : ''}
+                            </button>
+                            <span className="text-[10px] px-2 py-1 border-l border-green-500/20 text-green-500/60">
+                              {j.status === 'posting' ? 'posting…' : '✓'}
+                            </span>
                           </span>
                         ))}
                         {jobs.some(j => j.status === 'pending' || j.status === 'processing') && (
