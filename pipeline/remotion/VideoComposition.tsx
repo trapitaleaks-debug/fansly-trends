@@ -132,18 +132,6 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   }, [fontHandle, brandConfig?.font_primary])
 
   const totalFrames = Math.max(1, Math.round(durationSec * fps))
-  const hasSticker = !!(brandConfig?.stickers?.[0])
-  const stickerEmoji = brandConfig?.stickers?.[0] ?? ''
-
-  // Sticker bounce-in animation
-  const stickerScale = interpolate(frame, [3, 12], [0.2, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  })
-  const stickerOpacity = interpolate(frame, [3, 10], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  })
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
@@ -181,30 +169,6 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
         )
       })}
 
-      {/* Emoji sticker — top-right corner */}
-      {hasSticker && (
-        <AbsoluteFill
-          style={{
-            justifyContent: 'flex-start',
-            alignItems: 'flex-end',
-            padding: '5% 6%',
-          }}
-        >
-          <span
-            style={{
-              fontSize: 90,
-              fontFamily: '"Noto Color Emoji", sans-serif',
-              opacity: stickerOpacity,
-              transform: `scale(${stickerScale})`,
-              display: 'inline-block',
-              transformOrigin: 'center',
-              lineHeight: 1,
-            }}
-          >
-            {stickerEmoji}
-          </span>
-        </AbsoluteFill>
-      )}
     </AbsoluteFill>
   )
 }
