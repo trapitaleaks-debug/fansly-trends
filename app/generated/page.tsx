@@ -130,6 +130,7 @@ export default function GeneratedPage() {
           <Link href="/ideas" className="hover:text-white transition-colors">Ideas</Link>
           <Link href="/models" className="hover:text-white transition-colors">Models</Link>
           <Link href="/generated" className="text-white">Generated</Link>
+          <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
         </div>
       </nav>
 

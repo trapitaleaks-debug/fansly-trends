@@ -66,8 +66,24 @@ function serveDirectory(dir: string, port: number): http.Server {
       return
     }
     const mime = MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream'
-    const stat = fs.statSync(filePath)
-    res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size })
+    const total = fs.statSync(filePath).size
+    const rangeHeader = req.headers['range']
+    if (rangeHeader) {
+      const m = rangeHeader.match(/bytes=(\d+)-(\d*)/)
+      if (m) {
+        const start = parseInt(m[1], 10)
+        const end = m[2] ? parseInt(m[2], 10) : total - 1
+        res.writeHead(206, {
+          'Content-Type': mime,
+          'Content-Range': `bytes ${start}-${end}/${total}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': end - start + 1,
+        })
+        fs.createReadStream(filePath, { start, end }).pipe(res)
+        return
+      }
+    }
+    res.writeHead(200, { 'Content-Type': mime, 'Content-Length': total, 'Accept-Ranges': 'bytes' })
     fs.createReadStream(filePath).pipe(res)
   })
   server.listen(port, '127.0.0.1')
