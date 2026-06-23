@@ -162,14 +162,23 @@ export async function processVideoJob(jobId: string): Promise<void> {
     )
 
     // 5. Render text overlay + audio via Remotion (React-based — word stagger, emoji, per-brand font)
-    const captionLines = overlayText
-      .split('\n')
-      .map((s: string) => s.trim())
-      .filter(Boolean)
-      .map((text: string, i: number, arr: string[]) => ({
-        text,
-        startSec: arr.length > 1 ? (duration / arr.length) * i : 0,
-      }))
+    // Caption timing: lines may carry "|N%" suffix (e.g. "Cum hard|40%") declaring their share of
+    // total video duration. Lines without a suffix share the remaining percentage equally.
+    const rawLines = overlayText.split('\n').map((s: string) => s.trim()).filter(Boolean)
+    const parsed = rawLines.map((line: string) => {
+      const m = line.match(/^(.*?)\|(\d+(?:\.\d+)?)%\s*$/)
+      return m ? { text: m[1].trim(), pct: parseFloat(m[2]) } : { text: line, pct: null as null | number }
+    })
+    type ParsedLine = { text: string; pct: number | null }
+    const totalSpecified = parsed.reduce((sum: number, l: ParsedLine) => sum + (l.pct ?? 0), 0)
+    const nullCount = parsed.filter((l: ParsedLine) => l.pct === null).length
+    const defaultPct = nullCount > 0 ? Math.max(0, 100 - totalSpecified) / nullCount : 0
+    let accumulated = 0
+    const captionLines = parsed.map((l: ParsedLine) => {
+      const startSec = (accumulated / 100) * duration
+      accumulated += l.pct ?? defaultPct
+      return { text: l.text, startSec }
+    })
 
     console.log(`  Rendering with Remotion: ${captionLines.length} caption line(s), font="${brandConfig?.font_primary ?? 'default'}"`)
     await renderWithRemotion({
