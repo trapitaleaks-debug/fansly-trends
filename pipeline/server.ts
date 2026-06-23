@@ -313,9 +313,20 @@ cron.schedule('* * * * *', async () => {
 
     const job = jobs[0]
     console.log(`[cron:post] Posting job ${job.id}`)
-    await postVideoJob(job.id).catch(e =>
+    await Promise.race([
+      postVideoJob(job.id),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('postVideoJob timeout after 5min')), 5 * 60 * 1000)
+      ),
+    ]).catch(async e => {
       console.error(`[cron:post] Failed ${job.id}:`, (e as Error).message)
-    )
+      await supabaseAdmin.from('video_jobs')
+        .update({ status: 'approved' })
+        .eq('id', job.id)
+        .eq('status', 'posting')
+        .then(() => console.log(`[cron:post] Reset ${job.id} to approved after failure`))
+        .catch(() => {})
+    })
   } catch (e) {
     console.error('[cron:post] Error:', (e as Error).message)
   } finally {
