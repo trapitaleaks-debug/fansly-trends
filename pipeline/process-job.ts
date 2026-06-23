@@ -137,6 +137,14 @@ export async function processVideoJob(jobId: string): Promise<void> {
     console.log(`  Downloading footage: ${clipKey}`)
     await downloadFromR2(clipKey, rawPath)
 
+    // Normalize .mov clips to clean H.264 MP4 — MOV container metadata (rotation, SAR,
+    // color space, HEVC profile) causes libx264 to fail with "incorrect parameters" on Railway
+    if (clipKey.toLowerCase().endsWith('.mov')) {
+      const normPath = path.join(tmpDir, 'normalized.mp4')
+      run(`${ffmpegBin()} -i "${rawPath}" -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an -y "${normPath}"`)
+      fs.renameSync(normPath, rawPath)
+    }
+
     // Look up trim points from content bank (trim is applied by ffmpeg, not during upload)
     const { data: bankItem } = await supabaseAdmin
       .from('pipeline_content_bank')
