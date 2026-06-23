@@ -138,10 +138,11 @@ export async function processVideoJob(jobId: string): Promise<void> {
     await downloadFromR2(clipKey, rawPath)
 
     // Normalize .mov clips to clean H.264 MP4 — MOV container metadata (rotation, SAR,
-    // color space, HEVC profile) causes libx264 to fail with "incorrect parameters" on Railway
+    // color space, HEVC profile) causes libx264 to fail with "incorrect parameters" on Railway.
+    // -t 60: only normalize the first 60s — raw iPhone footage can be multi-minute; we never use more than 15s.
     if (clipKey.toLowerCase().endsWith('.mov')) {
       const normPath = path.join(tmpDir, 'normalized.mp4')
-      run(`${ffmpegBin()} -i "${rawPath}" -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an -y "${normPath}"`)
+      run(`${ffmpegBin()} -i "${rawPath}" -t 60 -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an -y "${normPath}"`)
       fs.renameSync(normPath, rawPath)
     }
 
