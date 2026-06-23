@@ -13,6 +13,9 @@ export async function GET(request: NextRequest) {
   const page = parseInt(searchParams.get('page') ?? '0')
   const limit = 30
 
+  const { data: blacklistData } = await supabaseAdmin.from('trends_blacklist').select('username')
+  const bannedUsernames = (blacklistData ?? []).map((r: { username: string }) => r.username.toLowerCase())
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let query = supabaseAdmin
     .from('trends_posts')
@@ -22,6 +25,10 @@ export async function GET(request: NextRequest) {
     .not('video_r2_key', 'is', null)
     .neq('video_r2_key', '')
     .not('hashtags', 'ov', '{deepthroat,porn,creampie,hotwife,bigdick,breeding,analcreampie,sex,bbc,bwc,bigcock,hugecock,hugedick,swingers,couple,couples,wifesharing,wifeswap,blacked,monstercock,gangbang,cumslut,analsex,cumeating,fuck,bg,sextape,standingfuck}') as any
+
+  if (bannedUsernames.length > 0) {
+    query = query.not('creator_username', 'ilike', `{${bannedUsernames.join(',')}}` as any)
+  }
 
   if (showHidden) {
     query = query.not('hidden_at', 'is', null)

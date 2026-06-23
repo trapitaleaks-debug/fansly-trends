@@ -62,7 +62,7 @@ function WordStagger({
         flexWrap: 'wrap',
         justifyContent: 'center',
         alignItems: 'center',
-        gap: '0.6em',
+        gap: '1.2em',
         padding: '0 40px',
       }}
     >
