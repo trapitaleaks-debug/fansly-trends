@@ -30,7 +30,7 @@ const BANNED_HASHTAGS = new Set([
   // nudity
   'nude','naked','xxx',
   // fetish / niche
-  'bdsm','bondage','dominatrix','cuckold','feet','footfetish',
+  'bdsm','bondage','dominatrix','cuckold',
   'scat','piss','pissing','watersports','futa','futanari',
   'furry','hentai','femboy','ladyboy','shemale','trans',
 ])

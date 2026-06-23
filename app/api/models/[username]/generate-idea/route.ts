@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
+import { getNextSlot } from '@/lib/scheduling'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ username: string }> }) {
   const { username } = await params
@@ -67,6 +68,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
   }
 
+  const scheduledFor = await getNextSlot(model.id)
+
   const { data: job, error } = await supabaseAdmin
     .from('video_jobs')
     .insert({
@@ -78,6 +81,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       original_template: post.text_template,
       personalized_text: personalizedText,
       status: 'pending',
+      scheduled_for: scheduledFor.toISOString(),
     })
     .select('id')
     .single()

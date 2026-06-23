@@ -45,6 +45,22 @@ interface MatchedIdea {
 
 type GeneratedFilter = 'not_generated' | 'generated' | 'all'
 
+function ContentBankSection({ username }: { username: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="bg-[#111] border border-[#1e1e1e] rounded-xl p-5 space-y-4">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="flex items-center justify-between w-full text-left"
+      >
+        <h3 className="text-sm font-medium">Content Bank</h3>
+        <span className="text-xs text-[#555]">{open ? '▲ Hide' : '▼ Show'}</span>
+      </button>
+      {open && <ContentBank username={username} />}
+    </div>
+  )
+}
+
 export default function ModelDetailPage({ params }: { params: Promise<{ username: string }> }) {
   const { username } = use(params)
   const router = useRouter()
@@ -235,15 +251,13 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
   const modelId = model.id
 
-  const notGeneratedIdeas = matchedIdeas.filter(idea => {
-    const jobs = (idea.trends_posts.video_jobs ?? []).filter(j => j.model_id === modelId)
-    return jobs.length === 0
-  })
+  const hasVideo = (idea: MatchedIdea) =>
+    (idea.trends_posts.video_jobs ?? []).some(j =>
+      j.model_id === modelId && (j.status === 'done' || j.status === 'posted') && j.output_r2_key
+    )
 
-  const generatedIdeas = matchedIdeas.filter(idea => {
-    const jobs = (idea.trends_posts.video_jobs ?? []).filter(j => j.model_id === modelId)
-    return jobs.length > 0
-  })
+  const notGeneratedIdeas = matchedIdeas.filter(idea => !hasVideo(idea))
+  const generatedIdeas = matchedIdeas.filter(idea => hasVideo(idea))
 
   const filteredIdeas = generatedFilter === 'not_generated' ? notGeneratedIdeas
     : generatedFilter === 'generated' ? generatedIdeas
@@ -388,10 +402,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
         </div>
 
         {/* Content Bank */}
-        <div className="bg-[#111] border border-[#1e1e1e] rounded-xl p-5 space-y-4">
-          <h3 className="text-sm font-medium">Content Bank</h3>
-          <ContentBank username={username} />
-        </div>
+        <ContentBankSection username={username} />
 
         {/* Matched Ideas */}
         <div className="space-y-4">
@@ -466,7 +477,7 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
 
                       {/* Done jobs — watch + delete per version */}
                       <div className="flex gap-1 flex-shrink-0 flex-wrap justify-end">
-                        {jobs.filter(j => j.status === 'done' && j.output_r2_key).map((j) => (
+                        {jobs.filter(j => (j.status === 'done' || j.status === 'posted') && j.output_r2_key).map((j) => (
                           <span key={j.id} className="flex items-center gap-0.5 border border-green-500/30 rounded-lg overflow-hidden">
                             <button
                               onClick={() => openWatch(j)}

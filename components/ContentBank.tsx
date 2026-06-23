@@ -66,6 +66,8 @@ export default function ContentBank({ username }: { username: string }) {
   const [uploadErrors, setUploadErrors] = useState<string[]>([])
   const [dragActive, setDragActive] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [downloadingAll, setDownloadingAll] = useState(false)
   const [savingTagsId, setSavingTagsId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({})
@@ -189,6 +191,44 @@ export default function ContentBank({ username }: { username: string }) {
     }
   }
 
+  async function getOrFetchSignedUrl(item: ContentBankItem): Promise<string | null> {
+    if (signedUrls[item.id]) return signedUrls[item.id]
+    if (!pipelineModelId) return null
+    const res = await fetch(`/api/pipeline/content-bank/${pipelineModelId}?signed=${item.id}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    setSignedUrls(prev => ({ ...prev, [item.id]: data.url }))
+    return data.url
+  }
+
+  function triggerDownload(url: string, filename: string) {
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
+  async function handleDownload(item: ContentBankItem) {
+    setDownloadingId(item.id)
+    const url = await getOrFetchSignedUrl(item)
+    if (url) triggerDownload(url, item.label ?? item.r2_key.split('/').pop() ?? 'video.mp4')
+    setDownloadingId(null)
+  }
+
+  async function handleDownloadAll() {
+    setDownloadingAll(true)
+    for (const item of items) {
+      const url = await getOrFetchSignedUrl(item)
+      if (url) {
+        triggerDownload(url, item.label ?? item.r2_key.split('/').pop() ?? 'video.mp4')
+        await new Promise(r => setTimeout(r, 400))
+      }
+    }
+    setDownloadingAll(false)
+  }
+
   async function handleTagsChange(item: ContentBankItem, newTags: string[]) {
     if (!pipelineModelId) return
     setItems(prev => prev.map(i => i.id === item.id ? { ...i, tags: newTags } : i))
@@ -277,6 +317,17 @@ export default function ContentBank({ username }: { username: string }) {
 
       {/* Video list */}
       {items.length === 0 && <p className="text-xs text-[#444]">No videos uploaded yet</p>}
+      {items.length > 0 && (
+        <div className="flex justify-end">
+          <button
+            onClick={handleDownloadAll}
+            disabled={downloadingAll}
+            className="text-xs text-[#444] hover:text-[#888] disabled:opacity-40 transition-colors"
+          >
+            {downloadingAll ? 'Downloading...' : 'Download all'}
+          </button>
+        </div>
+      )}
       <div className="space-y-3">
         {items.map((item, idx) => (
           <div key={item.id} className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-lg overflow-hidden">
@@ -291,6 +342,10 @@ export default function ContentBank({ username }: { username: string }) {
                   {expandedId === item.id ? '▲ hide' : '▶ preview'}
                 </span>
                 {savingTagsId === item.id && <span className="text-[10px] text-[#444] flex-shrink-0">saving...</span>}
+              </button>
+              <button onClick={() => handleDownload(item)} disabled={downloadingId === item.id}
+                className="text-xs text-[#444] hover:text-[#888] disabled:opacity-50 transition-colors flex-shrink-0">
+                {downloadingId === item.id ? '...' : 'Download'}
               </button>
               <button onClick={() => handleDelete(item.id)} disabled={deletingId === item.id}
                 className="text-xs text-[#444] hover:text-red-400 disabled:opacity-50 transition-colors flex-shrink-0">

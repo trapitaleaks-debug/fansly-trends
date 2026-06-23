@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "scrape": "ts-node --project scraper/tsconfig.json scraper/index.ts",
+    "scrape:feet": "ts-node --project scraper/tsconfig.json scraper/feet.ts",
     "scrape:discover": "DISCOVERY=true ts-node --project scraper/tsconfig.json scraper/index.ts",
     "scrape:headed": "HEADLESS=false ts-node --project scraper/tsconfig.json scraper/index.ts",
     "velocity": "ts-node --project scraper/tsconfig.json scraper/velocity.ts",

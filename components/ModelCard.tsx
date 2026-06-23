@@ -8,6 +8,7 @@ export interface ModelSummary {
   fansly_url: string | null
   niches: string[]
   model_number: number | null
+  content_bank_count: number
   updated_at: string
 }
 
@@ -25,7 +26,12 @@ export default function ModelCard({ model }: { model: ModelSummary }) {
         )}
         <span className="text-sm font-medium text-white">{model.fansly_username}</span>
       </div>
-      <span className="text-[#333] group-hover:text-[#666] transition-colors text-xs">→</span>
+      <div className="flex items-center gap-3">
+        <span className={`text-xs tabular-nums ${model.content_bank_count > 0 ? 'text-violet-400' : 'text-[#444]'}`}>
+          {model.content_bank_count} {model.content_bank_count === 1 ? 'video' : 'videos'}
+        </span>
+        <span className="text-[#333] group-hover:text-[#666] transition-colors text-xs">→</span>
+      </div>
     </Link>
   )
 }

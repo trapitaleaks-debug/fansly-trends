@@ -12,18 +12,11 @@ import { r2, uploadToR2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
 import { sendTelegram } from '../lib/telegram'
+import { getNextSlot } from '../lib/scheduling'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
 const SESSION_R2_KEY = 'sessions/fancore.json'
-// Slot system: 4 posts per day per model at random times between 8:00–23:00 UTC.
-// Each slot is spaced at least 30 min from others on the same day.
-// Videos fill slots sequentially across models — next available slot on the earliest day with < 4 posts.
-const SLOTS_PER_DAY        = 4
-const SLOT_WINDOW_START    = 8   // earliest hour (UTC)
-const SLOT_WINDOW_END      = 23  // latest hour (UTC)
-const SLOT_MIN_GAP_MS      = 30 * 60 * 1000  // 30-min minimum gap between slots on same day
-
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
   const ac = new AbortController()
@@ -96,53 +89,6 @@ async function createContext(browser: Browser): Promise<{ context: BrowserContex
   return { context: await browser.newContext({ timezoneId: 'UTC' }), hadSavedSession: false }
 }
 
-// Returns the next available random slot datetime for this model.
-// Picks a random time in [SLOT_WINDOW_START, SLOT_WINDOW_END] UTC, at least SLOT_MIN_GAP_MS
-// away from all other slots already scheduled for the same day.
-async function getNextSlot(modelId: string): Promise<Date> {
-  const { data } = await supabaseAdmin
-    .from('video_jobs')
-    .select('scheduled_for')
-    .eq('model_id', modelId)
-    .not('scheduled_for', 'is', null)
-    .gte('scheduled_for', new Date().toISOString())
-
-  // Group existing future slots by calendar day (UTC)
-  const slotsByDay = new Map<string, Date[]>()
-  for (const row of (data ?? [])) {
-    const d = new Date(row.scheduled_for)
-    const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`
-    if (!slotsByDay.has(key)) slotsByDay.set(key, [])
-    slotsByDay.get(key)!.push(d)
-  }
-
-  const now = new Date()
-
-  for (let dayOffset = 0; dayOffset < 30; dayOffset++) {
-    const y = now.getUTCFullYear(), mo = now.getUTCMonth(), d = now.getUTCDate() + dayOffset
-    const dayKey = `${y}-${mo}-${d}`
-    const taken = slotsByDay.get(dayKey) ?? []
-    if (taken.length >= SLOTS_PER_DAY) continue
-
-    // Try up to 40 random times in the day window
-    for (let attempt = 0; attempt < 40; attempt++) {
-      const rangeHours = SLOT_WINDOW_END - SLOT_WINDOW_START
-      const hour   = SLOT_WINDOW_START + Math.floor(Math.random() * (rangeHours + 1))
-      const minute = Math.floor(Math.random() * 60)
-      const candidate = new Date(Date.UTC(y, mo, d, hour, minute, 0, 0))
-
-      if (candidate <= now) continue
-      const tooClose = taken.some(s => Math.abs(s.getTime() - candidate.getTime()) < SLOT_MIN_GAP_MS)
-      if (tooClose) continue
-
-      return candidate
-    }
-    // Day exhausted (extremely unlikely with 4 slots in a 15h window) — try next day
-  }
-
-  // Hard fallback
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 12, 0, 0, 0))
-}
 
 
 export async function postVideoJob(jobId: string): Promise<void> {

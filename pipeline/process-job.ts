@@ -211,8 +211,8 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const audioMap = hasAudio ? `-c:a aac` : `-an`
     run(`${videoIn} ${vf} -t ${duration.toFixed(3)} ${encodeFlags} ${audioMap} -y "${finalPath}"`)
 
-    // 5. Thumbnail at 1s
-    run(`${ffmpegBin()} -i "${finalPath}" -ss 00:00:01 -vframes 1 -y "${thumbPath}"`)
+    // 5. Thumbnail — first frame, no seek (avoids ENOENT on clips shorter than 1s)
+    run(`${ffmpegBin()} -i "${finalPath}" -vframes 1 -y "${thumbPath}"`)
 
     // 6. Upload to R2
     const outputKey = `video-jobs/${jobId}/output.mp4`
