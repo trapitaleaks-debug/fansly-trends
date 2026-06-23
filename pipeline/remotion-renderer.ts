@@ -1,5 +1,8 @@
 import { renderMedia, selectComposition } from '@remotion/renderer'
 import { bundle } from '@remotion/bundler'
+import http from 'http'
+import net from 'net'
+import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import type { CaptionLine, VideoBrandConfig } from './remotion/types'
@@ -36,34 +39,80 @@ async function getBundleLocation(): Promise<string> {
   return _bundling
 }
 
+// chrome-headless-shell cannot load file:// URIs for <video>/<audio> elements.
+// Serve the tmpDir over a local HTTP server so Chrome uses http://localhost instead.
+function findFreePort(): Promise<number> {
+  return new Promise(resolve => {
+    const srv = net.createServer()
+    srv.listen(0, '127.0.0.1', () => {
+      const port = (srv.address() as net.AddressInfo).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+function serveDirectory(dir: string, port: number): http.Server {
+  const MIME: Record<string, string> = {
+    '.mp4': 'video/mp4',
+    '.aac': 'audio/aac',
+    '.m4a': 'audio/mp4',
+    '.webm': 'video/webm',
+  }
+  const server = http.createServer((req, res) => {
+    const filePath = path.join(dir, decodeURIComponent(req.url ?? '').replace(/^\//, ''))
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404)
+      res.end('Not found')
+      return
+    }
+    const mime = MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+    const stat = fs.statSync(filePath)
+    res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size })
+    fs.createReadStream(filePath).pipe(res)
+  })
+  server.listen(port, '127.0.0.1')
+  return server
+}
+
 export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<void> {
   const serveUrl = await getBundleLocation()
 
+  const tmpDir = path.dirname(opts.videoPath)
+  const port = await findFreePort()
+  const fileServer = serveDirectory(tmpDir, port)
+  const toHttp = (p: string) => `http://127.0.0.1:${port}/${path.basename(p)}`
+
   const inputProps = {
-    videoSrc: `file://${opts.videoPath}`,
-    audioSrc: opts.audioPath ? `file://${opts.audioPath}` : undefined,
+    videoSrc: toHttp(opts.videoPath),
+    audioSrc: opts.audioPath ? toHttp(opts.audioPath) : undefined,
     captionLines: opts.captionLines,
     brandConfig: opts.brandConfig,
     durationSec: opts.durationSec,
   }
 
-  const composition = await selectComposition({
-    serveUrl,
-    id: 'VideoOverlay',
-    inputProps,
-    browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
-    chromiumOptions: { disableWebSecurity: true },
-  })
+  console.log(`[remotion] Serving media via http://127.0.0.1:${port}`)
 
-  await renderMedia({
-    composition,
-    serveUrl,
-    codec: 'h264',
-    outputLocation: opts.outputPath,
-    inputProps,
-    browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
-    chromiumOptions: { disableWebSecurity: true },
-    crf: 20,
-    timeoutInMilliseconds: 5 * 60 * 1000,
-  })
+  try {
+    const composition = await selectComposition({
+      serveUrl,
+      id: 'VideoOverlay',
+      inputProps,
+      browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
+      chromiumOptions: { disableWebSecurity: true },
+    })
+
+    await renderMedia({
+      composition,
+      serveUrl,
+      codec: 'h264',
+      outputLocation: opts.outputPath,
+      inputProps,
+      browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
+      chromiumOptions: { disableWebSecurity: true },
+      crf: 20,
+      timeoutInMilliseconds: 5 * 60 * 1000,
+    })
+  } finally {
+    fileServer.close()
+  }
 }
