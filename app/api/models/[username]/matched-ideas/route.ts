@@ -47,9 +47,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ use
       (idea.niches ?? []).some((n: string) => modelNiches.has(n))
     )
     .filter((idea: { tags: string[] }) => {
-      // If model has no tagged content bank clips, skip tag filter (show all niche-matched ideas)
       if (contentBankTags.size === 0) return true
-      return (idea.tags ?? []).some((t: string) => contentBankTags.has(t))
+      const ideaTags = idea.tags ?? []
+      if (ideaTags.length === 0) return true  // untagged idea = universal, show to all niche-matched models
+      return ideaTags.some((t: string) => contentBankTags.has(t))
     })
 
   return NextResponse.json({ ideas: matched, modelNiches: model.niches })
