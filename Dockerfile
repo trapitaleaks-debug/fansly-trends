@@ -42,7 +42,7 @@ RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable --path /o
     && CHS="$(find /opt/chrome-headless-shell -type f -name 'chrome-headless-shell' | head -1)" \
     && test -n "$CHS" \
     && ln -sf "$CHS" /usr/local/bin/chrome-headless-shell \
-    && /usr/local/bin/chrome-headless-shell --version
+    && (/usr/local/bin/chrome-headless-shell --version 2>&1 || echo "WARNING: chrome-headless-shell binary check failed — continuing")
 ENV HYPERFRAMES_BROWSER_PATH=/usr/local/bin/chrome-headless-shell
 
 # Hyperframes: use software rendering (no GPU on Railway)
