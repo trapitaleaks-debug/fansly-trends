@@ -12,6 +12,8 @@ export async function POST(request: NextRequest) {
   const host = request.headers.get('host') ?? 'localhost:3000'
   const protocol = host.includes('localhost') ? 'http' : 'https'
   const baseUrl = `${protocol}://${host}`
+  // Forward auth cookie so internal fetches pass middleware
+  const cookie = request.headers.get('cookie') ?? ''
 
   // 1. All models
   const { data: models, error: modelsErr } = await supabaseAdmin
@@ -26,7 +28,9 @@ export async function POST(request: NextRequest) {
   //    then fire generate-idea for each not-yet-generated idea.
   const allTasks = await Promise.all(
     activeModels.map(async model => {
-      const res = await fetch(`${baseUrl}/api/models/${model.fansly_username}/matched-ideas`)
+      const res = await fetch(`${baseUrl}/api/models/${model.fansly_username}/matched-ideas`, {
+        headers: { cookie },
+      })
       if (!res.ok) return []
 
       const { ideas } = await res.json() as {
@@ -68,7 +72,7 @@ export async function POST(request: NextRequest) {
     tasks.map(({ username, postId }) =>
       fetch(`${baseUrl}/api/models/${username}/generate-idea`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', cookie },
         body: JSON.stringify({ post_id: postId, duration: durationSeconds }),
       }).then(r => ({ username, ok: r.ok }))
     )
