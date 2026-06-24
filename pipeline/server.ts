@@ -297,6 +297,18 @@ cron.schedule('* * * * *', async () => {
   }
 })
 
+// Every minute: auto-approve all done video_jobs (skip manual review step)
+cron.schedule('* * * * *', async () => {
+  try {
+    await supabaseAdmin
+      .from('video_jobs')
+      .update({ status: 'approved' })
+      .eq('status', 'done')
+  } catch (e) {
+    console.error('[cron:auto-approve] Error:', (e as Error).message)
+  }
+})
+
 // Every minute: post one approved video_job to FanCore (sequential — one Playwright at a time)
 let postingRunning = false
 cron.schedule('* * * * *', async () => {
