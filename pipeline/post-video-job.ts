@@ -179,6 +179,16 @@ export async function postVideoJob(jobId: string): Promise<void> {
     // Wait for sidebar models API call to complete after domcontentloaded
     await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {})
 
+    // Dismiss the "Renew subscription" lockOverlay if it appears.
+    // FanCore auto-selects the last-used model on page load — if that model's subscription
+    // is past due, a modal blocks all sidebar clicks until dismissed.
+    const lockOverlay = page.locator('#lockOverlay[aria-hidden="false"]')
+    if (await lockOverlay.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      console.log('[post] lockOverlay detected — clicking "Switch to another model"')
+      await page.getByText('Switch to another model').first().click()
+      await page.waitForTimeout(1_000)
+    }
+
     // Click the model entry in the left sidebar — wait up to 30s for it to render
     const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
     try {
@@ -192,6 +202,10 @@ export async function postVideoJob(jobId: string): Promise<void> {
       throw new Error(`Sidebar: @${handle} not visible after 30s — check debug/post-${jobId}-sidebar.png in R2`)
     }
     await modelEntry.click()
+    // If the target model itself has a past-due subscription, another lockOverlay appears.
+    if (await lockOverlay.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      throw new Error(`@${handle} subscription is past due on FanCore — cannot post, renew to unlock`)
+    }
     await page.waitForTimeout(2000)
 
     // Download video from R2
