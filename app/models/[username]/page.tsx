@@ -279,12 +279,12 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   )
   const approvedIdeas = matchedIdeas.filter(idea =>
     (idea.trends_posts.video_jobs ?? []).some(j =>
-      j.model_id === modelId && (j.status === 'posting' || j.status === 'posted') && j.output_r2_key
+      j.model_id === modelId && (j.status === 'approved' || j.status === 'posting' || j.status === 'posted') && j.output_r2_key
     )
   )
   const notGeneratedIdeas = matchedIdeas.filter(idea =>
     !(idea.trends_posts.video_jobs ?? []).some(j =>
-      j.model_id === modelId && (j.status === 'done' || j.status === 'posting' || j.status === 'posted') && j.output_r2_key
+      j.model_id === modelId && (j.status === 'done' || j.status === 'approved' || j.status === 'posting' || j.status === 'posted') && j.output_r2_key
     )
   )
 
