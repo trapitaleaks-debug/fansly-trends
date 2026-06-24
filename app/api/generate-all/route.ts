@@ -2,86 +2,81 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 
 // POST /api/generate-all
-// Triggers generation for every matched idea that has no active video job,
-// across all models, in parallel. Returns a per-model summary.
+// Triggers generation for every matched idea with no active video job,
+// across all models, in parallel. Reuses the per-model matched-ideas API
+// so niche/content-bank filtering is identical to the model page.
 export async function POST(request: NextRequest) {
   const { duration = 5 } = await request.json().catch(() => ({}))
   const durationSeconds = Math.min(15, Math.max(3, Math.round(duration)))
 
-  // Derive base URL for internal fetch calls to /api/models/[username]/generate-idea
   const host = request.headers.get('host') ?? 'localhost:3000'
   const protocol = host.includes('localhost') ? 'http' : 'https'
   const baseUrl = `${protocol}://${host}`
 
-  // 1. All models with their niches
+  // 1. All models
   const { data: models, error: modelsErr } = await supabaseAdmin
     .from('trends_models')
     .select('id, fansly_username, niches')
     .order('model_number', { ascending: true, nullsFirst: false })
   if (modelsErr) return NextResponse.json({ error: modelsErr.message }, { status: 500 })
 
-  // 2. All ideas with their existing video jobs
-  const { data: ideas, error: ideasErr } = await supabaseAdmin
-    .from('trends_ideas')
-    .select('id, niches, trends_posts(id, text_template, video_jobs(id, status, model_id, output_r2_key))')
-    .order('created_at', { ascending: false })
-  if (ideasErr) return NextResponse.json({ error: ideasErr.message }, { status: 500 })
+  const activeModels = (models ?? []).filter(m => m.niches?.length)
 
-  // 3. For each model, collect post_ids that have no active job
-  const tasks: Array<{ username: string; postId: string }> = []
+  // 2. Per model: fetch matched ideas (reuses existing working logic),
+  //    then fire generate-idea for each not-yet-generated idea.
+  const allTasks = await Promise.all(
+    activeModels.map(async model => {
+      const res = await fetch(`${baseUrl}/api/models/${model.fansly_username}/matched-ideas`)
+      if (!res.ok) return []
 
-  for (const model of models ?? []) {
-    if (!model.niches?.length) continue
-    const modelNiches = new Set(model.niches as string[])
+      const { ideas } = await res.json() as {
+        ideas: Array<{
+          trends_posts: {
+            id: string
+            text_template: string | null
+            video_jobs: Array<{ id: string; status: string; model_id: string; output_r2_key: string | null }>
+          }
+        }>
+      }
 
-    for (const idea of ideas ?? []) {
-      // Niche match
-      if (!(idea.niches ?? []).some((n: string) => modelNiches.has(n))) continue
+      return (ideas ?? [])
+        .filter(idea => {
+          const jobs = idea.trends_posts?.video_jobs ?? []
+          const hasActive = jobs.some(j =>
+            j.model_id === model.id &&
+            ['done', 'approved', 'posting', 'posted'].includes(j.status) &&
+            j.output_r2_key
+          )
+          const hasInFlight = jobs.some(j =>
+            j.model_id === model.id &&
+            ['pending', 'processing'].includes(j.status)
+          )
+          return !hasActive && !hasInFlight && idea.trends_posts?.text_template
+        })
+        .map(idea => ({ username: model.fansly_username, postId: idea.trends_posts.id }))
+    })
+  )
 
-      // Supabase types trends_posts as array; treat single or array
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rawPost = (idea as any).trends_posts
-      const post = (Array.isArray(rawPost) ? rawPost[0] : rawPost) as { id: string; text_template: string; video_jobs?: { id: string; status: string; model_id: string; output_r2_key: string | null }[] } | null
-      if (!post?.text_template) continue
-
-      // Already has an active job for this model?
-      const hasActive = (post.video_jobs ?? []).some(j =>
-        j.model_id === model.id &&
-        (j.status === 'done' || j.status === 'approved' || j.status === 'posting' || j.status === 'posted') &&
-        j.output_r2_key
-      )
-      if (hasActive) continue
-
-      // Also skip if there's already a pending/processing job (already generating)
-      const hasInFlight = (post.video_jobs ?? []).some(j =>
-        j.model_id === model.id &&
-        (j.status === 'pending' || j.status === 'processing')
-      )
-      if (hasInFlight) continue
-
-      tasks.push({ username: model.fansly_username, postId: post.id })
-    }
-  }
+  const tasks = allTasks.flat()
 
   if (tasks.length === 0) {
-    return NextResponse.json({ triggered: 0, message: 'Nothing to generate — all ideas already have jobs.' })
+    return NextResponse.json({ triggered: 0, message: 'Nothing new to generate — all ideas already have jobs.' })
   }
 
-  // 4. Fire all generate-idea calls in parallel (pipeline cron throttles actual rendering)
+  // 3. Fire all generate-idea calls in parallel
   const results = await Promise.allSettled(
     tasks.map(({ username, postId }) =>
       fetch(`${baseUrl}/api/models/${username}/generate-idea`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ post_id: postId, duration: durationSeconds }),
-      }).then(r => ({ username, postId, ok: r.ok, status: r.status }))
+      }).then(r => ({ username, ok: r.ok }))
     )
   )
 
   const succeeded = results.filter(r => r.status === 'fulfilled' && r.value.ok).length
   const failed = tasks.length - succeeded
 
-  // Per-model summary
   const byModel: Record<string, { triggered: number; failed: number }> = {}
   for (const r of results) {
     if (r.status !== 'fulfilled') continue
