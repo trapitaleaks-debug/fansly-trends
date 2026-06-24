@@ -38,7 +38,10 @@ export async function POST(request: NextRequest) {
       // Niche match
       if (!(idea.niches ?? []).some((n: string) => modelNiches.has(n))) continue
 
-      const post = (idea as { trends_posts?: { id: string; text_template: string; video_jobs?: { id: string; status: string; model_id: string; output_r2_key: string | null }[] } | null }).trends_posts
+      // Supabase types trends_posts as array; treat single or array
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawPost = (idea as any).trends_posts
+      const post = (Array.isArray(rawPost) ? rawPost[0] : rawPost) as { id: string; text_template: string; video_jobs?: { id: string; status: string; model_id: string; output_r2_key: string | null }[] } | null
       if (!post?.text_template) continue
 
       // Already has an active job for this model?
