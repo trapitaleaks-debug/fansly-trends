@@ -325,8 +325,7 @@ cron.schedule('* * * * *', async () => {
         .update({ status: 'approved' })
         .eq('id', job.id)
         .eq('status', 'posting')
-        .then(() => console.log(`[cron:post] Reset ${job.id} to approved after failure`))
-        .catch(() => {})
+        .then(() => console.log(`[cron:post] Reset ${job.id} to approved after failure`), () => {})
     })
   } catch (e) {
     console.error('[cron:post] Error:', (e as Error).message)
