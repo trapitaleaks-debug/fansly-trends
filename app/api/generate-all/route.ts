@@ -63,14 +63,8 @@ export async function POST(request: NextRequest) {
 
   const tasks = allTasks.flat()
 
-  // Debug: per-model idea counts
-  const debug = activeModels.map((m, i) => ({
-    model: m.fansly_username,
-    ideas: allTasks[i]?.length ?? 0,
-  }))
-
   if (tasks.length === 0) {
-    return NextResponse.json({ triggered: 0, message: 'Nothing new to generate — all ideas already have jobs.', debug })
+    return NextResponse.json({ triggered: 0, message: 'Nothing new to generate — all ideas already have jobs.' })
   }
 
   // 3. Fire all generate-idea calls in parallel
