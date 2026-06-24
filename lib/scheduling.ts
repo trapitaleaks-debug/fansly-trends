@@ -1,12 +1,19 @@
 import { supabaseAdmin } from './supabase'
 
-const SLOTS_PER_DAY     = 4
-const SLOT_WINDOW_START = 8   // earliest hour (UTC)
-const SLOT_WINDOW_END   = 23  // latest hour (UTC)
-const SLOT_MIN_GAP_MS   = 30 * 60 * 1000
+// Fixed daily posting slots per model (UTC). All models share the same schedule.
+// Videos generated at any time of day are queued to the next available slot.
+const FIXED_SLOTS: Array<{ hour: number; minute: number }> = [
+  { hour: 21, minute: 0 },
+  { hour: 21, minute: 10 },
+  { hour: 21, minute: 20 },
+  { hour: 21, minute: 30 },
+]
 
-// Returns the next available random slot for a model.
-// Fills today first (up to SLOTS_PER_DAY), then spills to tomorrow, etc.
+// FanCore rejects posts scheduled too close to current time.
+const MIN_BUFFER_MS = 45 * 60 * 1000
+
+// Returns the next available fixed slot for a model.
+// Fills today's [21:00, 21:10, 21:20, 21:30] UTC first, then tomorrow's, etc.
 export async function getNextSlot(modelId: string): Promise<Date> {
   const { data } = await supabaseAdmin
     .from('video_jobs')
@@ -15,36 +22,38 @@ export async function getNextSlot(modelId: string): Promise<Date> {
     .not('scheduled_for', 'is', null)
     .gte('scheduled_for', new Date().toISOString())
 
-  const slotsByDay = new Map<string, Date[]>()
+  // Build set of already-taken slots (rounded to minute, as ISO strings)
+  const takenMinutes = new Set<string>()
   for (const row of (data ?? [])) {
     const d = new Date(row.scheduled_for)
-    const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`
-    if (!slotsByDay.has(key)) slotsByDay.set(key, [])
-    slotsByDay.get(key)!.push(d)
+    // Round to minute precision for comparison
+    d.setUTCSeconds(0, 0)
+    takenMinutes.add(d.toISOString())
   }
 
   const now = new Date()
-  // FanCore rejects posts scheduled too close to current time — require 45-min buffer
-  const earliest = new Date(now.getTime() + 45 * 60 * 1000)
+  const earliest = new Date(now.getTime() + MIN_BUFFER_MS)
 
   for (let dayOffset = 0; dayOffset < 30; dayOffset++) {
-    const y = now.getUTCFullYear(), mo = now.getUTCMonth(), d = now.getUTCDate() + dayOffset
-    const dayKey = `${y}-${mo}-${d}`
-    const taken = slotsByDay.get(dayKey) ?? []
-    if (taken.length >= SLOTS_PER_DAY) continue
+    // Use UTC arithmetic — avoids DST issues
+    const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + dayOffset))
 
-    for (let attempt = 0; attempt < 40; attempt++) {
-      const rangeHours = SLOT_WINDOW_END - SLOT_WINDOW_START
-      const hour   = SLOT_WINDOW_START + Math.floor(Math.random() * (rangeHours + 1))
-      const minute = Math.floor(Math.random() * 60)
-      const candidate = new Date(Date.UTC(y, mo, d, hour, minute, 0, 0))
+    for (const slot of FIXED_SLOTS) {
+      const candidate = new Date(Date.UTC(
+        base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(),
+        slot.hour, slot.minute, 0, 0,
+      ))
 
       if (candidate <= earliest) continue
-      if (taken.some(s => Math.abs(s.getTime() - candidate.getTime()) < SLOT_MIN_GAP_MS)) continue
+
+      const key = new Date(candidate)
+      key.setUTCSeconds(0, 0)
+      if (takenMinutes.has(key.toISOString())) continue
 
       return candidate
     }
   }
 
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 12, 0, 0, 0))
+  // Fallback: should never hit in practice (30-day window × 4 slots = 120 slots)
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 21, 0, 0, 0))
 }
