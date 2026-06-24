@@ -10,6 +10,8 @@ export default function ModelsPage() {
   const [creating, setCreating] = useState(false)
   const [newUsername, setNewUsername] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const [generatingAll, setGeneratingAll] = useState(false)
+  const [generateAllResult, setGenerateAllResult] = useState<{ triggered: number; failed: number } | null>(null)
   const router = useRouter()
 
   useEffect(() => {
@@ -22,6 +24,24 @@ export default function ModelsPage() {
     const data = await res.json()
     setModels(data.models ?? [])
     setLoading(false)
+  }
+
+  async function handleGenerateAll() {
+    setGeneratingAll(true)
+    setGenerateAllResult(null)
+    try {
+      const res = await fetch('/api/generate-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ duration: 5 }),
+      })
+      const data = await res.json()
+      setGenerateAllResult({ triggered: data.triggered ?? 0, failed: data.failed ?? 0 })
+    } catch {
+      setGenerateAllResult({ triggered: 0, failed: -1 })
+    } finally {
+      setGeneratingAll(false)
+    }
   }
 
   async function handleCreate(e: React.FormEvent) {
@@ -61,12 +81,30 @@ export default function ModelsPage() {
             <h2 className="text-lg font-semibold">Model Profiles</h2>
             <p className="text-xs text-[#555] mt-0.5">{models.length} models</p>
           </div>
-          <button
-            onClick={() => setShowForm(true)}
-            className="bg-white text-black text-xs font-medium px-4 py-2 rounded-lg hover:bg-[#e5e5e5] transition-colors"
-          >
-            + New Model
-          </button>
+          <div className="flex items-center gap-2">
+            {generateAllResult && (
+              <span className="text-xs text-[#666]">
+                {generateAllResult.failed === -1
+                  ? 'Error — try again'
+                  : generateAllResult.triggered === 0
+                  ? 'Nothing new to generate'
+                  : `Queued ${generateAllResult.triggered} video${generateAllResult.triggered !== 1 ? 's' : ''}${generateAllResult.failed > 0 ? ` (${generateAllResult.failed} failed)` : ''}`}
+              </span>
+            )}
+            <button
+              onClick={handleGenerateAll}
+              disabled={generatingAll}
+              className="bg-[#D41020] hover:bg-[#b50d1a] disabled:opacity-50 text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+            >
+              {generatingAll ? 'Generating...' : 'Generate All'}
+            </button>
+            <button
+              onClick={() => setShowForm(true)}
+              className="bg-white text-black text-xs font-medium px-4 py-2 rounded-lg hover:bg-[#e5e5e5] transition-colors"
+            >
+              + New Model
+            </button>
+          </div>
         </div>
 
         {/* Create form */}
