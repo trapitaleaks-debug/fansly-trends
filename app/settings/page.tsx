@@ -14,6 +14,22 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
   const [removing, setRemoving] = useState<string | null>(null)
+  const [scraping, setScraping] = useState(false)
+  const [scrapeResult, setScrapeResult] = useState<{ ok: boolean; url?: string; error?: string } | null>(null)
+
+  async function runScraper() {
+    setScraping(true)
+    setScrapeResult(null)
+    try {
+      const res = await fetch('/api/scrape', { method: 'POST' })
+      const data = await res.json()
+      setScrapeResult(res.ok ? { ok: true, url: data.url } : { ok: false, error: data.error ?? 'Unknown error' })
+    } catch {
+      setScrapeResult({ ok: false, error: 'Network error' })
+    } finally {
+      setScraping(false)
+    }
+  }
 
   async function load() {
     const res = await fetch('/api/settings')
@@ -63,6 +79,38 @@ export default function SettingsPage() {
       </nav>
 
       <div className="max-w-2xl mx-auto px-4 py-8">
+
+        {/* Scraper */}
+        <div className="mb-10">
+          <h1 className="text-white text-lg font-semibold mb-1">Scraper</h1>
+          <p className="text-[#555] text-sm mb-4">
+            Trigger a fresh FYP scrape on GitHub Actions. Results arrive via Telegram in ~10–15 min.
+          </p>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={runScraper}
+              disabled={scraping}
+              className="bg-white text-black px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-40 hover:bg-[#e0e0e0] transition-colors"
+            >
+              {scraping ? 'Starting…' : 'Run Scraper'}
+            </button>
+            {scrapeResult && (
+              scrapeResult.ok ? (
+                <span className="text-green-400 text-sm">
+                  ✓ Started —{' '}
+                  <a href={scrapeResult.url} target="_blank" rel="noreferrer" className="underline">
+                    view run
+                  </a>
+                </span>
+              ) : (
+                <span className="text-red-400 text-sm">✗ {scrapeResult.error}</span>
+              )
+            )}
+          </div>
+        </div>
+
+        <div className="border-t border-[#1a1a1a] mb-8" />
+
         <h1 className="text-white text-lg font-semibold mb-1">Banned Creators</h1>
         <p className="text-[#555] text-sm mb-6">
           Creators in this list are filtered out from the scraper — their posts will never appear in the feed.
