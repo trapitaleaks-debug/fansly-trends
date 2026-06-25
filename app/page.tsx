@@ -23,6 +23,14 @@ export default function FeedPage() {
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(true)
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null)
+  const [scraping, setScraping] = useState(false)
+
+  async function runScraper() {
+    if (scraping) return
+    setScraping(true)
+    await fetch('/api/scrape', { method: 'POST' })
+    setScraping(false)
+  }
 
   const fetchPosts = useCallback(async (f: Filters, p: number, replace: boolean) => {
     setLoading(true)
@@ -80,6 +88,17 @@ export default function FeedPage() {
           <Link href="/generated" className="hover:text-white transition-colors">Generated</Link>
           <Link href="/templates" className="hover:text-white transition-colors">Templates</Link>
           <Link href="/settings" className="hover:text-white transition-colors">Settings</Link>
+          <button
+            onClick={runScraper}
+            disabled={scraping}
+            title="Run scraper"
+            className="text-[#666] hover:text-white transition-colors disabled:opacity-40"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={scraping ? 'animate-spin' : ''}>
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+              <path d="M21 3v5h-5"/>
+            </svg>
+          </button>
         </div>
       </nav>
 
