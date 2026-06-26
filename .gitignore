@@ -35,6 +35,7 @@ yarn-error.log*
 
 # scraper session + temp files
 scraper/session.json
+scraper/session_*.json
 scraper/cookies.json
 /tmp/
 
