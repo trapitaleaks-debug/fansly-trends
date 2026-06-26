@@ -320,6 +320,20 @@ export async function scrapeFYP(targetCount = 100, account?: AccountConfig): Pro
     await page.waitForTimeout(3000)
   }
 
+  // Scroll to trigger authenticated API requests (FYP lazy-loads on scroll)
+  // Wait up to 15s for capturedHeaders to populate before giving up
+  let waited = 0
+  while (Object.keys(capturedHeaders).length === 0 && waited < 15000) {
+    await page.evaluate(() => window.scrollBy(0, 400))
+    await page.waitForTimeout(1000)
+    waited += 1000
+  }
+  if (Object.keys(capturedHeaders).length === 0) {
+    // One last attempt: scroll back to top and wait
+    await page.evaluate(() => window.scrollTo(0, 0))
+    await page.waitForTimeout(3000)
+  }
+
   await saveSession(context, page, acc.email)
   await page.waitForTimeout(1500) // let synchronous request listeners drain
   await browser.close()
