@@ -93,10 +93,20 @@ export async function processVideoJob(jobId: string): Promise<void> {
     console.log(`  Downloading footage: ${clipKey}`)
     await downloadFromR2(clipKey, rawPath)
 
-    // Normalize .mov clips to clean H.264 MP4 — MOV container metadata (rotation, SAR,
-    // color space, HEVC profile) causes libx264 to fail with "incorrect parameters" on Railway.
-    // -t 60: only normalize the first 60s — raw iPhone footage can be multi-minute; we never use more than 15s.
-    if (clipKey.toLowerCase().endsWith('.mov')) {
+    // Normalize clips that need it: .mov files, HEVC-encoded MP4s, and HDR/BT.2020 sources.
+    // These all have container/codec/colorspace metadata that causes libx264 to fail with
+    // "incorrect parameters" on Railway. -t 60 caps work to first 60s (we never use more than 15s).
+    let needsNormalize = clipKey.toLowerCase().endsWith('.mov')
+    if (!needsNormalize) {
+      try {
+        const probe = execSync(
+          `ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_name,color_primaries -of csv=p=0 "${rawPath}"`,
+          { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } }
+        ).toString().trim()
+        needsNormalize = probe.includes('hevc') || probe.includes('bt2020')
+      } catch { /* ignore probe errors — will attempt encode as-is */ }
+    }
+    if (needsNormalize) {
       const normPath = path.join(tmpDir, 'normalized.mp4')
       run(`${ffmpegBin()} -i "${rawPath}" -t 60 -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an -y "${normPath}"`)
       fs.renameSync(normPath, rawPath)

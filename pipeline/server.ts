@@ -319,6 +319,7 @@ cron.schedule('* * * * *', async () => {
       .from('video_jobs')
       .select('id')
       .eq('status', 'approved')
+      .lt('post_fail_count', 3)  // skip permanently-failed jobs (post-video-job.ts sets error after 3)
       .order('created_at', { ascending: true })
       .limit(1)
 
@@ -333,11 +334,13 @@ cron.schedule('* * * * *', async () => {
       ),
     ]).catch(async e => {
       console.error(`[cron:post] Failed ${job.id}:`, (e as Error).message)
+      // Only reset if postVideoJob didn't already update the status (e.g. the 5-min timeout fired
+      // while postVideoJob was still mid-run and hadn't caught the error yet)
       await supabaseAdmin.from('video_jobs')
         .update({ status: 'approved' })
         .eq('id', job.id)
         .eq('status', 'posting')
-        .then(() => console.log(`[cron:post] Reset ${job.id} to approved after failure`), () => {})
+        .then(() => console.log(`[cron:post] Reset ${job.id} to approved after timeout`), () => {})
     })
   } catch (e) {
     console.error('[cron:post] Error:', (e as Error).message)

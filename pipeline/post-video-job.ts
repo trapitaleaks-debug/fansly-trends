@@ -117,7 +117,25 @@ export async function postVideoJob(jobId: string): Promise<void> {
   await supabaseAdmin.from('video_jobs').update({ status: 'posting', scheduled_for: scheduledFor.toISOString() }).eq('id', jobId)
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
-  const browser: Browser = await chromium.launch({ headless: true })
+
+  // Browser launch is outside the main try block — wrap separately so EAGAIN failures
+  // are caught, fail count is incremented, and the job exits 'posting' state cleanly.
+  let browser: Browser
+  try {
+    browser = await chromium.launch({ headless: true })
+  } catch (launchErr) {
+    const msg = (launchErr as Error).message
+    const { data: cur } = await supabaseAdmin.from('video_jobs').select('post_fail_count').eq('id', jobId).single()
+    const failCount = ((cur as unknown as { post_fail_count: number } | null)?.post_fail_count ?? 0) + 1
+    await supabaseAdmin.from('video_jobs').update({
+      status: failCount >= 3 ? 'error' : 'done',
+      post_fail_count: failCount,
+      error_message: `post launch failed [${failCount}x]: ${msg.slice(0, 300)}`,
+    }).eq('id', jobId)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    throw launchErr
+  }
+
   // createContext loads saved storageState from R2 (cookies + localStorage)
   // UTC timezone so 22:00 entered in date picker = 22:00 UTC
   const { context } = await createContext(browser)
@@ -481,10 +499,12 @@ export async function postVideoJob(jobId: string): Promise<void> {
   } catch (e) {
     const msg = (e as Error).message
     console.error(`[post] ✗ Failed ${jobId}:`, msg)
-    // Revert to done so it can be retried
+    const { data: cur } = await supabaseAdmin.from('video_jobs').select('post_fail_count').eq('id', jobId).single()
+    const failCount = ((cur as unknown as { post_fail_count: number } | null)?.post_fail_count ?? 0) + 1
     await supabaseAdmin.from('video_jobs').update({
-      status: 'done',
-      error_message: `post failed: ${msg.slice(0, 400)}`,
+      status: failCount >= 3 ? 'error' : 'done',
+      post_fail_count: failCount,
+      error_message: `post failed [${failCount}x]: ${msg.slice(0, 400)}`,
     }).eq('id', jobId)
     throw e
   } finally {
