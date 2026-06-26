@@ -32,7 +32,20 @@ const BANNED_HASHTAGS = new Set([
   // fetish / niche
   'bdsm','bondage','dominatrix','cuckold',
   'scat','piss','pissing','watersports','futa','futanari',
-  'furry','hentai','femboy','ladyboy','shemale','trans',
+  'furry','hentai','femboy','ladyboy','shemale',
+  // gay / trans / LGBT
+  'trans','transgender','transgirl','transwoman','transwomen','transsexual','transexual',
+  'transmasc','transboy','transman','transporn','transcock','transass','transcum',
+  'transdom','transgoddess','transmodel','transexpinay','sexytrans','cutetrans',
+  'asiantrans','filipinatrans','goontrans','bdsmtrans',
+  'gay','gays','gaylife','gaysex','gayporn','gaycreator','gayfansly','gaycouple',
+  'lesbian','lesbians','lesbiansex','lesbianporn',
+  'femboys','femboysex','femboyfucked','emofemboy',
+  'ladyboycumming','asianladyboy',
+  'shemalecum','shemalesexy',
+  'futa','futanari',
+  'lgbt','lgbtq',
+  'queer','bisexual','nonbinary','genderfluid',
 ])
 
 function loadAccounts(): AccountConfig[] {
