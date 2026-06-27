@@ -91,7 +91,7 @@ async function createContext(browser: Browser): Promise<{ context: BrowserContex
 
 
 
-export async function postVideoJob(jobId: string): Promise<void> {
+export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Promise<void> {
   // Load job + model
   const { data: job, error: jobErr } = await supabaseAdmin
     .from('video_jobs')
@@ -118,22 +118,28 @@ export async function postVideoJob(jobId: string): Promise<void> {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
 
-  // Browser launch is outside the main try block — wrap separately so EAGAIN failures
-  // are caught, fail count is incremented, and the job exits 'posting' state cleanly.
+  // Use the caller's shared browser if provided — avoids spawning a new Chrome process per job.
+  // Fall back to launching own browser so the function still works standalone.
   let browser: Browser
-  try {
-    browser = await chromium.launch({ headless: true })
-  } catch (launchErr) {
-    const msg = (launchErr as Error).message
-    const { data: cur } = await supabaseAdmin.from('video_jobs').select('post_fail_count').eq('id', jobId).single()
-    const failCount = ((cur as unknown as { post_fail_count: number } | null)?.post_fail_count ?? 0) + 1
-    await supabaseAdmin.from('video_jobs').update({
-      status: failCount >= 3 ? 'error' : 'done',
-      post_fail_count: failCount,
-      error_message: `post launch failed [${failCount}x]: ${msg.slice(0, 300)}`,
-    }).eq('id', jobId)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-    throw launchErr
+  let ownsBrowser = false
+  if (sharedBrowser && sharedBrowser.isConnected()) {
+    browser = sharedBrowser
+  } else {
+    try {
+      browser = await chromium.launch({ headless: true })
+      ownsBrowser = true
+    } catch (launchErr) {
+      const msg = (launchErr as Error).message
+      const { data: cur } = await supabaseAdmin.from('video_jobs').select('post_fail_count').eq('id', jobId).single()
+      const failCount = ((cur as unknown as { post_fail_count: number } | null)?.post_fail_count ?? 0) + 1
+      await supabaseAdmin.from('video_jobs').update({
+        status: failCount >= 3 ? 'error' : 'done',
+        post_fail_count: failCount,
+        error_message: `post launch failed [${failCount}x]: ${msg.slice(0, 300)}`,
+      }).eq('id', jobId)
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+      throw launchErr
+    }
   }
 
   // createContext loads saved storageState from R2 (cookies + localStorage)
@@ -507,7 +513,8 @@ export async function postVideoJob(jobId: string): Promise<void> {
     throw e
   } finally {
     clearTimeout(masterTimer)
-    await browser.close().catch(() => {})
+    await context.close().catch(() => {})
+    if (ownsBrowser) await browser.close().catch(() => {})
     fs.rmSync(tmpDir, { recursive: true, force: true })
   }
 }
