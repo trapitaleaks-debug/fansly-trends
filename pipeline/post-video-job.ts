@@ -118,16 +118,21 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
 
-  // Use the caller's shared browser if provided — avoids spawning a new Chrome process per job.
-  // Fall back to launching own browser so the function still works standalone.
+  // Browser launch is outside the main try block — wrap separately so EAGAIN failures
+  // are caught, fail count is incremented, and the job exits 'posting' state cleanly.
+  // Flags reduce Chrome sub-process count from ~9 to ~3 per instance:
+  //   --no-zygote:    skip zygote broker (saves 1 process per Chrome)
+  //   --disable-gpu:  skip GPU process (saves 1-2 processes; headless doesn't need GPU)
   let browser: Browser
-  let ownsBrowser = false
-  if (sharedBrowser && sharedBrowser.isConnected()) {
-    browser = sharedBrowser
+  const ownsBrowser = !sharedBrowser || !sharedBrowser.isConnected()
+  if (!ownsBrowser) {
+    browser = sharedBrowser!
   } else {
     try {
-      browser = await chromium.launch({ headless: true })
-      ownsBrowser = true
+      browser = await chromium.launch({
+        headless: true,
+        args: ['--no-zygote', '--disable-gpu'],
+      })
     } catch (launchErr) {
       const msg = (launchErr as Error).message
       const { data: cur } = await supabaseAdmin.from('video_jobs').select('post_fail_count').eq('id', jobId).single()
@@ -180,11 +185,12 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     pageConsoleLogs.push(`PAGEERR:${err.message.slice(0, 150)}`)
   })
 
-  // Master 12-minute timeout — if anything hangs (R2 stall, Playwright deadlock), close the browser
-  // Budget: R2 download (2min) + upload wait (1.5min) + form fill (1min) + verify (1min) + buffer
+  // Master 12-minute timeout — if anything hangs (R2 stall, Playwright deadlock), close context/browser.
+  // Only close the full browser if we own it — shared browsers serve other jobs concurrently.
   const masterTimer = setTimeout(() => {
-    console.error('[post] ✗ Master 12-min timeout fired — closing browser')
-    browser.close().catch(() => {})
+    console.error('[post] ✗ Master 12-min timeout fired — closing context')
+    context.close().catch(() => {})
+    if (ownsBrowser) browser.close().catch(() => {})
   }, 12 * 60_000)
 
   try {
