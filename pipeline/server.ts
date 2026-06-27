@@ -53,7 +53,15 @@ const CYCLE_DAYS = parseInt(process.env.PIPELINE_CYCLE_DAYS ?? '3', 10)
 // ─── Health check ─────────────────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime() })
+  let chromeCount = 0
+  let totalProcs = 0
+  try {
+    const out = execSync('ps aux 2>/dev/null || true', { stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+    const lines = out.trim().split('\n')
+    totalProcs = lines.length - 1
+    chromeCount = lines.filter(l => l.includes('chrome-headless-shell') || l.includes('chromium')).length
+  } catch {}
+  res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime(), chrome_procs: chromeCount, total_procs: totalProcs })
 })
 
 // ─── Emoji pipeline diagnostics ───────────────────────────────────────────────
