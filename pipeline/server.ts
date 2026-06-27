@@ -185,6 +185,11 @@ app.post('/jobs/fill-gaps', (_req, res) => {
           }
         }
 
+        if (footage.length === 0) {
+          console.log(`[fill-gaps] @${model.fansly_username}: no footage — skipping`)
+          continue
+        }
+
         // Count existing jobs for rotation index
         const { count: totalJobCount } = await supabaseAdmin
           .from('video_jobs')
