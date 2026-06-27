@@ -7,6 +7,19 @@
 import dotenv from 'dotenv'
 dotenv.config({ path: '.env.local' })
 
+// Prevent EPIPE (broken pipe from crashed child/Remotion Chrome) from killing the server
+process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
+    console.warn('[server] Suppressed pipe error:', err.code)
+    return
+  }
+  console.error('[server] Uncaught exception — restarting:', err.message)
+  process.exit(1)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[server] Unhandled rejection:', reason)
+})
+
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
