@@ -20,10 +20,18 @@ process.on('unhandledRejection', (reason) => {
   console.error('[server] Unhandled rejection:', reason)
 })
 
+// Kill any Chrome processes left over from a previous crash/restart in the same container.
+// Railway restarts the Node process without a new container, so orphaned Chrome accumulates
+// and causes OOM crashes for subsequent launches.
+try {
+  execSync('pkill -9 -f chrome-headless-shell 2>/dev/null; pkill -9 -f chromium 2>/dev/null; true', { stdio: 'ignore' })
+  console.log('[startup] Killed orphaned Chrome processes')
+} catch { /* ignore — no orphans */ }
+
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { spawn } from 'child_process'
+import { spawn, execSync } from 'child_process'
 import express from 'express'
 import cron from 'node-cron'
 import { runPipelineForModel } from './index'
