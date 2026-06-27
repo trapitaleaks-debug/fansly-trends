@@ -476,7 +476,7 @@ cron.schedule('* * * * *', async () => {
       .eq('status', 'approved')
       .lt('post_fail_count', 3)
       .order('created_at', { ascending: true })
-      .limit(7)
+      .limit(5)
 
     if (!jobs || jobs.length === 0) return
 
@@ -576,11 +576,19 @@ cron.schedule('0 * * * *', () => {
 
 // ─── FanCore CRM scraper cron (hourly — keeps scheduled_posts in sync) ──────
 let crmScraperRunning = false
-cron.schedule('0 * * * *', () => {
+cron.schedule('0 * * * *', async () => {
   if (crmScraperRunning) {
     console.log('[cron:crm-scrape] Skipping — previous run still active')
     return
   }
+  // Skip while posting queue is large — avoids adding a Chrome instance on top of active posting
+  try {
+    const { count } = await supabaseAdmin.from('video_jobs').select('*', { count: 'exact', head: true }).eq('status', 'approved')
+    if ((count ?? 0) > 30) {
+      console.log(`[cron:crm-scrape] Skipping — ${count} approved jobs active`)
+      return
+    }
+  } catch { /* proceed if count fails */ }
   crmScraperRunning = true
   console.log('[cron:crm-scrape] Starting FanCore scheduled_posts sync...')
   const child = spawn(
