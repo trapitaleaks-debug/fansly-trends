@@ -462,28 +462,26 @@ export async function postVideoJob(jobId: string): Promise<void> {
       throw new Error(`FanCore: no POST to /api/bulk-posts/pending after ${submitAttempts} attempts — see debug/post-${jobId}-submit-failed.png`)
     }
 
-    // POST confirmed — wait for FanCore to finish uploading the video file
-    console.log('[post] POST confirmed — waiting up to 90s for upload to complete')
-    await page.waitForTimeout(90000)
-
-    // 6. Verify in Already Scheduled tab
-    await page.locator('text=Already Scheduled').first().click()
-    await page.waitForTimeout(2000)
-    await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
-      uploadToR2(`debug/post-${jobId}-already-scheduled.png`, buf, 'image/png')
-    ).catch(() => {})
-
-    const allTabText = await page.locator('text=/All\\s*\\(\\d+\\)/').first().textContent().catch(() => 'All (0)')
-    const scheduledTabText = await page.locator('text=/Scheduled\\s*\\(\\d+\\)/').first().textContent().catch(() => 'Scheduled (0)')
-    const failedTabText = await page.locator('text=/Failed\\s*\\(\\d+\\)/').first().textContent().catch(() => 'Failed (0)')
-    const allCount = parseInt(allTabText?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
-    const scheduledCount = parseInt(scheduledTabText?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
-    const failedCount = parseInt(failedTabText?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
-    console.log(`[post] Already Scheduled: All=${allCount} Scheduled=${scheduledCount} Failed=${failedCount}`)
-
-    if (failedCount > 0) {
-      // Log only — cumulative count includes old failures, not just this job. POST was confirmed.
-      console.warn(`[post] ⚠ FanCore shows ${failedCount} stale failed post(s) for @${handle} — ignoring`)
+    // Poll "Already Scheduled" tab until the post appears (exits early, max 45s).
+    // Replaces the old hardcoded 90s wait — small clips upload in seconds; polling is adaptive.
+    console.log('[post] POST confirmed — polling Already Scheduled tab (max 45s)')
+    const pollDeadline = Date.now() + 45_000
+    let scheduledCount = 0
+    while (Date.now() < pollDeadline) {
+      await page.waitForTimeout(5_000)
+      try {
+        await page.locator('text=Already Scheduled').first().click({ timeout: 3_000 })
+        await page.waitForTimeout(1_000)
+        const txt = await page.locator('text=/Scheduled\\s*\\(\\d+\\)/').first().textContent({ timeout: 3_000 }).catch(() => '')
+        scheduledCount = parseInt(txt?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
+        if (scheduledCount > 0) {
+          console.log(`[post] Already Scheduled: Scheduled=${scheduledCount} — upload confirmed (${Math.round((45_000 - (pollDeadline - Date.now())) / 1000)}s)`)
+          break
+        }
+      } catch { /* keep polling */ }
+    }
+    if (scheduledCount === 0) {
+      console.warn(`[post] ⚠ Already Scheduled still shows 0 after 45s — FanCore may still be processing`)
     }
     await supabaseAdmin.from('video_jobs').update({
       status: 'posted',
@@ -492,7 +490,7 @@ export async function postVideoJob(jobId: string): Promise<void> {
     }).eq('id', jobId)
 
     if (scheduledCount === 0) {
-      console.warn(`[post] ⚠ Scheduled tab shows 0 (All=${allCount}) — FanCore may still be processing. Post was confirmed via POST intercept.`)
+      console.warn(`[post] ⚠ Scheduled tab shows 0 — FanCore may still be processing. Post was confirmed via POST intercept.`)
     }
     console.log(`[post] ✓ Job ${jobId} posted — scheduled ${scheduledFor.toUTCString()}`)
 

@@ -209,10 +209,9 @@ app.post('/jobs/fill-gaps', (_req, res) => {
         const r2KeyToClipId = new Map(existingClips.map(c => [c.r2_key, c.id]))
         let modelCreated = 0
 
-        for (const idea of ideas as Array<{
-          id: string; niches: string[]; tags: string[];
-          trends_posts: { id: string; text_template: string | null; video_jobs: Array<{ id: string; status: string; model_id: string; output_r2_key: string | null }> } | null
-        }>) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const rawIdea of (ideas as any[])) {
+          const idea = rawIdea as { id: string; niches: string[]; tags: string[]; trends_posts: { id: string; text_template: string | null; video_jobs: Array<{ id: string; status: string; model_id: string; output_r2_key: string | null }> } | null }
           const post = idea.trends_posts
           if (!post?.text_template) continue
 
