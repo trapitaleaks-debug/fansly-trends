@@ -433,7 +433,7 @@ cron.schedule('* * * * *', async () => {
       .select('id')
       .eq('status', 'pending')
       .order('created_at', { ascending: true })
-      .limit(2)
+      .limit(4)
 
     if (!jobs || jobs.length === 0) return
 
@@ -476,7 +476,7 @@ cron.schedule('* * * * *', async () => {
       .eq('status', 'approved')
       .lt('post_fail_count', 3)
       .order('created_at', { ascending: true })
-      .limit(5)
+      .limit(10)
 
     if (!jobs || jobs.length === 0) return
 
