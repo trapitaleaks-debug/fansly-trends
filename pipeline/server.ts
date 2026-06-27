@@ -21,6 +21,7 @@ import { generateSlot } from './generate'
 import { processVideoJob } from './process-job'
 import { postVideoJob } from './post-video-job'
 import { supabaseAdmin } from '../lib/supabase'
+import { getNextSlot } from '../lib/scheduling'
 
 const app = express()
 app.use(express.json())
@@ -138,6 +139,154 @@ app.post('/jobs/post/:jobId', async (req, res) => {
   const { jobId } = req.params
   res.json({ message: 'Posting started', jobId })
   postVideoJob(jobId).catch(e => console.error(`[jobs/post] Failed ${jobId}:`, (e as Error).message))
+})
+
+// ─── Fill-gaps: create video_jobs for matched ideas that never got one ────────
+
+app.post('/jobs/fill-gaps', (_req, res) => {
+  res.json({ message: 'fill-gaps started — follow Railway logs' })
+
+  ;(async () => {
+    try {
+      const { data: models } = await supabaseAdmin
+        .from('trends_models')
+        .select('id, fansly_username, niches, placeholder_options')
+        .not('niches', 'is', null)
+        .neq('niches', '{}')
+        .order('model_number')
+
+      if (!models?.length) { console.log('[fill-gaps] No models'); return }
+
+      let totalCreated = 0
+
+      for (const model of models) {
+        // Collect content bank tags for this model's footage
+        const { data: pipelineModel } = await supabaseAdmin
+          .from('pipeline_models')
+          .select('id')
+          .ilike('handle', model.fansly_username)
+          .maybeSingle()
+
+        type FootageRow = { id: string; r2_key: string; label: string | null; trim_end: number | null; tags: string[] }
+        type ClipRow = { id: string; r2_key: string }
+        let footage: FootageRow[] = []
+        let existingClips: ClipRow[] = []
+        const contentBankTags = new Set<string>()
+
+        if (pipelineModel) {
+          const [{ data: bank }, { data: clips }] = await Promise.all([
+            supabaseAdmin.from('pipeline_content_bank').select('id, r2_key, label, trim_end, tags').eq('model_id', pipelineModel.id).order('created_at'),
+            supabaseAdmin.from('model_clips').select('id, r2_key').eq('model_id', model.id),
+          ])
+          footage = (bank ?? []) as FootageRow[]
+          existingClips = (clips ?? []) as ClipRow[]
+          for (const item of footage) {
+            for (const t of (item.tags ?? [])) contentBankTags.add(t)
+          }
+        }
+
+        // Count existing jobs for rotation index
+        const { count: totalJobCount } = await supabaseAdmin
+          .from('video_jobs')
+          .select('id', { count: 'exact', head: true })
+          .eq('model_id', model.id)
+        let rotationOffset = totalJobCount ?? 0
+
+        // Load matched ideas
+        const { data: ideas } = await supabaseAdmin
+          .from('trends_ideas')
+          .select('id, niches, tags, trends_posts(id, text_template, video_jobs(id, status, model_id, output_r2_key))')
+          .overlaps('niches', model.niches)
+          .order('created_at', { ascending: false })
+
+        if (!ideas) continue
+
+        const r2KeyToClipId = new Map(existingClips.map(c => [c.r2_key, c.id]))
+        let modelCreated = 0
+
+        for (const idea of ideas as Array<{
+          id: string; niches: string[]; tags: string[];
+          trends_posts: { id: string; text_template: string | null; video_jobs: Array<{ id: string; status: string; model_id: string; output_r2_key: string | null }> } | null
+        }>) {
+          const post = idea.trends_posts
+          if (!post?.text_template) continue
+
+          // Content bank tag filter (mirrors matched-ideas route)
+          if (contentBankTags.size > 0) {
+            const ideaTags = idea.tags ?? []
+            if (ideaTags.length > 0 && !ideaTags.some(t => contentBankTags.has(t))) continue
+          }
+
+          const jobs = post.video_jobs ?? []
+          const hasActive = jobs.some(j =>
+            j.model_id === model.id &&
+            ['done', 'approved', 'posting', 'posted'].includes(j.status) &&
+            j.output_r2_key
+          )
+          const hasInFlight = jobs.some(j =>
+            j.model_id === model.id &&
+            ['pending', 'processing'].includes(j.status)
+          )
+          if (hasActive || hasInFlight) continue
+
+          // Footage rotation
+          let clipId: string | null = null
+          let clipIndex: number | null = null
+          if (footage.length > 0) {
+            const idx = rotationOffset % footage.length
+            const chosen = footage[idx]
+            clipIndex = idx + 1
+            rotationOffset++
+
+            const existingClipId = r2KeyToClipId.get(chosen.r2_key)
+            if (existingClipId) {
+              clipId = existingClipId
+            } else {
+              const { data: newClip } = await supabaseAdmin
+                .from('model_clips')
+                .insert({ model_id: model.id, r2_key: chosen.r2_key, filename: chosen.label ?? chosen.r2_key.split('/').pop(), duration_seconds: chosen.trim_end ?? null, tags: chosen.tags ?? [] })
+                .select('id').single()
+              if (newClip) {
+                clipId = newClip.id
+                r2KeyToClipId.set(chosen.r2_key, newClip.id)
+                existingClips.push({ id: newClip.id, r2_key: chosen.r2_key })
+              }
+            }
+          }
+
+          const options: string[] = (model as unknown as { placeholder_options: string[] }).placeholder_options ?? []
+          const placeholder = options.length > 0 ? options[Math.floor(Math.random() * options.length)] : ''
+          const personalizedText = post.text_template.replace(/\[placeholder\]/gi, placeholder)
+          const scheduledFor = await getNextSlot(model.id)
+
+          const { error } = await supabaseAdmin.from('video_jobs').insert({
+            post_id: post.id,
+            model_id: model.id,
+            clip_id: clipId,
+            clip_index: clipIndex,
+            duration_seconds: 5,
+            original_template: post.text_template,
+            personalized_text: personalizedText,
+            status: 'pending',
+            scheduled_for: scheduledFor.toISOString(),
+          })
+
+          if (error) {
+            console.error(`[fill-gaps] Insert error @${model.fansly_username} post ${post.id}:`, error.message)
+          } else {
+            modelCreated++
+            totalCreated++
+          }
+        }
+
+        console.log(`[fill-gaps] @${model.fansly_username}: +${modelCreated} jobs created`)
+      }
+
+      console.log(`[fill-gaps] Complete — ${totalCreated} total new jobs created`)
+    } catch (e) {
+      console.error('[fill-gaps] Fatal error:', (e as Error).message)
+    }
+  })()
 })
 
 // ─── Trigger endpoint: fire pipeline for a specific model ─────────────────────
@@ -284,12 +433,14 @@ cron.schedule('* * * * *', async () => {
 
     if (!jobs || jobs.length === 0) return
 
-    for (const job of jobs) {
-      console.log(`[cron:jobs] Processing job ${job.id}`)
-      await processVideoJob(job.id).catch(e =>
-        console.error(`[cron:jobs] Failed ${job.id}:`, (e as Error).message)
+    console.log(`[cron:jobs] Processing ${jobs.length} job(s) in parallel`)
+    await Promise.all(
+      jobs.map(job =>
+        processVideoJob(job.id).catch(e =>
+          console.error(`[cron:jobs] Failed ${job.id}:`, (e as Error).message)
+        )
       )
-    }
+    )
   } catch (e) {
     console.error('[cron:jobs] Error:', (e as Error).message)
   } finally {
@@ -319,29 +470,30 @@ cron.schedule('* * * * *', async () => {
       .from('video_jobs')
       .select('id')
       .eq('status', 'approved')
-      .lt('post_fail_count', 3)  // skip permanently-failed jobs (post-video-job.ts sets error after 3)
+      .lt('post_fail_count', 3)
       .order('created_at', { ascending: true })
-      .limit(1)
+      .limit(5)
 
     if (!jobs || jobs.length === 0) return
 
-    const job = jobs[0]
-    console.log(`[cron:post] Posting job ${job.id}`)
-    await Promise.race([
-      postVideoJob(job.id),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('postVideoJob timeout after 5min')), 5 * 60 * 1000)
-      ),
-    ]).catch(async e => {
-      console.error(`[cron:post] Failed ${job.id}:`, (e as Error).message)
-      // Only reset if postVideoJob didn't already update the status (e.g. the 5-min timeout fired
-      // while postVideoJob was still mid-run and hadn't caught the error yet)
-      await supabaseAdmin.from('video_jobs')
-        .update({ status: 'approved' })
-        .eq('id', job.id)
-        .eq('status', 'posting')
-        .then(() => console.log(`[cron:post] Reset ${job.id} to approved after timeout`), () => {})
-    })
+    console.log(`[cron:post] Posting ${jobs.length} job(s) in parallel`)
+    await Promise.allSettled(
+      jobs.map(job =>
+        Promise.race([
+          postVideoJob(job.id),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('postVideoJob timeout after 5min')), 5 * 60 * 1000)
+          ),
+        ]).catch(async e => {
+          console.error(`[cron:post] Failed ${job.id}:`, (e as Error).message)
+          await supabaseAdmin.from('video_jobs')
+            .update({ status: 'approved' })
+            .eq('id', job.id)
+            .eq('status', 'posting')
+            .then(() => console.log(`[cron:post] Reset ${job.id} to approved after timeout`), () => {})
+        })
+      )
+    )
   } catch (e) {
     console.error('[cron:post] Error:', (e as Error).message)
   } finally {
@@ -454,10 +606,30 @@ cron.schedule('0 2 * * *', () => {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`\nPipeline server running on port ${PORT}`)
   console.log(`   Cycle: every ${CYCLE_DAYS} days at ${cycleHour}:00 UTC`)
   console.log(`   Cron: ${cycleCron}`)
+
+  // Reset any jobs left in transient states from a previous process that died mid-run.
+  // "processing" → pending (so render cron picks them up again)
+  // "posting"    → approved (so post cron picks them up again)
+  const { data: orphans } = await supabaseAdmin
+    .from('video_jobs')
+    .select('id, status')
+    .in('status', ['processing', 'posting'])
+  if (orphans && orphans.length > 0) {
+    const processing = orphans.filter((j: { status: string }) => j.status === 'processing').map((j: { id: string }) => j.id)
+    const posting    = orphans.filter((j: { status: string }) => j.status === 'posting').map((j: { id: string }) => j.id)
+    if (processing.length > 0) {
+      await supabaseAdmin.from('video_jobs').update({ status: 'pending' }).in('id', processing)
+      console.log(`   Startup: reset ${processing.length} orphaned processing → pending`)
+    }
+    if (posting.length > 0) {
+      await supabaseAdmin.from('video_jobs').update({ status: 'approved' }).in('id', posting)
+      console.log(`   Startup: reset ${posting.length} orphaned posting → approved`)
+    }
+  }
 })
 
 export default app
