@@ -583,11 +583,20 @@ cron.schedule('0 * * * *', () => {
     'npx', ['ts-node', '--project', 'pipeline/tsconfig.json', 'pipeline/seed-scheduled-posts.ts'],
     { cwd: path.resolve(__dirname, '..'), env: process.env, stdio: 'inherit' }
   )
+  const killTimer = setTimeout(() => {
+    if (!child.killed) {
+      console.warn('[cron:crm-scrape] Timeout (8 min) — killing stuck process')
+      child.kill('SIGKILL')
+      crmScraperRunning = false
+    }
+  }, 8 * 60 * 1000)
   child.on('exit', (code) => {
+    clearTimeout(killTimer)
     crmScraperRunning = false
     console.log(`[cron:crm-scrape] Exited with code ${code}`)
   })
   child.on('error', (err) => {
+    clearTimeout(killTimer)
     crmScraperRunning = false
     console.error('[cron:crm-scrape] Spawn error:', err.message)
   })
