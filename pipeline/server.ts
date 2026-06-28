@@ -53,6 +53,24 @@ const CYCLE_DAYS = parseInt(process.env.PIPELINE_CYCLE_DAYS ?? '3', 10)
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 
+// Reliable status histogram. NOTE: supabaseAdmin.from('video_jobs').select('status') silently
+// caps at 1000 rows, so once 'posted' grows past ~1000 a row-fetch histogram under-counts (and
+// could even compute in_flight=0 → a false "queue drained" alert). Count each status separately.
+const JOB_STATUSES = ['pending', 'processing', 'done', 'approved', 'posting', 'posted', 'error'] as const
+
+async function getStatusHistogram(): Promise<Record<string, number>> {
+  const results = await Promise.all(
+    JOB_STATUSES.map(async s => {
+      const { count } = await supabaseAdmin
+        .from('video_jobs').select('id', { count: 'exact', head: true }).eq('status', s)
+      return [s, count ?? 0] as const
+    })
+  )
+  const hist: Record<string, number> = {}
+  for (const [s, c] of results) if (c > 0) hist[s] = c
+  return hist
+}
+
 function countProcs(): { chrome: number; total: number } {
   try {
     const out = execSync('ps aux 2>/dev/null || true', { stdio: ['ignore', 'pipe', 'ignore'] }).toString()
@@ -74,9 +92,7 @@ app.get('/health', (_req, res) => {
 // One-glance queue + process snapshot — check this instead of babysitting FanCore.
 app.get('/stats', async (_req, res) => {
   try {
-    const { data } = await supabaseAdmin.from('video_jobs').select('status')
-    const jobs: Record<string, number> = {}
-    for (const r of (data ?? []) as { status: string }[]) jobs[r.status] = (jobs[r.status] ?? 0) + 1
+    const jobs = await getStatusHistogram()
     const inFlight = (jobs.pending ?? 0) + (jobs.processing ?? 0) + (jobs.approved ?? 0) + (jobs.posting ?? 0) + (jobs.done ?? 0)
     const { chrome, total } = countProcs()
     res.json({ status: 'ok', jobs, in_flight: inFlight, chrome_procs: chrome, total_procs: total, uptime: process.uptime() })
@@ -699,18 +715,16 @@ cron.schedule('*/5 * * * *', () => {
 let lastInFlight = -1
 cron.schedule('*/2 * * * *', async () => {
   try {
-    const { data } = await supabaseAdmin.from('video_jobs').select('status')
-    const hist: Record<string, number> = {}
-    for (const r of (data ?? []) as { status: string }[]) hist[r.status] = (hist[r.status] ?? 0) + 1
+    const hist = await getStatusHistogram()
     const inFlight = (hist.pending ?? 0) + (hist.processing ?? 0) + (hist.approved ?? 0) + (hist.posting ?? 0) + (hist.done ?? 0)
 
     if (lastInFlight > 0 && inFlight === 0) {
       const since = new Date(Date.now() - 24 * 60 * 60_000).toISOString()
       const { count: postedRecently } = await supabaseAdmin
         .from('video_jobs').select('id', { count: 'exact', head: true }).gte('posted_at', since)
+      const errCount = hist.error ?? 0
       const { data: errors } = await supabaseAdmin
-        .from('video_jobs').select('error_message').eq('status', 'error')
-      const errCount = errors?.length ?? 0
+        .from('video_jobs').select('error_message').eq('status', 'error').limit(500)
       let msg = `✅ <b>FanslyTrends — queue drained</b>\n\n` +
         `📤 Posted (last 24h): ${postedRecently ?? 0}\n` +
         `📦 Posted (all-time): ${hist.posted ?? 0}\n` +
