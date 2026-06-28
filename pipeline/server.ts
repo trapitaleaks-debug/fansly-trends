@@ -24,8 +24,10 @@ process.on('unhandledRejection', (reason) => {
 // Railway restarts the Node process without a new container, so orphaned Chrome accumulates
 // and causes OOM crashes for subsequent launches.
 try {
-  execSync('pkill -9 -f chrome-headless-shell 2>/dev/null; pkill -9 -f chromium 2>/dev/null; true', { stdio: 'ignore' })
-  console.log('[startup] Killed orphaned Chrome processes')
+  // Also kill orphaned ffmpeg — an abandoned Remotion render leaves both chrome AND ffmpeg behind,
+  // and after an OOM-kill cycle they pile up (we saw 300+ procs, only a few chrome) and re-OOM.
+  execSync('pkill -9 -f chrome-headless-shell 2>/dev/null; pkill -9 -f chromium 2>/dev/null; pkill -9 -f ffmpeg 2>/dev/null; true', { stdio: 'ignore' })
+  console.log('[startup] Killed orphaned Chrome/ffmpeg processes')
 } catch { /* ignore — no orphans */ }
 
 import fs from 'fs'
@@ -536,7 +538,7 @@ app.post('/regenerate/:videoId', async (req, res) => {
 // the other slot AND every new render for up to the wall-clock cap — collapsing throughput to
 // ~1 job per stall. Now each render runs independently and a freed slot refills immediately, so a
 // hung clip only ties up its own slot. processVideoJob claims atomically (guards double-pickup).
-const RENDER_CONCURRENCY = parseInt(process.env.RENDER_CONCURRENCY ?? '3', 10)
+const RENDER_CONCURRENCY = parseInt(process.env.RENDER_CONCURRENCY ?? '2', 10)
 let activeRenders = 0
 let renderTickRunning = false
 cron.schedule('*/30 * * * * *', async () => {
@@ -592,7 +594,7 @@ cron.schedule('* * * * *', async () => {
 // timer) blocked the next 5 from starting. Now posts run independently and freed slots refill. The
 // cron-level 5min race + reset-to-approved is gone: postVideoJob's own master timer aborts a stalled
 // post into its catch (post_fail_count++), and the watchdog reclaims a process-death (posting→approved).
-const POST_CONCURRENCY = parseInt(process.env.POST_CONCURRENCY ?? '5', 10)
+const POST_CONCURRENCY = parseInt(process.env.POST_CONCURRENCY ?? '3', 10)
 let activePosts = 0
 let postTickRunning = false
 cron.schedule('*/30 * * * * *', async () => {
@@ -708,20 +710,22 @@ cron.schedule('*/2 * * * *', async () => {
   }
 })
 
-// Every 5 min: runtime reaper — kill orphaned Chrome IF the count is high AND nothing is actively
-// rendering or posting. The dual idle-guard is mandatory: never reap a live render/post Chrome.
-// Backstops the per-job cleanup so leaked processes can't accumulate to the EAGAIN ceiling.
+// Every 5 min: runtime reaper — sweep orphaned Chrome AND ffmpeg when counts are high and nothing
+// is actively rendering/posting. Triggers on EITHER chrome over ceiling OR total procs high — the
+// OOM leak showed chrome=4 but total=321 (orphaned ffmpeg/zombies), which a chrome-only check missed.
+// The idle-guard is mandatory: never reap a live render/post (its ffmpeg/Chrome are in use).
 const REAPER_CHROME_CEILING = 30
+const REAPER_TOTAL_CEILING = 150
 cron.schedule('*/5 * * * *', () => {
   const { chrome, total } = countProcs()
-  if (chrome <= REAPER_CHROME_CEILING) return
+  if (chrome <= REAPER_CHROME_CEILING && total <= REAPER_TOTAL_CEILING) return
   if (activeRenders > 0 || activePosts > 0) {
-    console.warn(`[cron:reaper] chrome=${chrome} over ceiling but render/post in flight — skipping`)
+    console.warn(`[cron:reaper] high procs (chrome=${chrome} total=${total}) but render/post in flight — skipping`)
     return
   }
   try {
-    execSync('pkill -9 -f chrome-headless-shell 2>/dev/null; pkill -9 -f chromium 2>/dev/null; true', { stdio: 'ignore' })
-    console.warn(`[cron:reaper] Reaped orphaned Chrome while idle (was chrome=${chrome}, total=${total})`)
+    execSync('pkill -9 -f chrome-headless-shell 2>/dev/null; pkill -9 -f chromium 2>/dev/null; pkill -9 -f ffmpeg 2>/dev/null; true', { stdio: 'ignore' })
+    console.warn(`[cron:reaper] Reaped orphaned Chrome/ffmpeg while idle (was chrome=${chrome}, total=${total})`)
   } catch {}
 })
 

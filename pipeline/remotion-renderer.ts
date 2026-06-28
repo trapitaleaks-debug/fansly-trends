@@ -1,4 +1,4 @@
-import { renderMedia, selectComposition } from '@remotion/renderer'
+import { renderMedia, selectComposition, makeCancelSignal } from '@remotion/renderer'
 import { bundle } from '@remotion/bundler'
 import http from 'http'
 import net from 'net'
@@ -119,7 +119,11 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
   // Chrome (composition select, font load, a single stuck frame) would dangle forever. That
   // jams the single-flight render cron (its `jobsRunning` guard never clears). This race
   // REJECTS, so processVideoJob's catch fires → the job becomes retryable instead of stuck.
+  // cancelSignal lets us actually TEAR DOWN the render's Chrome + ffmpeg if the wall-clock fires.
+  // Without it, an abandoned (hung) render kept its chrome-headless-shell and ffmpeg children alive
+  // orphaned — they piled up to hundreds of processes and OOM-crashed the container.
   let wallTimer: NodeJS.Timeout | undefined
+  const { cancelSignal, cancel } = makeCancelSignal()
   try {
     const renderWork = (async () => {
       const composition = await selectComposition({
@@ -139,10 +143,11 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
         browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
         chromiumOptions: { disableWebSecurity: true },
         crf: 20,
-        // Bound Chromium tabs per render so 2 parallel renders can't fan out workers
-        // and blow the container process limit.
-        concurrency: 2,
+        // concurrency:1 — each render uses a single Chrome worker. With multiple parallel renders,
+        // more workers each = too many Chrome processes → memory blowup / OOM on the 8GB container.
+        concurrency: 1,
         timeoutInMilliseconds: 5 * 60 * 1000,
+        cancelSignal,
       })
     })()
 
@@ -162,6 +167,9 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
     await Promise.race([renderWork, wallClock])
   } finally {
     if (wallTimer) clearTimeout(wallTimer)
+    // Tear down the render's Chrome + ffmpeg. No-op if it already finished; if the wall-clock
+    // abandoned it, this is what stops the processes leaking.
+    cancel()
     fileServer.close()
   }
 }
