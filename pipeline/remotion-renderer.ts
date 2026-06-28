@@ -123,6 +123,7 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
   // Without it, an abandoned (hung) render kept its chrome-headless-shell and ffmpeg children alive
   // orphaned — they piled up to hundreds of processes and OOM-crashed the container.
   let wallTimer: NodeJS.Timeout | undefined
+  let completed = false
   const { cancelSignal, cancel } = makeCancelSignal()
   try {
     const renderWork = (async () => {
@@ -165,11 +166,12 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
     })
 
     await Promise.race([renderWork, wallClock])
+    completed = true
   } finally {
     if (wallTimer) clearTimeout(wallTimer)
-    // Tear down the render's Chrome + ffmpeg. No-op if it already finished; if the wall-clock
-    // abandoned it, this is what stops the processes leaking.
-    cancel()
+    // Only tear down when the render was ABANDONED (wall-clock won → race threw). On success
+    // Remotion cleans up its own children; cancelling then could orphan a child mid-reap.
+    if (!completed) cancel()
     fileServer.close()
   }
 }

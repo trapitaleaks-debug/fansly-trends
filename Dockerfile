@@ -3,6 +3,7 @@ FROM node:22-slim
 # ffmpeg + chromium deps for Hyperframes HTML-to-video rendering
 # fonts-noto-color-emoji gives Chrome native emoji glyph support
 RUN apt-get update && apt-get install -y \
+    tini \
     ffmpeg \
     fonts-liberation \
     fonts-noto-color-emoji \
@@ -61,4 +62,8 @@ RUN npx playwright install chromium
 COPY . .
 
 EXPOSE 3001
+# tini as PID 1 reaps zombie processes. Remotion spawns chrome-headless-shell + ffmpeg children;
+# without an init to reap them, exited children pile up as <defunct> (pkill can't clear zombies)
+# until they exhaust the process table and OOM/EAGAIN the container.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["npm", "run", "pipeline:server"]
