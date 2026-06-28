@@ -18,6 +18,10 @@ export interface RemotionRenderOptions {
   outputPath: string
 }
 
+// Whole-render wall-clock cap. Must be longer than any legit render but short enough that a
+// hung render is reclaimed promptly. The watchdog's processing threshold is set ABOVE this.
+const RENDER_WALL_CLOCK_MS = 8 * 60 * 1000
+
 let _bundleLocation: string | null = null
 let _bundling: Promise<string> | null = null
 
@@ -108,27 +112,48 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
 
   console.log(`[remotion] Serving media via http://127.0.0.1:${port}`)
 
+  // Hard wall-clock cap on the whole render. Remotion's `timeoutInMilliseconds` is a
+  // per-frame delayRender timeout, and selectComposition has no timeout at all — so a hung
+  // Chrome (composition select, font load, a single stuck frame) would dangle forever. That
+  // jams the single-flight render cron (its `jobsRunning` guard never clears). This race
+  // REJECTS, so processVideoJob's catch fires → the job becomes retryable instead of stuck.
+  let wallTimer: NodeJS.Timeout | undefined
   try {
-    const composition = await selectComposition({
-      serveUrl,
-      id: 'VideoOverlay',
-      inputProps,
-      browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
-      chromiumOptions: { disableWebSecurity: true },
+    const renderWork = (async () => {
+      const composition = await selectComposition({
+        serveUrl,
+        id: 'VideoOverlay',
+        inputProps,
+        browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
+        chromiumOptions: { disableWebSecurity: true },
+      })
+
+      await renderMedia({
+        composition,
+        serveUrl,
+        codec: 'h264',
+        outputLocation: opts.outputPath,
+        inputProps,
+        browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
+        chromiumOptions: { disableWebSecurity: true },
+        crf: 20,
+        // Bound Chromium tabs per render so 2 parallel renders can't fan out workers
+        // and blow the container process limit.
+        concurrency: 2,
+        timeoutInMilliseconds: 5 * 60 * 1000,
+      })
+    })()
+
+    const wallClock = new Promise<never>((_, reject) => {
+      wallTimer = setTimeout(
+        () => reject(new Error('renderWithRemotion wall-clock timeout after 8min — render hung')),
+        RENDER_WALL_CLOCK_MS
+      )
     })
 
-    await renderMedia({
-      composition,
-      serveUrl,
-      codec: 'h264',
-      outputLocation: opts.outputPath,
-      inputProps,
-      browserExecutable: process.env.HYPERFRAMES_BROWSER_PATH ?? null,
-      chromiumOptions: { disableWebSecurity: true },
-      crf: 20,
-      timeoutInMilliseconds: 5 * 60 * 1000,
-    })
+    await Promise.race([renderWork, wallClock])
   } finally {
+    if (wallTimer) clearTimeout(wallTimer)
     fileServer.close()
   }
 }

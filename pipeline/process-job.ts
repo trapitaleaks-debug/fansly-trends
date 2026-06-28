@@ -21,9 +21,20 @@ function ffmpegBin() {
   return process.platform === 'darwin' ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg'
 }
 
+// ffmpeg/ffprobe are synchronous (execSync), so a hung process blocks the whole Node event
+// loop — stalling the render worker with no recovery. Cap every invocation so a wedged ffmpeg
+// is SIGKILLed and surfaces as a normal job error instead.
+const FFMPEG_TIMEOUT_MS = 4 * 60 * 1000
+const FFPROBE_TIMEOUT_MS = 30 * 1000
+
 function run(cmd: string) {
   try {
-    execSync(cmd, { stdio: 'pipe', env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } })
+    execSync(cmd, {
+      stdio: 'pipe',
+      env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` },
+      timeout: FFMPEG_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    })
   } catch (e) {
     const err = e as Error & { stderr?: Buffer; stdout?: Buffer }
     const stderr = err.stderr?.toString().trim()
@@ -101,7 +112,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
       try {
         const probe = execSync(
           `ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_name,color_primaries -of csv=p=0 "${rawPath}"`,
-          { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } }
+          { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` }, timeout: FFPROBE_TIMEOUT_MS, killSignal: 'SIGKILL' }
         ).toString().trim()
         needsNormalize = probe.includes('hevc') || probe.includes('bt2020')
       } catch { /* ignore probe errors — will attempt encode as-is */ }
@@ -127,7 +138,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
     try {
       const fmtDur = execSync(
         `ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${rawPath}"`,
-        { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } }
+        { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` }, timeout: FFPROBE_TIMEOUT_MS, killSignal: 'SIGKILL' }
       ).toString().trim()
       fullDuration = parseFloat(fmtDur) || 0
     } catch { /* ignore */ }
@@ -135,7 +146,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
       try {
         const strmDur = execSync(
           `ffprobe -v quiet -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${rawPath}"`,
-          { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` } }
+          { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` }, timeout: FFPROBE_TIMEOUT_MS, killSignal: 'SIGKILL' }
         ).toString().trim()
         fullDuration = parseFloat(strmDur) || 15
       } catch { fullDuration = 15 }

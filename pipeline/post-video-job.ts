@@ -147,10 +147,28 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     }
   }
 
-  // createContext loads saved storageState from R2 (cookies + localStorage)
+  // createContext (an R2 network call to load storageState) and newPage run BEFORE the main
+  // try/finally — a throw here previously leaked the just-launched Chrome forever. Guard them
+  // so the owned browser is always closed, mirroring the launch-failure handling above.
   // UTC timezone so 22:00 entered in date picker = 22:00 UTC
-  const { context } = await createContext(browser)
-  const page = await context.newPage()
+  let context: BrowserContext
+  let page: Page
+  try {
+    context = (await createContext(browser)).context
+    page = await context.newPage()
+  } catch (setupErr) {
+    if (ownsBrowser) await browser.close().catch(() => {})
+    const msg = (setupErr as Error).message
+    const { data: cur } = await supabaseAdmin.from('video_jobs').select('post_fail_count').eq('id', jobId).single()
+    const failCount = ((cur as unknown as { post_fail_count: number } | null)?.post_fail_count ?? 0) + 1
+    await supabaseAdmin.from('video_jobs').update({
+      status: failCount >= 3 ? 'error' : 'done',
+      post_fail_count: failCount,
+      error_message: `post setup failed [${failCount}x]: ${msg.slice(0, 300)}`,
+    }).eq('id', jobId)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    throw setupErr
+  }
   page.setDefaultTimeout(60_000)
   page.setDefaultNavigationTimeout(30_000)
 
@@ -185,13 +203,17 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     pageConsoleLogs.push(`PAGEERR:${err.message.slice(0, 150)}`)
   })
 
-  // Master 12-minute timeout — if anything hangs (R2 stall, Playwright deadlock), close context/browser.
-  // Only close the full browser if we own it — shared browsers serve other jobs concurrently.
+  // Master timeout — MUST be shorter than the post cron's 5-min race (server.ts post cron).
+  // Previously 12min: when the cron gave up at 5min it reset the job to 'approved' while THIS
+  // call kept running for another 7min with its browser open, so the next tick picked the same
+  // job up → duplicate Chrome instances (the process leak) and double-posts. At 4.5min the
+  // worker self-aborts first: closing the context rejects the in-flight Playwright await, which
+  // flows to the catch → post_fail_count++ → clean retry. Only close the full browser if owned.
   const masterTimer = setTimeout(() => {
-    console.error('[post] ✗ Master 12-min timeout fired — closing context')
+    console.error('[post] ✗ Master 4.5-min timeout fired — closing context to abort')
     context.close().catch(() => {})
     if (ownsBrowser) browser.close().catch(() => {})
-  }, 12 * 60_000)
+  }, 4.5 * 60_000)
 
   try {
     // Navigate to /bulk-posts and verify auth — storageState may have expired tokens.
