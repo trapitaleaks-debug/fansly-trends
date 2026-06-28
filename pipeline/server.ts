@@ -41,7 +41,6 @@ import { generateBriefs } from './research'
 import { generateSlot } from './generate'
 import { processVideoJob } from './process-job'
 import { postVideoJob } from './post-video-job'
-import { chromium, type Browser } from 'playwright'
 import { supabaseAdmin } from '../lib/supabase'
 import { getNextSlot } from '../lib/scheduling'
 
@@ -450,20 +449,6 @@ app.post('/regenerate/:videoId', async (req, res) => {
   })()
 })
 
-// ─── Shared browser pool for posting ─────────────────────────────────────────
-// One browser instance shared across all parallel postVideoJob calls.
-// Each job gets its own context (cookies/storage), but they share one Chrome process
-// instead of spawning 5 separate Chrome instances (saves ~36 sub-processes per tick).
-
-let _sharedBrowser: Browser | null = null
-
-async function getPostingBrowser(): Promise<Browser> {
-  if (_sharedBrowser && _sharedBrowser.isConnected()) return _sharedBrowser
-  _sharedBrowser = await chromium.launch({ headless: true })
-  console.log('[browser] Shared posting browser launched')
-  return _sharedBrowser
-}
-
 // ─── Crons ────────────────────────────────────────────────────────────────────
 
 // Every minute: process pending video_jobs (own footage + text overlay)
@@ -525,11 +510,10 @@ cron.schedule('* * * * *', async () => {
     if (!jobs || jobs.length === 0) return
 
     console.log(`[cron:post] Posting ${jobs.length} job(s) in parallel`)
-    const browser = await getPostingBrowser()
     await Promise.allSettled(
       jobs.map(job =>
         Promise.race([
-          postVideoJob(job.id, browser),
+          postVideoJob(job.id),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('postVideoJob timeout after 5min')), 5 * 60 * 1000)
           ),
