@@ -531,33 +531,41 @@ app.post('/regenerate/:videoId', async (req, res) => {
 
 // ─── Crons ────────────────────────────────────────────────────────────────────
 
-// Every minute: process pending video_jobs (own footage + text overlay)
-let jobsRunning = false
-cron.schedule('* * * * *', async () => {
-  if (jobsRunning) return
-  jobsRunning = true
+// Every 30s: keep a continuous pool of RENDER_CONCURRENCY renders in flight. The old model
+// processed a batch of 2 with Promise.all + a single-flight guard, so ONE slow/hung render blocked
+// the other slot AND every new render for up to the wall-clock cap — collapsing throughput to
+// ~1 job per stall. Now each render runs independently and a freed slot refills immediately, so a
+// hung clip only ties up its own slot. processVideoJob claims atomically (guards double-pickup).
+const RENDER_CONCURRENCY = parseInt(process.env.RENDER_CONCURRENCY ?? '3', 10)
+let activeRenders = 0
+let renderTickRunning = false
+cron.schedule('*/30 * * * * *', async () => {
+  if (renderTickRunning) return
+  renderTickRunning = true
   try {
-    const { data: jobs } = await supabaseAdmin
-      .from('video_jobs')
-      .select('id')
-      .eq('status', 'pending')
-      .order('created_at', { ascending: true })
-      .limit(2)
+    while (activeRenders < RENDER_CONCURRENCY) {
+      const { data: jobs } = await supabaseAdmin
+        .from('video_jobs')
+        .select('id')
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true })
+        .limit(1)
 
-    if (!jobs || jobs.length === 0) return
-
-    console.log(`[cron:jobs] Processing ${jobs.length} job(s) in parallel`)
-    await Promise.all(
-      jobs.map(job =>
-        processVideoJob(job.id).catch(e =>
-          console.error(`[cron:jobs] Failed ${job.id}:`, (e as Error).message)
-        )
-      )
-    )
+      if (!jobs || jobs.length === 0) break
+      const jobId = jobs[0].id
+      activeRenders++
+      console.log(`[cron:jobs] Render start ${jobId} (active ${activeRenders}/${RENDER_CONCURRENCY})`)
+      void processVideoJob(jobId)
+        .catch(e => console.error(`[cron:jobs] Failed ${jobId}:`, (e as Error).message))
+        .finally(() => { activeRenders-- })
+      // Let the atomic claim (status → processing) land before selecting again, otherwise the
+      // same oldest-pending row is handed out repeatedly within this loop.
+      await new Promise(r => setTimeout(r, 300))
+    }
   } catch (e) {
     console.error('[cron:jobs] Error:', (e as Error).message)
   } finally {
-    jobsRunning = false
+    renderTickRunning = false
   }
 })
 
@@ -699,7 +707,7 @@ const REAPER_CHROME_CEILING = 30
 cron.schedule('*/5 * * * *', () => {
   const { chrome, total } = countProcs()
   if (chrome <= REAPER_CHROME_CEILING) return
-  if (jobsRunning || postingRunning) {
+  if (activeRenders > 0 || postingRunning) {
     console.warn(`[cron:reaper] chrome=${chrome} over ceiling but render/post in flight — skipping`)
     return
   }

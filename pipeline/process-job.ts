@@ -79,11 +79,19 @@ export async function processVideoJob(jobId: string): Promise<void> {
     return
   }
 
-  // Mark as processing immediately to avoid duplicate pickup. Stamp started_at so the watchdog
-  // cron can detect (and reclaim) a render that hangs past the wall-clock cap.
-  await supabaseAdmin.from('video_jobs')
+  // Atomic claim: flip pending → processing only if it's still pending. The render worker pool can
+  // hand the same oldest-pending row to two workers before the status update lands; the conditional
+  // .eq('status','pending') means only one wins (the other gets 0 rows and bails) — no double render.
+  // started_at lets the watchdog reclaim a render that hangs past the wall-clock cap.
+  const { data: claimed } = await supabaseAdmin.from('video_jobs')
     .update({ status: 'processing', started_at: new Date().toISOString() })
     .eq('id', jobId)
+    .eq('status', 'pending')
+    .select('id')
+  if (!claimed || claimed.length === 0) {
+    console.log(`[job] ${jobId} already claimed by another worker, skipping`)
+    return
+  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vj_'))
 
