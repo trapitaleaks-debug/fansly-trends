@@ -113,8 +113,9 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
   const scheduledFor = existingDate && existingDate > new Date() ? existingDate : await getNextSlot(job.model_id)
   console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()} (${existingSlot ? 'pre-set' : 'computed'})`)
 
-  // Reserve slot in DB immediately — before browser launch — so concurrent calls see it
-  await supabaseAdmin.from('video_jobs').update({ status: 'posting', scheduled_for: scheduledFor.toISOString() }).eq('id', jobId)
+  // Reserve slot in DB immediately — before browser launch — so concurrent calls see it.
+  // Stamp started_at so the watchdog can detect a post that stalls past the master timer.
+  await supabaseAdmin.from('video_jobs').update({ status: 'posting', scheduled_for: scheduledFor.toISOString(), started_at: new Date().toISOString() }).eq('id', jobId)
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
 

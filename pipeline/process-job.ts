@@ -79,8 +79,11 @@ export async function processVideoJob(jobId: string): Promise<void> {
     return
   }
 
-  // Mark as processing immediately to avoid duplicate pickup
-  await supabaseAdmin.from('video_jobs').update({ status: 'processing' }).eq('id', jobId)
+  // Mark as processing immediately to avoid duplicate pickup. Stamp started_at so the watchdog
+  // cron can detect (and reclaim) a render that hangs past the wall-clock cap.
+  await supabaseAdmin.from('video_jobs')
+    .update({ status: 'processing', started_at: new Date().toISOString() })
+    .eq('id', jobId)
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vj_'))
 
@@ -236,9 +239,16 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const msg = rawStderr
       ? rawStderr.slice(-1000)
       : err.message.slice(-1000)
-    console.error(`[job] ✗ Failed ${jobId}:`, msg)
+    // Bounded render retry: re-queue to 'pending' (the render cron re-picks it) up to 3 attempts,
+    // then mark terminal 'error'. Clear started_at either way so the watchdog ignores it.
+    const { data: cur } = await supabaseAdmin.from('video_jobs').select('render_attempts').eq('id', jobId).single()
+    const attempts = ((cur as unknown as { render_attempts: number } | null)?.render_attempts ?? 0) + 1
+    const giveUp = attempts >= 3
+    console.error(`[job] ✗ Failed ${jobId} [attempt ${attempts}/3]${giveUp ? ' — giving up (error)' : ' — re-queueing'}:`, msg)
     await supabaseAdmin.from('video_jobs').update({
-      status: 'error',
+      status: giveUp ? 'error' : 'pending',
+      render_attempts: attempts,
+      started_at: null,
       error_message: msg,
     }).eq('id', jobId)
   } finally {

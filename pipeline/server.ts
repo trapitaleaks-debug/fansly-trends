@@ -52,16 +52,22 @@ const CYCLE_DAYS = parseInt(process.env.PIPELINE_CYCLE_DAYS ?? '3', 10)
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 
-app.get('/health', (_req, res) => {
-  let chromeCount = 0
-  let totalProcs = 0
+function countProcs(): { chrome: number; total: number } {
   try {
     const out = execSync('ps aux 2>/dev/null || true', { stdio: ['ignore', 'pipe', 'ignore'] }).toString()
     const lines = out.trim().split('\n')
-    totalProcs = lines.length - 1
-    chromeCount = lines.filter(l => l.includes('chrome-headless-shell') || l.includes('chromium')).length
-  } catch {}
-  res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime(), chrome_procs: chromeCount, total_procs: totalProcs })
+    return {
+      total: lines.length - 1,
+      chrome: lines.filter(l => l.includes('chrome-headless-shell') || l.includes('chromium')).length,
+    }
+  } catch {
+    return { chrome: 0, total: 0 }
+  }
+}
+
+app.get('/health', (_req, res) => {
+  const { chrome, total } = countProcs()
+  res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime(), chrome_procs: chrome, total_procs: total })
 })
 
 // ─── Emoji pipeline diagnostics ───────────────────────────────────────────────
@@ -532,6 +538,75 @@ cron.schedule('* * * * *', async () => {
   } finally {
     postingRunning = false
   }
+})
+
+// Every 2 min: watchdog — reclaim jobs stranded in a transient state when the process died
+// mid-flight or a render hung past its wall-clock cap. This replaces relying on a full restart's
+// boot-reset, so the queue self-heals without intervention.
+//   processing thresh (10min) > render wall-clock cap (8min) → never yanks a live-but-slow render
+//   posting   thresh (6min)  > post masterTimer (4.5min) + cron race (5min) → only fires on true death
+const WATCHDOG_PROCESSING_STALE_MIN = 10
+const WATCHDOG_POSTING_STALE_MIN = 6
+let watchdogRunning = false
+cron.schedule('*/2 * * * *', async () => {
+  if (watchdogRunning) return
+  watchdogRunning = true
+  try {
+    const procCutoff = new Date(Date.now() - WATCHDOG_PROCESSING_STALE_MIN * 60_000).toISOString()
+    const postCutoff = new Date(Date.now() - WATCHDOG_POSTING_STALE_MIN * 60_000).toISOString()
+
+    // Stuck renders → re-queue to pending (bounded by render_attempts), else terminal error.
+    const { data: stuckProc } = await supabaseAdmin
+      .from('video_jobs')
+      .select('id, render_attempts')
+      .eq('status', 'processing')
+      .or(`started_at.is.null,started_at.lt.${procCutoff}`)
+    for (const j of (stuckProc ?? []) as { id: string; render_attempts: number }[]) {
+      const attempts = (j.render_attempts ?? 0) + 1
+      const giveUp = attempts >= 3
+      await supabaseAdmin.from('video_jobs').update({
+        status: giveUp ? 'error' : 'pending',
+        render_attempts: attempts,
+        started_at: null,
+        error_message: giveUp ? 'watchdog: render hung — attempts exhausted' : 'watchdog: render hung — re-queued',
+      }).eq('id', j.id)
+      console.warn(`[cron:watchdog] processing ${j.id} stale → ${giveUp ? 'error' : 'pending'} [${attempts}/3]`)
+    }
+
+    // Stuck posts → reset to approved (post cron retries; post_fail_count bounds it). The
+    // masterTimer/cron-race resolve normal stalls; this only catches a process death mid-post.
+    const { data: stuckPost } = await supabaseAdmin
+      .from('video_jobs')
+      .select('id')
+      .eq('status', 'posting')
+      .or(`started_at.is.null,started_at.lt.${postCutoff}`)
+    if (stuckPost && stuckPost.length > 0) {
+      const ids = (stuckPost as { id: string }[]).map(j => j.id)
+      await supabaseAdmin.from('video_jobs').update({ status: 'approved', started_at: null }).in('id', ids)
+      console.warn(`[cron:watchdog] reset ${ids.length} stale posting → approved`)
+    }
+  } catch (e) {
+    console.error('[cron:watchdog] Error:', (e as Error).message)
+  } finally {
+    watchdogRunning = false
+  }
+})
+
+// Every 5 min: runtime reaper — kill orphaned Chrome IF the count is high AND nothing is actively
+// rendering or posting. The dual idle-guard is mandatory: never reap a live render/post Chrome.
+// Backstops the per-job cleanup so leaked processes can't accumulate to the EAGAIN ceiling.
+const REAPER_CHROME_CEILING = 30
+cron.schedule('*/5 * * * *', () => {
+  const { chrome, total } = countProcs()
+  if (chrome <= REAPER_CHROME_CEILING) return
+  if (jobsRunning || postingRunning) {
+    console.warn(`[cron:reaper] chrome=${chrome} over ceiling but render/post in flight — skipping`)
+    return
+  }
+  try {
+    execSync('pkill -9 -f chrome-headless-shell 2>/dev/null; pkill -9 -f chromium 2>/dev/null; true', { stdio: 'ignore' })
+    console.warn(`[cron:reaper] Reaped orphaned Chrome while idle (was chrome=${chrome}, total=${total})`)
+  } catch {}
 })
 
 // Every 2 min: pick up any queued runs dropped by a restart/deploy
