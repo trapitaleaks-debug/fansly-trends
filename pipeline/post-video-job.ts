@@ -427,6 +427,20 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     }
     page.on('request', submitListener)
 
+    // Capture the SAVE response status — the authoritative signal that FanCore actually persisted
+    // the post. The old code marked 'posted' on ANY observed POST and ignored the response, so a
+    // rejected submit (or an unrelated POST) was still recorded as posted → "DB says posted but
+    // it never posted". We gate the 'posted' write on this below.
+    let saveStatus = 0
+    let saveOk = false
+    const responseListener = (resp: import('playwright').Response) => {
+      if (resp.request().method() === 'POST' && /bulk-post/i.test(resp.url())) {
+        saveStatus = resp.status()
+        saveOk = resp.status() >= 200 && resp.status() < 300
+      }
+    }
+    page.on('response', responseListener)
+
     let postObserved = false
     let submitAttempts = 0
 
@@ -454,7 +468,7 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
       // Read validation banner and new POST requests
       const statusText = await slotForm.locator('.bulk-form-status').textContent().catch(() => '')
       const newRequests = submitRequests.slice(reqsBefore)
-      const postFired = newRequests.some(r => r.startsWith('POST'))
+      const postFired = newRequests.some(r => r.startsWith('POST') && /bulk-post/i.test(r))
       console.log(`[post] attempt ${submitAttempts}: status="${statusText}" newPOSTs=${JSON.stringify(newRequests.filter(r => r.startsWith('POST')))}`)
 
       if (postFired) {
@@ -515,19 +529,26 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
         }
       } catch { /* keep polling */ }
     }
-    if (scheduledCount === 0) {
-      console.warn(`[post] ⚠ Already Scheduled still shows 0 after 45s — FanCore may still be processing`)
+    page.off('response', responseListener)
+
+    // Authoritative confirmation before recording 'posted'. Previously this wrote 'posted'
+    // unconditionally even when the Scheduled tab showed 0 — the "DB says posted but it didn't"
+    // bug. Now require a real signal: a 2xx save response OR the Scheduled tab incrementing.
+    // An explicit non-2xx save response is a hard failure → throw → retry (post_fail_count).
+    if (saveStatus && !saveOk) {
+      throw new Error(`FanCore rejected the post — save responded HTTP ${saveStatus}`)
     }
+    const confirmed = saveOk || scheduledCount > 0
+    if (!confirmed) {
+      throw new Error(`post not confirmed — save response ${saveStatus || 'unseen'}, Scheduled tab still 0 after 45s`)
+    }
+
     await supabaseAdmin.from('video_jobs').update({
       status: 'posted',
       scheduled_for: scheduledFor.toISOString(),
       posted_at: new Date().toISOString(),
     }).eq('id', jobId)
-
-    if (scheduledCount === 0) {
-      console.warn(`[post] ⚠ Scheduled tab shows 0 — FanCore may still be processing. Post was confirmed via POST intercept.`)
-    }
-    console.log(`[post] ✓ Job ${jobId} posted — scheduled ${scheduledFor.toUTCString()}`)
+    console.log(`[post] ✓ Job ${jobId} posted — scheduled ${scheduledFor.toUTCString()} (saveStatus=${saveStatus || 'n/a'}, scheduledTab=${scheduledCount})`)
 
   } catch (e) {
     const msg = (e as Error).message

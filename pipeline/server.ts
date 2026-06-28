@@ -43,6 +43,7 @@ import { processVideoJob } from './process-job'
 import { postVideoJob } from './post-video-job'
 import { supabaseAdmin } from '../lib/supabase'
 import { getNextSlot } from '../lib/scheduling'
+import { sendTelegram } from '../lib/telegram'
 
 const app = express()
 app.use(express.json())
@@ -68,6 +69,20 @@ function countProcs(): { chrome: number; total: number } {
 app.get('/health', (_req, res) => {
   const { chrome, total } = countProcs()
   res.json({ status: 'ok', cycle_days: CYCLE_DAYS, uptime: process.uptime(), chrome_procs: chrome, total_procs: total })
+})
+
+// One-glance queue + process snapshot — check this instead of babysitting FanCore.
+app.get('/stats', async (_req, res) => {
+  try {
+    const { data } = await supabaseAdmin.from('video_jobs').select('status')
+    const jobs: Record<string, number> = {}
+    for (const r of (data ?? []) as { status: string }[]) jobs[r.status] = (jobs[r.status] ?? 0) + 1
+    const inFlight = (jobs.pending ?? 0) + (jobs.processing ?? 0) + (jobs.approved ?? 0) + (jobs.posting ?? 0) + (jobs.done ?? 0)
+    const { chrome, total } = countProcs()
+    res.json({ status: 'ok', jobs, in_flight: inFlight, chrome_procs: chrome, total_procs: total, uptime: process.uptime() })
+  } catch (e) {
+    res.status(500).json({ status: 'error', error: (e as Error).message })
+  }
 })
 
 // ─── Emoji pipeline diagnostics ───────────────────────────────────────────────
@@ -192,7 +207,16 @@ app.post('/jobs/fill-gaps', (_req, res) => {
 
       if (!models?.length) { console.log('[fill-gaps] No models'); return }
 
-      let totalCreated = 0
+      const summary = {
+        created: 0,
+        requeued: 0,
+        modelsNoFootage: 0,
+        insertErrors: 0,
+        skipped: { no_template: 0, tag_mismatch: 0, already_active: 0, in_flight: 0, dup_in_run: 0 },
+      }
+      // Two matched ideas can resolve to the same post; the post.video_jobs join is a stale
+      // snapshot for the whole run, so we'd insert a duplicate for the 2nd. Track inserts here.
+      const insertedPostIds = new Set<string>()
 
       for (const model of models) {
         // Collect content bank tags for this model's footage
@@ -222,6 +246,7 @@ app.post('/jobs/fill-gaps', (_req, res) => {
 
         if (footage.length === 0) {
           console.log(`[fill-gaps] @${model.fansly_username}: no footage — skipping`)
+          summary.modelsNoFootage++
           continue
         }
 
@@ -248,25 +273,43 @@ app.post('/jobs/fill-gaps', (_req, res) => {
         for (const rawIdea of (ideas as any[])) {
           const idea = rawIdea as { id: string; niches: string[]; tags: string[]; trends_posts: { id: string; text_template: string | null; video_jobs: Array<{ id: string; status: string; model_id: string; output_r2_key: string | null }> } | null }
           const post = idea.trends_posts
-          if (!post?.text_template) continue
+          if (!post?.text_template) { summary.skipped.no_template++; continue }
 
           // Content bank tag filter (mirrors matched-ideas route)
           if (contentBankTags.size > 0) {
             const ideaTags = idea.tags ?? []
-            if (ideaTags.length > 0 && !ideaTags.some(t => contentBankTags.has(t))) continue
+            if (ideaTags.length > 0 && !ideaTags.some(t => contentBankTags.has(t))) {
+              summary.skipped.tag_mismatch++; continue
+            }
           }
 
-          const jobs = post.video_jobs ?? []
+          // Per-run dedup — don't insert a second job for a post we already created one for.
+          if (insertedPostIds.has(post.id)) { summary.skipped.dup_in_run++; continue }
+
+          const jobs = (post.video_jobs ?? []).filter(j => j.model_id === model.id)
           const hasActive = jobs.some(j =>
-            j.model_id === model.id &&
-            ['done', 'approved', 'posting', 'posted'].includes(j.status) &&
-            j.output_r2_key
+            ['done', 'approved', 'posting', 'posted'].includes(j.status) && j.output_r2_key
           )
-          const hasInFlight = jobs.some(j =>
-            j.model_id === model.id &&
-            ['pending', 'processing'].includes(j.status)
-          )
-          if (hasActive || hasInFlight) continue
+          const hasInFlight = jobs.some(j => ['pending', 'processing'].includes(j.status))
+          if (hasActive) { summary.skipped.already_active++; continue }
+          if (hasInFlight) { summary.skipped.in_flight++; continue }
+
+          // Re-queue an errored job in place instead of inserting a duplicate beside it. This is
+          // why fill-gaps used to balloon the table on re-runs: 'error' was treated as a gap.
+          const erroredJob = jobs.find(j => j.status === 'error')
+          if (erroredJob) {
+            const { error: reqErr } = await supabaseAdmin.from('video_jobs')
+              .update({ status: 'pending', render_attempts: 0, post_fail_count: 0, started_at: null, error_message: null })
+              .eq('id', erroredJob.id)
+            if (reqErr) {
+              console.error(`[fill-gaps] Re-queue error @${model.fansly_username} job ${erroredJob.id}:`, reqErr.message)
+              summary.insertErrors++
+            } else {
+              summary.requeued++
+              insertedPostIds.add(post.id)
+            }
+            continue
+          }
 
           // Footage rotation
           let clipId: string | null = null
@@ -312,18 +355,33 @@ app.post('/jobs/fill-gaps', (_req, res) => {
 
           if (error) {
             console.error(`[fill-gaps] Insert error @${model.fansly_username} post ${post.id}:`, error.message)
+            summary.insertErrors++
           } else {
             modelCreated++
-            totalCreated++
+            summary.created++
+            insertedPostIds.add(post.id)
           }
         }
 
         console.log(`[fill-gaps] @${model.fansly_username}: +${modelCreated} jobs created`)
       }
 
-      console.log(`[fill-gaps] Complete — ${totalCreated} total new jobs created`)
+      const s = summary
+      const skippedTotal = s.skipped.no_template + s.skipped.tag_mismatch + s.skipped.already_active + s.skipped.in_flight + s.skipped.dup_in_run
+      console.log(`[fill-gaps] Complete — created ${s.created}, re-queued ${s.requeued}, skipped ${skippedTotal} ` +
+        `(active ${s.skipped.already_active}, in-flight ${s.skipped.in_flight}, no-template ${s.skipped.no_template}, ` +
+        `tag-mismatch ${s.skipped.tag_mismatch}, dup-in-run ${s.skipped.dup_in_run}), models-no-footage ${s.modelsNoFootage}, insert-errors ${s.insertErrors}`)
+      await sendTelegram(
+        `🎬 <b>FanslyTrends fill-gaps done</b>\n\n` +
+        `🆕 Created: ${s.created}\n` +
+        `♻️ Re-queued errored: ${s.requeued}\n` +
+        (s.insertErrors > 0 ? `⚠️ Insert errors: ${s.insertErrors}\n` : '') +
+        (s.modelsNoFootage > 0 ? `📭 Models w/o footage: ${s.modelsNoFootage}\n` : '') +
+        `⏭ Skipped (already covered): ${skippedTotal}`
+      )
     } catch (e) {
       console.error('[fill-gaps] Fatal error:', (e as Error).message)
+      await sendTelegram(`🚨 <b>FanslyTrends fill-gaps failed</b>\n\n<code>${(e as Error).message.slice(0, 300)}</code>`)
     }
   })()
 })
@@ -547,7 +605,12 @@ cron.schedule('* * * * *', async () => {
 //   posting   thresh (6min)  > post masterTimer (4.5min) + cron race (5min) → only fires on true death
 const WATCHDOG_PROCESSING_STALE_MIN = 10
 const WATCHDOG_POSTING_STALE_MIN = 6
+const QUEUE_STALL_ALERT_MIN = 15   // alert if pending hasn't dropped in this long while > 0
+const PROC_LEAK_CEILING = 300      // alert only on a runaway leak; normal peak (5 posts+2 renders) ~170
 let watchdogRunning = false
+let lastPending = -1
+let lastPendingDropAt = Date.now()
+let lastStuckAlertAt = 0
 cron.schedule('*/2 * * * *', async () => {
   if (watchdogRunning) return
   watchdogRunning = true
@@ -585,6 +648,27 @@ cron.schedule('*/2 * * * *', async () => {
       await supabaseAdmin.from('video_jobs').update({ status: 'approved', started_at: null }).in('id', ids)
       console.warn(`[cron:watchdog] reset ${ids.length} stale posting → approved`)
     }
+
+    // Stuck-queue / process-leak alert (debounced ≤ 1 per QUEUE_STALL_ALERT_MIN). Tells the user
+    // when the queue isn't draining or processes are leaking — the two failure modes they'd
+    // otherwise only discover by manually checking.
+    const { count: pendingNow } = await supabaseAdmin
+      .from('video_jobs').select('id', { count: 'exact', head: true }).eq('status', 'pending')
+    const pend = pendingNow ?? 0
+    if (lastPending < 0 || pend < lastPending) lastPendingDropAt = Date.now()
+    lastPending = pend
+    const { total, chrome } = countProcs()
+    const stalledMin = (Date.now() - lastPendingDropAt) / 60_000
+    const queueStalled = pend > 0 && stalledMin >= QUEUE_STALL_ALERT_MIN
+    const procLeak = total > PROC_LEAK_CEILING
+    if ((queueStalled || procLeak) && Date.now() - lastStuckAlertAt > QUEUE_STALL_ALERT_MIN * 60_000) {
+      lastStuckAlertAt = Date.now()
+      const parts: string[] = []
+      if (queueStalled) parts.push(`Pending stuck at ${pend} for ${Math.round(stalledMin)}min — renders may be jammed.`)
+      if (procLeak) parts.push(`Process count high: ${total} (chrome ${chrome}) — possible leak.`)
+      await sendTelegram(`⚠️ <b>FanslyTrends needs a look</b>\n\n${parts.join('\n')}`)
+      console.warn('[cron:watchdog] sent stuck-queue alert')
+    }
   } catch (e) {
     console.error('[cron:watchdog] Error:', (e as Error).message)
   } finally {
@@ -607,6 +691,46 @@ cron.schedule('*/5 * * * *', () => {
     execSync('pkill -9 -f chrome-headless-shell 2>/dev/null; pkill -9 -f chromium 2>/dev/null; true', { stdio: 'ignore' })
     console.warn(`[cron:reaper] Reaped orphaned Chrome while idle (was chrome=${chrome}, total=${total})`)
   } catch {}
+})
+
+// Every 2 min: edge-triggered batch-complete notifier. When the in-flight queue (pending +
+// processing + approved + posting + done) falls to 0 after having been >0, Telegram a summary —
+// so the user never has to manually check whether a 200-500 batch finished.
+let lastInFlight = -1
+cron.schedule('*/2 * * * *', async () => {
+  try {
+    const { data } = await supabaseAdmin.from('video_jobs').select('status')
+    const hist: Record<string, number> = {}
+    for (const r of (data ?? []) as { status: string }[]) hist[r.status] = (hist[r.status] ?? 0) + 1
+    const inFlight = (hist.pending ?? 0) + (hist.processing ?? 0) + (hist.approved ?? 0) + (hist.posting ?? 0) + (hist.done ?? 0)
+
+    if (lastInFlight > 0 && inFlight === 0) {
+      const since = new Date(Date.now() - 24 * 60 * 60_000).toISOString()
+      const { count: postedRecently } = await supabaseAdmin
+        .from('video_jobs').select('id', { count: 'exact', head: true }).gte('posted_at', since)
+      const { data: errors } = await supabaseAdmin
+        .from('video_jobs').select('error_message').eq('status', 'error')
+      const errCount = errors?.length ?? 0
+      let msg = `✅ <b>FanslyTrends — queue drained</b>\n\n` +
+        `📤 Posted (last 24h): ${postedRecently ?? 0}\n` +
+        `📦 Posted (all-time): ${hist.posted ?? 0}\n` +
+        `❌ Errored (needs attention): ${errCount}`
+      if (errCount > 0) {
+        const reasons: Record<string, number> = {}
+        for (const j of errors as { error_message: string | null }[]) {
+          const key = (j.error_message ?? 'unknown').replace(/\s+/g, ' ').slice(0, 70)
+          reasons[key] = (reasons[key] ?? 0) + 1
+        }
+        const top = Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 5)
+        msg += `\n\n<b>Top failure reasons:</b>\n` + top.map(([r, c]) => `• ${c}× ${r}`).join('\n')
+      }
+      await sendTelegram(msg)
+      console.log('[cron:batch-notify] Queue drained — sent Telegram summary')
+    }
+    lastInFlight = inFlight
+  } catch (e) {
+    console.error('[cron:batch-notify] Error:', (e as Error).message)
+  }
 })
 
 // Every 2 min: pick up any queued runs dropped by a restart/deploy
