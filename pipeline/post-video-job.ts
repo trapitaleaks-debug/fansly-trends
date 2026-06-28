@@ -113,9 +113,18 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
   const scheduledFor = existingDate && existingDate > new Date() ? existingDate : await getNextSlot(job.model_id)
   console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()} (${existingSlot ? 'pre-set' : 'computed'})`)
 
-  // Reserve slot in DB immediately — before browser launch — so concurrent calls see it.
-  // Stamp started_at so the watchdog can detect a post that stalls past the master timer.
-  await supabaseAdmin.from('video_jobs').update({ status: 'posting', scheduled_for: scheduledFor.toISOString(), started_at: new Date().toISOString() }).eq('id', jobId)
+  // Atomic claim: flip a postable job (approved/done) → posting only if we win the race, so the
+  // post worker pool can't hand the same job to two workers (double-post). Reserves the slot and
+  // stamps started_at (watchdog ages it) in the same update.
+  const { data: claimedPost } = await supabaseAdmin.from('video_jobs')
+    .update({ status: 'posting', scheduled_for: scheduledFor.toISOString(), started_at: new Date().toISOString() })
+    .eq('id', jobId)
+    .in('status', ['approved', 'done'])
+    .select('id')
+  if (!claimedPost || claimedPost.length === 0) {
+    console.log(`[post] ${jobId} already claimed or not postable — skipping`)
+    return
+  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
 

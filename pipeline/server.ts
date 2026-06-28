@@ -555,7 +555,13 @@ cron.schedule('*/30 * * * * *', async () => {
       const jobId = jobs[0].id
       activeRenders++
       console.log(`[cron:jobs] Render start ${jobId} (active ${activeRenders}/${RENDER_CONCURRENCY})`)
-      void processVideoJob(jobId)
+      // Hard-timeout backstop (> the 8min render wall-clock) GUARANTEES the slot is released even
+      // if processVideoJob hangs past its internal timeouts (e.g. a stuck R2 download) — otherwise
+      // a leaked slot would permanently shrink the pool.
+      void Promise.race([
+        processVideoJob(jobId),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('render slot hard-timeout 10min')), 10 * 60 * 1000)),
+      ])
         .catch(e => console.error(`[cron:jobs] Failed ${jobId}:`, (e as Error).message))
         .finally(() => { activeRenders-- })
       // Let the atomic claim (status → processing) land before selecting again, otherwise the
@@ -581,44 +587,46 @@ cron.schedule('* * * * *', async () => {
   }
 })
 
-// Every minute: post one approved video_job to FanCore (sequential — one Playwright at a time)
-let postingRunning = false
-cron.schedule('* * * * *', async () => {
-  if (postingRunning) return
-  postingRunning = true
+// Every 30s: keep a continuous pool of POST_CONCURRENCY posts in flight. Same fix as the render
+// pool — the old batch-of-5 + postingRunning guard meant the slowest post (up to the 4.5min master
+// timer) blocked the next 5 from starting. Now posts run independently and freed slots refill. The
+// cron-level 5min race + reset-to-approved is gone: postVideoJob's own master timer aborts a stalled
+// post into its catch (post_fail_count++), and the watchdog reclaims a process-death (posting→approved).
+const POST_CONCURRENCY = parseInt(process.env.POST_CONCURRENCY ?? '5', 10)
+let activePosts = 0
+let postTickRunning = false
+cron.schedule('*/30 * * * * *', async () => {
+  if (postTickRunning) return
+  postTickRunning = true
   try {
-    const { data: jobs } = await supabaseAdmin
-      .from('video_jobs')
-      .select('id')
-      .eq('status', 'approved')
-      .lt('post_fail_count', 3)
-      .order('created_at', { ascending: true })
-      .limit(5)
+    while (activePosts < POST_CONCURRENCY) {
+      const { data: jobs } = await supabaseAdmin
+        .from('video_jobs')
+        .select('id')
+        .eq('status', 'approved')
+        .lt('post_fail_count', 3)
+        .order('created_at', { ascending: true })
+        .limit(1)
 
-    if (!jobs || jobs.length === 0) return
-
-    console.log(`[cron:post] Posting ${jobs.length} job(s) in parallel`)
-    await Promise.allSettled(
-      jobs.map(job =>
-        Promise.race([
-          postVideoJob(job.id),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('postVideoJob timeout after 5min')), 5 * 60 * 1000)
-          ),
-        ]).catch(async e => {
-          console.error(`[cron:post] Failed ${job.id}:`, (e as Error).message)
-          await supabaseAdmin.from('video_jobs')
-            .update({ status: 'approved' })
-            .eq('id', job.id)
-            .eq('status', 'posting')
-            .then(() => console.log(`[cron:post] Reset ${job.id} to approved after timeout`), () => {})
-        })
-      )
-    )
+      if (!jobs || jobs.length === 0) break
+      const jobId = jobs[0].id
+      activePosts++
+      console.log(`[cron:post] Post start ${jobId} (active ${activePosts}/${POST_CONCURRENCY})`)
+      // Hard-timeout backstop (> the 4.5min post master timer) GUARANTEES slot release even if
+      // postVideoJob hangs past its internal timeouts — prevents the pool from shrinking over time.
+      void Promise.race([
+        postVideoJob(jobId),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('post slot hard-timeout 6min')), 6 * 60 * 1000)),
+      ])
+        .catch(e => console.error(`[cron:post] Failed ${jobId}:`, (e as Error).message))
+        .finally(() => { activePosts-- })
+      // Let the atomic claim (status → posting) land before selecting the next id.
+      await new Promise(r => setTimeout(r, 300))
+    }
   } catch (e) {
     console.error('[cron:post] Error:', (e as Error).message)
   } finally {
-    postingRunning = false
+    postTickRunning = false
   }
 })
 
@@ -707,7 +715,7 @@ const REAPER_CHROME_CEILING = 30
 cron.schedule('*/5 * * * *', () => {
   const { chrome, total } = countProcs()
   if (chrome <= REAPER_CHROME_CEILING) return
-  if (activeRenders > 0 || postingRunning) {
+  if (activeRenders > 0 || activePosts > 0) {
     console.warn(`[cron:reaper] chrome=${chrome} over ceiling but render/post in flight — skipping`)
     return
   }
