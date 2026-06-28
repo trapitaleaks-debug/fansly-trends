@@ -118,19 +118,29 @@ export async function processVideoJob(jobId: string): Promise<void> {
     // Normalize clips that need it: .mov files, HEVC-encoded MP4s, and HDR/BT.2020 sources.
     // These all have container/codec/colorspace metadata that causes libx264 to fail with
     // "incorrect parameters" on Railway. -t 60 caps work to first 60s (we never use more than 15s).
+    // CRITICAL: downscale to 1080p + 30fps DURING this transcode. iPhone footage is often 4K/60fps
+    // HEVC (3840x2160, ~89Mbps); transcoding that at full res is ~8x the work and was timing out /
+    // hanging the renderer. The output is downscaled to 1080p anyway, so do it here in one pass.
     let needsNormalize = clipKey.toLowerCase().endsWith('.mov')
     if (!needsNormalize) {
       try {
         const probe = execSync(
-          `ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_name,color_primaries -of csv=p=0 "${rawPath}"`,
+          `ffprobe -v quiet -select_streams v:0 -show_entries stream=codec_name,width,height,r_frame_rate,color_primaries -of csv=p=0 "${rawPath}"`,
           { env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` }, timeout: FFPROBE_TIMEOUT_MS, killSignal: 'SIGKILL' }
         ).toString().trim()
-        needsNormalize = probe.includes('hevc') || probe.includes('bt2020')
+        const [codec = '', wStr = '', hStr = '', rfr = '', color = ''] = probe.split(',')
+        const w = parseInt(wStr, 10) || 0
+        const h = parseInt(hStr, 10) || 0
+        const [rn, rd] = rfr.split('/').map(Number)
+        const fps = rd ? rn / rd : (rn || 0)
+        // Normalize (which now also downscales to 1080p/30) for anything heavy: HEVC, HDR/BT.2020,
+        // larger-than-1080p (4K), or high frame rate — these are what hang/timeout the renderer.
+        needsNormalize = codec.includes('hevc') || color.includes('bt2020') || w > 1920 || h > 1920 || fps > 31
       } catch { /* ignore probe errors — will attempt encode as-is */ }
     }
     if (needsNormalize) {
       const normPath = path.join(tmpDir, 'normalized.mp4')
-      run(`${ffmpegBin()} -i "${rawPath}" -t 60 -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an -y "${normPath}"`)
+      run(`${ffmpegBin()} -i "${rawPath}" -t 60 -vf "scale=1080:-2:flags=lanczos" -r 30 -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -an -y "${normPath}"`)
       fs.renameSync(normPath, rawPath)
     }
 
