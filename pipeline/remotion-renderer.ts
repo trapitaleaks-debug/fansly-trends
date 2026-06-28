@@ -144,6 +144,12 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
       })
     })()
 
+    // If the wall-clock wins the race, renderWork keeps running and its later rejection would be
+    // an UNHANDLED rejection (Remotion's ffmpeg/Chrome pipe errors surface async). Attach a no-op
+    // catch so the loser's eventual rejection is always handled — the race still sees the first
+    // settle for control flow.
+    renderWork.catch(() => {})
+
     const wallClock = new Promise<never>((_, reject) => {
       wallTimer = setTimeout(
         () => reject(new Error('renderWithRemotion wall-clock timeout after 8min — render hung')),
