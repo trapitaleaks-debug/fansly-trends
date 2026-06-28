@@ -18,9 +18,11 @@ export interface RemotionRenderOptions {
   outputPath: string
 }
 
-// Whole-render wall-clock cap. Must be longer than any legit render but short enough that a
-// hung render is reclaimed promptly. The watchdog's processing threshold is set ABOVE this.
-const RENDER_WALL_CLOCK_MS = 8 * 60 * 1000
+// Whole-render wall-clock cap. Good renders of these short clips finish in well under ~90s, so a
+// render past 4min is certainly hung (some clips stall Remotion's <video> load indefinitely). Kept
+// tight so a hung clip frees its worker-pool slot fast instead of starving throughput. The pool's
+// hard-timeout backstop (6min) and the watchdog (8min) sit ABOVE this.
+const RENDER_WALL_CLOCK_MS = 4 * 60 * 1000
 
 let _bundleLocation: string | null = null
 let _bundling: Promise<string> | null = null
@@ -152,7 +154,7 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
 
     const wallClock = new Promise<never>((_, reject) => {
       wallTimer = setTimeout(
-        () => reject(new Error('renderWithRemotion wall-clock timeout after 8min — render hung')),
+        () => reject(new Error('renderWithRemotion wall-clock timeout after 4min — render hung')),
         RENDER_WALL_CLOCK_MS
       )
     })

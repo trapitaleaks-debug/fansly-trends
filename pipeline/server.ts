@@ -555,12 +555,12 @@ cron.schedule('*/30 * * * * *', async () => {
       const jobId = jobs[0].id
       activeRenders++
       console.log(`[cron:jobs] Render start ${jobId} (active ${activeRenders}/${RENDER_CONCURRENCY})`)
-      // Hard-timeout backstop (> the 8min render wall-clock) GUARANTEES the slot is released even
+      // Hard-timeout backstop (> the 4min render wall-clock) GUARANTEES the slot is released even
       // if processVideoJob hangs past its internal timeouts (e.g. a stuck R2 download) — otherwise
       // a leaked slot would permanently shrink the pool.
       void Promise.race([
         processVideoJob(jobId),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('render slot hard-timeout 10min')), 10 * 60 * 1000)),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('render slot hard-timeout 6min')), 6 * 60 * 1000)),
       ])
         .catch(e => console.error(`[cron:jobs] Failed ${jobId}:`, (e as Error).message))
         .finally(() => { activeRenders-- })
@@ -635,7 +635,7 @@ cron.schedule('*/30 * * * * *', async () => {
 // boot-reset, so the queue self-heals without intervention.
 //   processing thresh (10min) > render wall-clock cap (8min) → never yanks a live-but-slow render
 //   posting   thresh (6min)  > post masterTimer (4.5min) + cron race (5min) → only fires on true death
-const WATCHDOG_PROCESSING_STALE_MIN = 10
+const WATCHDOG_PROCESSING_STALE_MIN = 8
 const WATCHDOG_POSTING_STALE_MIN = 6
 const QUEUE_STALL_ALERT_MIN = 15   // alert if pending hasn't dropped in this long while > 0
 const PROC_LEAK_CEILING = 300      // alert only on a runaway leak; normal peak (5 posts+2 renders) ~170
