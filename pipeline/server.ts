@@ -211,7 +211,16 @@ app.post('/jobs/post/:jobId', async (req, res) => {
 
 // ─── Fill-gaps: create video_jobs for matched ideas that never got one ────────
 
+let fillGapsRunning = false
 app.post('/jobs/fill-gaps', (_req, res) => {
+  // Single-flight: the button is fire-and-forget and re-enables immediately, so rapid presses
+  // would spawn concurrent runs. Each run snapshots existing jobs at its start, so a 2nd run
+  // wouldn't see the 1st's inserts → duplicate jobs. Ignore presses while a run is in progress.
+  if (fillGapsRunning) {
+    res.json({ message: 'fill-gaps already running — press ignored', alreadyRunning: true })
+    return
+  }
+  fillGapsRunning = true
   res.json({ message: 'fill-gaps started — follow Railway logs' })
 
   ;(async () => {
@@ -233,8 +242,11 @@ app.post('/jobs/fill-gaps', (_req, res) => {
         skipped: { no_template: 0, tag_mismatch: 0, already_active: 0, in_flight: 0, dup_in_run: 0 },
       }
       // Two matched ideas can resolve to the same post; the post.video_jobs join is a stale
-      // snapshot for the whole run, so we'd insert a duplicate for the 2nd. Track inserts here.
-      const insertedPostIds = new Set<string>()
+      // snapshot for the whole run, so we'd insert a duplicate for the 2nd. Track inserts here —
+      // keyed by model:post (NOT post alone), because the same trending post is matched by many
+      // models, and a post-only key made the first model claim every shared post so later models
+      // generated nothing ("only the first model" bug).
+      const insertedKeys = new Set<string>()
 
       for (const model of models) {
         // Collect content bank tags for this model's footage
@@ -301,8 +313,9 @@ app.post('/jobs/fill-gaps', (_req, res) => {
             }
           }
 
-          // Per-run dedup — don't insert a second job for a post we already created one for.
-          if (insertedPostIds.has(post.id)) { summary.skipped.dup_in_run++; continue }
+          // Per-run dedup — don't insert a second job for THIS model+post in the same run.
+          const dedupKey = `${model.id}:${post.id}`
+          if (insertedKeys.has(dedupKey)) { summary.skipped.dup_in_run++; continue }
 
           const jobs = (post.video_jobs ?? []).filter(j => j.model_id === model.id)
           const hasActive = jobs.some(j =>
@@ -324,7 +337,7 @@ app.post('/jobs/fill-gaps', (_req, res) => {
               summary.insertErrors++
             } else {
               summary.requeued++
-              insertedPostIds.add(post.id)
+              insertedKeys.add(dedupKey)
             }
             continue
           }
@@ -377,7 +390,7 @@ app.post('/jobs/fill-gaps', (_req, res) => {
           } else {
             modelCreated++
             summary.created++
-            insertedPostIds.add(post.id)
+            insertedKeys.add(dedupKey)
           }
         }
 
@@ -400,6 +413,8 @@ app.post('/jobs/fill-gaps', (_req, res) => {
     } catch (e) {
       console.error('[fill-gaps] Fatal error:', (e as Error).message)
       await sendTelegram(`🚨 <b>FanslyTrends fill-gaps failed</b>\n\n<code>${(e as Error).message.slice(0, 300)}</code>`)
+    } finally {
+      fillGapsRunning = false
     }
   })()
 })
