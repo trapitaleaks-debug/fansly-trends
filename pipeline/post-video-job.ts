@@ -378,25 +378,35 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
       }
     }
 
-    // Wait for FanCore to process the file (change handler → addFiles → refreshDropText)
-    await page.waitForTimeout(5000)
-
-    // Verify "Selected Media (1)" is visible in the DOM
-    const mediaTextElements = await page.evaluate(() => {
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-      const results: Array<{text: string; visible: boolean}> = []
-      let node: Node | null
-      while ((node = walker.nextNode())) {
-        const text = (node.textContent ?? '').trim()
-        if (text.includes('1 media') || text.includes('Selected Media')) {
-          const el = (node as Text).parentElement
-          if (el) results.push({ text: text.slice(0, 60), visible: el.offsetParent !== null })
+    // Wait for FanCore to ACTUALLY ATTACH the media before continuing. The upload is async; the old
+    // fixed 5s wait submitted before it finished for anything slower → posts created with "0 media"
+    // that FanCore then fails. Poll until a visible "1 media" shows for the slot (up to 90s). If it
+    // never attaches, throw so the job retries instead of submitting an empty, media-less post.
+    const mediaStart = Date.now()
+    const mediaDeadline = mediaStart + 90_000
+    let mediaAttached = false
+    while (Date.now() < mediaDeadline && !mediaAttached) {
+      await page.waitForTimeout(2000)
+      mediaAttached = await page.evaluate(() => {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+        let node: Node | null
+        while ((node = walker.nextNode())) {
+          const text = (node.textContent ?? '').trim()
+          // "1 media" = attached. "0 media" / "Uploading" = not yet (don't match those).
+          if (/(^|[^0-9])1 media\b/.test(text) && (node as Text).parentElement?.offsetParent !== null) return true
         }
-      }
-      return results
-    }).catch(() => [])
-    console.log(`[post] media: uploadMethod=${uploadMethod} mediaText=${JSON.stringify(mediaTextElements)}`)
-    console.log(`[post] media: WS=${JSON.stringify(wsLogs)} console=${JSON.stringify(pageConsoleLogs.slice(-5))}`)
+        return false
+      }).catch(() => false)
+    }
+    const mediaWaited = Math.round((Date.now() - mediaStart) / 1000)
+    console.log(`[post] media: uploadMethod=${uploadMethod} attached=${mediaAttached} after ${mediaWaited}s (${videoSizeMB}MB)`)
+    console.log(`[post] media: WS=${JSON.stringify(wsLogs.slice(-10))} console=${JSON.stringify(pageConsoleLogs.slice(-5))}`)
+
+    if (!mediaAttached) {
+      await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
+        uploadToR2(`debug/post-${jobId}-media-failed.png`, buf, 'image/png')).catch(() => {})
+      throw new Error(`media never attached after 90s (${videoSizeMB}MB) — not submitting an empty post`)
+    }
 
     // Screenshots for debugging
     await page.screenshot({ type: 'png' }).then(buf =>
