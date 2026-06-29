@@ -520,36 +520,51 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
       throw new Error(`FanCore: no POST to /api/bulk-posts/pending after ${submitAttempts} attempts — see debug/post-${jobId}-submit-failed.png`)
     }
 
-    // Poll "Already Scheduled" tab until the post appears (exits early, max 45s).
-    // Replaces the old hardcoded 90s wait — small clips upload in seconds; polling is adaptive.
-    console.log('[post] POST confirmed — polling Already Scheduled tab (max 45s)')
-    const pollDeadline = Date.now() + 45_000
-    let scheduledCount = 0
-    while (Date.now() < pollDeadline) {
-      await page.waitForTimeout(5_000)
-      try {
-        await page.locator('text=Already Scheduled').first().click({ timeout: 3_000 })
-        await page.waitForTimeout(1_000)
-        const txt = await page.locator('text=/Scheduled\\s*\\(\\d+\\)/').first().textContent({ timeout: 3_000 }).catch(() => '')
-        scheduledCount = parseInt(txt?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
-        if (scheduledCount > 0) {
-          console.log(`[post] Already Scheduled: Scheduled=${scheduledCount} — upload confirmed (${Math.round((45_000 - (pollDeadline - Date.now())) / 1000)}s)`)
-          break
-        }
-      } catch { /* keep polling */ }
-    }
-    page.off('response', responseListener)
-
-    // Authoritative confirmation before recording 'posted'. Previously this wrote 'posted'
-    // unconditionally even when the Scheduled tab showed 0 — the "DB says posted but it didn't"
-    // bug. Now require a real signal: a 2xx save response OR the Scheduled tab incrementing.
-    // An explicit non-2xx save response is a hard failure → throw → retry (post_fail_count).
+    // Fast-fail only on an EXPLICIT non-2xx create response. (A 2xx is NOT proof — FanCore returns
+    // 200 and still silently drops posts; that was the phantom-'posted' bug.)
     if (saveStatus && !saveOk) {
       throw new Error(`FanCore rejected the post — save responded HTTP ${saveStatus}`)
     }
-    const confirmed = saveOk || scheduledCount > 0
-    if (!confirmed) {
-      throw new Error(`post not confirmed — save response ${saveStatus || 'unseen'}, Scheduled tab still 0 after 45s`)
+
+    // Honest verification: confirm THIS video's exact scheduled-slot timestamp actually appears in
+    // FanCore's Already Scheduled list. The UTC browser context makes new Date(label).toISOString()
+    // line up with scheduledFor.toISOString() (both at :00.000). Only THIS proves the post landed;
+    // the 200 and the global "Scheduled (N)" count both lie. Not found → real failure → retry.
+    const targetIso = scheduledFor.toISOString()
+    console.log(`[post] verifying slot ${targetIso} landed on FanCore (max 60s)`)
+    const pollDeadline = Date.now() + 60_000
+    let landed = false
+    while (Date.now() < pollDeadline && !landed) {
+      try {
+        await page.locator('text=Already Scheduled').first().click({ timeout: 3_000 })
+        await page.waitForTimeout(1_500)
+        let prevLen = -1
+        for (let s = 0; s < 25 && !landed; s++) {
+          landed = await page.evaluate((target: string) => {
+            const datePattern = /\d{1,2}\/\d{1,2}\/\d{4},\s*\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)/
+            const walker = document.createTreeWalker(document.body, 4 /* SHOW_TEXT */)
+            let node: Node | null
+            while ((node = walker.nextNode())) {
+              const m = ((node as Text).textContent ?? '').match(datePattern)
+              if (m) { const d = new Date(m[0]); if (!isNaN(d.getTime()) && d.toISOString() === target) return true }
+            }
+            return false
+          }, targetIso)
+          if (landed) break
+          const len = await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight); return document.body.innerHTML.length })
+          if (len === prevLen) break // no more cards lazy-loaded
+          prevLen = len
+          await page.waitForTimeout(500)
+        }
+      } catch { /* keep polling */ }
+      if (!landed) await page.waitForTimeout(3_000)
+    }
+    page.off('response', responseListener)
+
+    if (!landed) {
+      await page.screenshot({ type: 'png', fullPage: true }).then(buf =>
+        uploadToR2(`debug/post-${jobId}-notlanded.png`, buf, 'image/png')).catch(() => {})
+      throw new Error(`post not on FanCore — slot ${targetIso} absent from Scheduled after 60s (saveStatus=${saveStatus || 'n/a'})`)
     }
 
     await supabaseAdmin.from('video_jobs').update({
@@ -557,7 +572,7 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
       scheduled_for: scheduledFor.toISOString(),
       posted_at: new Date().toISOString(),
     }).eq('id', jobId)
-    console.log(`[post] ✓ Job ${jobId} posted — scheduled ${scheduledFor.toUTCString()} (saveStatus=${saveStatus || 'n/a'}, scheduledTab=${scheduledCount})`)
+    console.log(`[post] ✓ Job ${jobId} VERIFIED on FanCore — slot ${targetIso}`)
 
   } catch (e) {
     const msg = (e as Error).message

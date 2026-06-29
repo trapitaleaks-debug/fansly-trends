@@ -883,10 +883,27 @@ cron.schedule('0 * * * *', async () => {
       crmScraperRunning = false
     }
   }, 8 * 60 * 1000)
-  child.on('exit', (code) => {
+  child.on('exit', async (code) => {
     clearTimeout(killTimer)
     crmScraperRunning = false
     console.log(`[cron:crm-scrape] Exited with code ${code}`)
+    // Self-healing reconcile: scheduled_posts now reflects FanCore truth. Re-queue any 'posted'
+    // job whose slot ISN'T actually on FanCore (a silent drop) so it re-posts through honest
+    // verification. Bounded by post_fail_count so genuinely-unpostable jobs eventually stop.
+    if (code === 0) {
+      try {
+        const { data: requeued, error } = await supabaseAdmin.rpc('reconcile_phantom_posts', { max_attempts: 4 })
+        if (error) { console.error('[cron:reconcile] RPC error:', error.message) }
+        else if ((requeued ?? 0) > 0) {
+          console.warn(`[cron:reconcile] Re-queued ${requeued} phantom 'posted' jobs (on FanCore: missing) → approved`)
+          await sendTelegram(`🔁 <b>FanslyTrends auto-reconcile</b>\n\nFound ${requeued} posts marked posted but missing from FanCore — re-queued to re-post.`)
+        } else {
+          console.log('[cron:reconcile] No phantom posts — DB matches FanCore')
+        }
+      } catch (e) {
+        console.error('[cron:reconcile] Error:', (e as Error).message)
+      }
+    }
   })
   child.on('error', (err) => {
     clearTimeout(killTimer)
