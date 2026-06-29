@@ -7,6 +7,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { execSync } from 'child_process'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { r2, uploadToR2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
@@ -17,6 +18,8 @@ import { getNextSlot, SLOT_INDEX } from '../lib/scheduling'
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
 const SESSION_R2_KEY = 'sessions/fancore.json'
+
+const ffmpegBin = () => (process.platform === 'darwin' ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg')
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
   const ac = new AbortController()
@@ -283,8 +286,26 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     await page.waitForTimeout(2000)
 
     // Download video from R2
-    const videoPath = path.join(tmpDir, 'output.mp4')
-    await downloadFromR2(job.output_r2_key, videoPath)
+    const rawVideoPath = path.join(tmpDir, 'output.mp4')
+    await downloadFromR2(job.output_r2_key, rawVideoPath)
+
+    // Compress before uploading. Renders come out ~20-30MB (ultrafast/crf18) and FanCore's
+    // server-side upload TIMES OUT on big files → "0 media / Upload timed out" (the failures).
+    // Cap bitrate → typically 2-7MB, which uploads in ~2s. Fall back to the original if ffmpeg fails.
+    const videoPath = path.join(tmpDir, 'upload.mp4')
+    try {
+      execSync(
+        `${ffmpegBin()} -y -i "${rawVideoPath}" -c:v libx264 -preset veryfast -crf 28 ` +
+        `-maxrate 4000k -bufsize 8000k -c:a aac -b:a 128k -movflags +faststart "${videoPath}"`,
+        { stdio: 'pipe', timeout: 120_000 },
+      )
+      const rawMB = (fs.statSync(rawVideoPath).size / 1048576).toFixed(1)
+      const outMB = (fs.statSync(videoPath).size / 1048576).toFixed(1)
+      console.log(`[post] compressed ${rawMB}MB → ${outMB}MB for upload`)
+    } catch (e) {
+      console.log(`[post] compress failed, using original: ${(e as Error).message}`)
+      fs.copyFileSync(rawVideoPath, videoPath)
+    }
 
     // ─── All fields scoped to slot 1's <form> ──────────────────────────────────
     // Root cause of prior failures: page.locator(...).nth(0) can target a DIFFERENT
