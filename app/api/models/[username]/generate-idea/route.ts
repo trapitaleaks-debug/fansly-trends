@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { insertVideoJobWithSlot } from '@/lib/scheduling'
+import { clipUsageMap, pickFromUsage } from '@/lib/footage'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ username: string }> }) {
   const { username } = await params
@@ -33,20 +34,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     .single()
 
   if (pipelineModel) {
-    const [{ data: allFootage }, { count: totalJobCount }, { data: existingModelClips }] = await Promise.all([
+    const [{ data: allFootage }, { data: existingModelClips }] = await Promise.all([
       supabaseAdmin.from('pipeline_content_bank').select('id, r2_key, label, trim_end, tags').eq('model_id', pipelineModel.id).order('created_at'),
-      supabaseAdmin.from('video_jobs').select('id', { count: 'exact', head: true }).eq('model_id', model.id),
       supabaseAdmin.from('model_clips').select('id, r2_key').eq('model_id', model.id),
     ])
 
     const footage = allFootage ?? []
 
     if (footage.length > 0) {
-      // Rotate through all clips in order based on total job count for this model.
-      // This guarantees clip variety across all generations regardless of which post is being generated.
-      const rotationIdx = (totalJobCount ?? 0) % footage.length
-      const chosen_footage = footage[rotationIdx]
-      clipIndex = rotationIdx + 1
+      // Pick a clip weighted toward the least-used so footage spreads evenly across the bank AND
+      // concurrent "Generate All" requests don't all land on the same clip (the old count%length bug).
+      const usage = await clipUsageMap(model.id, footage)
+      const chosen_footage = pickFromUsage(footage, usage)
+      clipIndex = footage.findIndex(f => f.r2_key === chosen_footage.r2_key) + 1
 
       const r2KeyToClipId = new Map((existingModelClips ?? []).map(mc => [mc.r2_key as string, mc.id as string]))
       const existingClipId = r2KeyToClipId.get(chosen_footage.r2_key)

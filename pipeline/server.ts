@@ -45,6 +45,7 @@ import { processVideoJob } from './process-job'
 import { postVideoJob } from './post-video-job'
 import { supabaseAdmin } from '../lib/supabase'
 import { insertVideoJobWithSlot } from '../lib/scheduling'
+import { clipUsageMap, pickFromUsage } from '../lib/footage'
 import { sendTelegram } from '../lib/telegram'
 
 const app = express()
@@ -280,12 +281,9 @@ app.post('/jobs/fill-gaps', (_req, res) => {
           continue
         }
 
-        // Count existing jobs for rotation index
-        const { count: totalJobCount } = await supabaseAdmin
-          .from('video_jobs')
-          .select('id', { count: 'exact', head: true })
-          .eq('model_id', model.id)
-        let rotationOffset = totalJobCount ?? 0
+        // Per-model clip usage map — pick the least-used clips so footage spreads evenly across the
+        // whole bank (and pulls up clips the old count-based rotation over-used). Balanced in-memory.
+        const clipUsage = await clipUsageMap(model.id, footage)
 
         // Load matched ideas
         const { data: ideas } = await supabaseAdmin
@@ -342,14 +340,13 @@ app.post('/jobs/fill-gaps', (_req, res) => {
             continue
           }
 
-          // Footage rotation
+          // Footage selection — least-used clip, balancing the in-memory usage map as we go.
           let clipId: string | null = null
           let clipIndex: number | null = null
           if (footage.length > 0) {
-            const idx = rotationOffset % footage.length
-            const chosen = footage[idx]
-            clipIndex = idx + 1
-            rotationOffset++
+            const chosen = pickFromUsage(footage, clipUsage)
+            clipUsage.set(chosen.r2_key, (clipUsage.get(chosen.r2_key) ?? 0) + 1)
+            clipIndex = footage.findIndex(f => f.r2_key === chosen.r2_key) + 1
 
             const existingClipId = r2KeyToClipId.get(chosen.r2_key)
             if (existingClipId) {
