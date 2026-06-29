@@ -12,7 +12,7 @@ import { r2, uploadToR2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
 import { sendTelegram } from '../lib/telegram'
-import { getNextSlot } from '../lib/scheduling'
+import { getNextSlot, SLOT_INDEX } from '../lib/scheduling'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
@@ -107,24 +107,36 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
 
   const handle = modelMeta.fansly_username
 
-  // Use pre-set scheduled_for if already computed and still in the future, otherwise calculate next slot
+  // Use pre-set scheduled_for if still in the future, otherwise compute the next free slot.
   const existingSlot = (job as unknown as { scheduled_for: string | null }).scheduled_for
   const existingDate = existingSlot ? new Date(existingSlot) : null
-  const scheduledFor = existingDate && existingDate > new Date() ? existingDate : await getNextSlot(job.model_id)
-  console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()} (${existingSlot ? 'pre-set' : 'computed'})`)
+  let scheduledFor = existingDate && existingDate > new Date() ? existingDate : await getNextSlot(job.model_id)
 
-  // Atomic claim: flip a postable job (approved/done) → posting only if we win the race, so the
-  // post worker pool can't hand the same job to two workers (double-post). Reserves the slot and
-  // stamps started_at (watchdog ages it) in the same update.
-  const { data: claimedPost } = await supabaseAdmin.from('video_jobs')
-    .update({ status: 'posting', scheduled_for: scheduledFor.toISOString(), started_at: new Date().toISOString() })
-    .eq('id', jobId)
-    .in('status', ['approved', 'done'])
-    .select('id')
+  // Atomic claim: flip a postable job (approved/done) → posting only if we win the race (prevents
+  // double-post), reserving the slot. If the slot collides with another active job (the unique index
+  // rejects it — e.g. a re-post whose old slot is now taken), recompute getNextSlot and retry so two
+  // videos never stack on one slot.
+  let claimedPost: { id: string }[] | null = null
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { data, error } = await supabaseAdmin.from('video_jobs')
+      .update({ status: 'posting', scheduled_for: scheduledFor.toISOString(), started_at: new Date().toISOString() })
+      .eq('id', jobId)
+      .in('status', ['approved', 'done'])
+      .select('id')
+    if (!error) { claimedPost = data as { id: string }[] | null; break }
+    const detail = `${error.message} ${(error as { details?: string }).details ?? ''}`
+    if (error.code === '23505' && detail.includes(SLOT_INDEX)) {
+      scheduledFor = await getNextSlot(job.model_id)
+      continue
+    }
+    console.error(`[post] ${jobId} claim error:`, error.message)
+    return
+  }
   if (!claimedPost || claimedPost.length === 0) {
     console.log(`[post] ${jobId} already claimed or not postable — skipping`)
     return
   }
+  console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()} (${existingSlot ? 'pre-set' : 'computed'})`)
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
 

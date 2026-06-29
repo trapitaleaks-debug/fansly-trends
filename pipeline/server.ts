@@ -44,7 +44,7 @@ import { generateSlot } from './generate'
 import { processVideoJob } from './process-job'
 import { postVideoJob } from './post-video-job'
 import { supabaseAdmin } from '../lib/supabase'
-import { getNextSlot } from '../lib/scheduling'
+import { insertVideoJobWithSlot } from '../lib/scheduling'
 import { sendTelegram } from '../lib/telegram'
 
 const app = express()
@@ -370,9 +370,10 @@ app.post('/jobs/fill-gaps', (_req, res) => {
           const options: string[] = (model as unknown as { placeholder_options: string[] }).placeholder_options ?? []
           const placeholder = options.length > 0 ? options[Math.floor(Math.random() * options.length)] : ''
           const personalizedText = post.text_template.replace(/\[placeholder\]/gi, placeholder)
-          const scheduledFor = await getNextSlot(model.id)
 
-          const { error } = await supabaseAdmin.from('video_jobs').insert({
+          // insertVideoJobWithSlot assigns a collision-free slot (4/day cap) and retries if it
+          // loses the slot race; skipped_duplicate = this model already has an active job for the post.
+          const res = await insertVideoJobWithSlot(model.id, {
             post_id: post.id,
             model_id: model.id,
             clip_id: clipId,
@@ -381,12 +382,13 @@ app.post('/jobs/fill-gaps', (_req, res) => {
             original_template: post.text_template,
             personalized_text: personalizedText,
             status: 'pending',
-            scheduled_for: scheduledFor.toISOString(),
           })
 
-          if (error) {
-            console.error(`[fill-gaps] Insert error @${model.fansly_username} post ${post.id}:`, error.message)
+          if (res.status === 'error') {
+            console.error(`[fill-gaps] Insert error @${model.fansly_username} post ${post.id}:`, res.error)
             summary.insertErrors++
+          } else if (res.status === 'skipped_duplicate') {
+            summary.skipped.already_active++
           } else {
             modelCreated++
             summary.created++

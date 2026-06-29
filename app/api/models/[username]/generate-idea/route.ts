@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
-import { getNextSlot } from '@/lib/scheduling'
+import { insertVideoJobWithSlot } from '@/lib/scheduling'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ username: string }> }) {
   const { username } = await params
@@ -69,24 +69,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
   }
 
-  const scheduledFor = await getNextSlot(model.id)
+  // insertVideoJobWithSlot picks a collision-free slot (4/day cap) and retries if it loses the race.
+  const res = await insertVideoJobWithSlot(model.id, {
+    post_id,
+    model_id: model.id,
+    clip_id: clipId,
+    clip_index: clipIndex,
+    duration_seconds: durationSeconds,
+    original_template: post.text_template,
+    personalized_text: personalizedText,
+    status: 'pending',
+  }, { returnId: true })
 
-  const { data: job, error } = await supabaseAdmin
-    .from('video_jobs')
-    .insert({
-      post_id,
-      model_id: model.id,
-      clip_id: clipId,
-      clip_index: clipIndex,
-      duration_seconds: durationSeconds,
-      original_template: post.text_template,
-      personalized_text: personalizedText,
-      status: 'pending',
-      scheduled_for: scheduledFor.toISOString(),
-    })
-    .select('id')
-    .single()
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ job_id: job.id, personalized_text: personalizedText })
+  if (res.status === 'skipped_duplicate') {
+    return NextResponse.json({ error: 'A job already exists for this post/model' }, { status: 409 })
+  }
+  if (res.status === 'error') return NextResponse.json({ error: res.error }, { status: 500 })
+  return NextResponse.json({ job_id: res.id, personalized_text: personalizedText })
 }
