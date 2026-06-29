@@ -609,7 +609,11 @@ cron.schedule('* * * * *', async () => {
 // timer) blocked the next 5 from starting. Now posts run independently and freed slots refill. The
 // cron-level 5min race + reset-to-approved is gone: postVideoJob's own master timer aborts a stalled
 // post into its catch (post_fail_count++), and the watchdog reclaims a process-death (posting→approved).
-const POST_CONCURRENCY = parseInt(process.env.POST_CONCURRENCY ?? '3', 10)
+// Serialized (default 1): all posts use ONE shared FanCore account; posting 3 concurrently raced
+// that single account and FanCore returned 200 OK but silently dropped ~85% of submits (phantom
+// 'posted' rows that never landed on the calendar). One-at-a-time trades throughput for posts that
+// actually schedule. Tunable via POST_CONCURRENCY env var.
+const POST_CONCURRENCY = parseInt(process.env.POST_CONCURRENCY ?? '1', 10)
 let activePosts = 0
 let postTickRunning = false
 cron.schedule('*/30 * * * * *', async () => {
