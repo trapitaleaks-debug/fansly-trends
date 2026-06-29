@@ -297,25 +297,12 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     const fileInput   = slotForm.locator('input.bulk-file-input')
     const submitBtn   = slotForm.locator('button.bulk-submit-btn')
 
-    // 1. Hashtags — type "hey" in caption to give the generator context, click generate,
-    //    wait for tags to populate, then clear the caption so the post has hashtags only.
-    await captionInput.fill('hey')
-    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
-    await page.waitForTimeout(200)
-    await slotForm.locator('button.bulk-regen-tags').click()
-    console.log('[post] hashtags: generate button clicked')
-    // Poll until tags field is non-empty (up to 20s)
-    const tagsPopulated = await page.waitForFunction(
-      () => (document.querySelectorAll('input[name="tags"]')[0] as HTMLInputElement)?.value?.trim().length > 0,
-      { timeout: 20000 }
-    ).then(() => true).catch(() => false)
-    const generatedTags = await slotForm.locator('input[name="tags"]').inputValue().catch(() => '')
-    console.log(`[post] hashtags: populated=${tagsPopulated} tags="${generatedTags}"`)
-    // Clear caption — post with hashtags only
-    await captionInput.fill('')
-    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
+    // ─── ORDER MATTERS: upload the video FIRST so FanCore's server-side upload runs in the
+    // background WHILE we fill the schedule/walls/hashtags. Submitting before that upload finished
+    // was the "0 media / Upload timed out" bug. Media upload is below (right after walls); the slow
+    // hashtag generation (~up to 20s) is deliberately moved to AFTER the upload to give it time.
 
-    // 2. Schedule date — fill + dispatch change so FanCore's closure sees it
+    // 1. Schedule date — fill + dispatch change so FanCore's closure sees it
     const yyyy = scheduledFor.getUTCFullYear()
     const mm   = String(scheduledFor.getUTCMonth() + 1).padStart(2, '0')
     const dd   = String(scheduledFor.getUTCDate()).padStart(2, '0')
@@ -377,6 +364,23 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
         console.log(`[post] media: filechooser failed: ${(fcErr as Error).message}`)
       }
     }
+
+    // 5. Hashtags — run AFTER the upload starts so FanCore's server-side video upload completes
+    //    during the ~20s tag generation (this is the fix for "0 media / Upload timed out": the file
+    //    now has all this time to finish uploading before submit, instead of being uploaded last).
+    await captionInput.fill('hey')
+    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
+    await page.waitForTimeout(200)
+    await slotForm.locator('button.bulk-regen-tags').click()
+    console.log('[post] hashtags: generate button clicked')
+    const tagsPopulated = await page.waitForFunction(
+      () => (document.querySelectorAll('input[name="tags"]')[0] as HTMLInputElement)?.value?.trim().length > 0,
+      { timeout: 20000 }
+    ).then(() => true).catch(() => false)
+    const generatedTags = await slotForm.locator('input[name="tags"]').inputValue().catch(() => '')
+    console.log(`[post] hashtags: populated=${tagsPopulated} tags="${generatedTags}"`)
+    await captionInput.fill('')
+    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
 
     // Wait for FanCore to ACTUALLY ATTACH the media before continuing. The upload is async; the old
     // fixed 5s wait submitted before it finished for anything slower → posts created with "0 media"
