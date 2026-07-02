@@ -19,6 +19,25 @@ const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
 const SESSION_R2_KEY = 'sessions/fancore.json'
 
+type MemberCreds = { email: string; password: string }
+
+// Resolve the per-model FanCore MEMBER account for a handle (isolated session → posting can run in
+// parallel, one member per job). Returns null if the model has no active member or the shared
+// password isn't configured → caller falls back to the main agency account + shared session.
+async function resolveMemberCreds(handle: string): Promise<MemberCreds | null> {
+  const password = process.env.FANCORE_MEMBER_PASSWORD
+  if (!password) return null
+  const { data } = await supabaseAdmin
+    .from('fancore_members')
+    .select('member_email')
+    .ilike('fansly_username', handle)
+    .eq('status', 'active')
+    .limit(1)
+    .maybeSingle()
+  const email = (data as { member_email?: string } | null)?.member_email
+  return email ? { email, password } : null
+}
+
 const ffmpegBin = () => (process.platform === 'darwin' ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg')
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
@@ -41,33 +60,34 @@ async function downloadFromR2(key: string, destPath: string): Promise<void> {
   }
 }
 
-async function loginFanCore(page: Page): Promise<void> {
-  const email = process.env.FANCORE_EMAIL
-  const password = process.env.FANCORE_PASSWORD
+// Optional member creds log in as a per-model member account (isolated). Omit → main agency account.
+async function loginFanCore(page: Page, creds?: MemberCreds | null): Promise<void> {
+  const email = creds?.email ?? process.env.FANCORE_EMAIL
+  const password = creds?.password ?? process.env.FANCORE_PASSWORD
   if (!email || !password) throw new Error('FANCORE_EMAIL or FANCORE_PASSWORD not set')
   await page.goto(`${FANCORE_URL}/signin`, { waitUntil: 'domcontentloaded' })
   await page.fill('input[name="email"]', email)
   await page.fill('input[name="password"]', password)
   await page.locator('button.btn-violet').click()
   await page.waitForURL(url => !String(url).includes('/signin'), { timeout: 20_000 })
-  console.log('  ✓ FanCore logged in')
+  console.log(`  ✓ FanCore logged in${creds ? ` as member ${email}` : ''}`)
 }
 
-// Store full storageState (cookies + localStorage) in R2.
+// Store full storageState (cookies + localStorage) in R2 under a per-session key.
 // FanCore uses JWT in localStorage so addCookies() alone is not enough.
-async function saveSession(page: Page): Promise<void> {
+async function saveSession(page: Page, sessionKey: string): Promise<void> {
   try {
     const state = await page.context().storageState()
-    await uploadToR2(SESSION_R2_KEY, Buffer.from(JSON.stringify(state)), 'application/json')
+    await uploadToR2(sessionKey, Buffer.from(JSON.stringify(state)), 'application/json')
     console.log('  ✓ Session saved to R2')
   } catch (e) {
     console.error('  ⚠ saveSession failed:', (e as Error).message)
   }
 }
 
-async function loadStorageState(): Promise<object | null> {
+async function loadStorageState(sessionKey: string): Promise<object | null> {
   try {
-    const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: SESSION_R2_KEY }))
+    const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: sessionKey }))
     const chunks: Uint8Array[] = []
     for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk)
     return JSON.parse(Buffer.concat(chunks).toString())
@@ -78,8 +98,8 @@ async function loadStorageState(): Promise<object | null> {
 
 // Returns a new browser context — pre-loaded with saved storageState if available.
 // Caller must check if session is valid and login if not.
-async function createContext(browser: Browser): Promise<{ context: BrowserContext; hadSavedSession: boolean }> {
-  const savedState = await loadStorageState()
+async function createContext(browser: Browser, sessionKey: string): Promise<{ context: BrowserContext; hadSavedSession: boolean }> {
+  const savedState = await loadStorageState(sessionKey)
   if (savedState) {
     console.log('  ✓ Loaded session from R2')
     const context = await browser.newContext({
@@ -109,6 +129,12 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
   if (!modelMeta) throw new Error(`postVideoJob: no model data for job ${jobId}`)
 
   const handle = modelMeta.fansly_username
+
+  // Per-model member account → isolated session (parallel-safe). Falls back to the main agency
+  // account + shared session key when the model has no active member / no member password set.
+  const memberCreds = await resolveMemberCreds(handle)
+  const sessionKey = memberCreds ? `sessions/fancore-${handle.toLowerCase()}.json` : SESSION_R2_KEY
+  if (memberCreds) console.log(`  🔐 using member account for @${handle}: ${memberCreds.email}`)
 
   // Use pre-set scheduled_for if still in the future, otherwise compute the next free slot.
   const existingSlot = (job as unknown as { scheduled_for: string | null }).scheduled_for
@@ -179,7 +205,7 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
   let context: BrowserContext
   let page: Page
   try {
-    context = (await createContext(browser)).context
+    context = (await createContext(browser, sessionKey)).context
     page = await context.newPage()
   } catch (setupErr) {
     if (ownsBrowser) await browser.close().catch(() => {})
@@ -247,8 +273,8 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     const hasLoginForm = await page.locator('input[name="password"]').isVisible({ timeout: 3_000 }).catch(() => false)
     if (page.url().includes('/signin') || hasLoginForm) {
       console.log(`  ℹ Session expired (url=${page.url()}, loginForm=${hasLoginForm}) — logging in fresh`)
-      await loginFanCore(page)
-      await saveSession(page)
+      await loginFanCore(page, memberCreds)
+      await saveSession(page, sessionKey)
       await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
     } else {
       console.log('  ✓ Session valid')
