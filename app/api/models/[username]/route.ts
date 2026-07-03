@@ -55,6 +55,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   if ('notes_for_ai' in body) updates.notes_for_ai = body.notes_for_ai
   if ('niches' in body) updates.niches = body.niches
   if ('placeholder_options' in body) updates.placeholder_options = body.placeholder_options
+  if ('model_number' in body) updates.model_number = body.model_number
 
   const { data, error } = await supabaseAdmin
     .from('trends_models')
