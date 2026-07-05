@@ -67,6 +67,12 @@ async function slotLandedOnFanCore(page: Page, targetIso: string, budgetMs: numb
     try {
       await page.locator('text=Already Scheduled').first().click({ timeout: 3_000 })
       await page.waitForTimeout(1_500)
+      // Narrow to the "Scheduled (N)" filter — the default "All" list holds the model's ENTIRE
+      // posting history (1000+ cards for older models) and the target card may never lazy-load.
+      // Scanning All was the false-negative that caused phantom retries → duplicate posts.
+      await page.locator('button').filter({ hasText: /^Scheduled \(\d+\)$/ }).first()
+        .click({ timeout: 3_000 }).catch(() => {})
+      await page.waitForTimeout(1_000)
       let prevLen = -1
       for (let s = 0; s < 25; s++) {
         const landed = await page.evaluate((target: string) => {
