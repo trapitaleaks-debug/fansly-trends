@@ -124,8 +124,11 @@ async function run() {
     console.log(`→ @${handle} (id=${modelId})`)
 
     if (currentlySelected !== handle.toLowerCase()) {
-      // Click the model in the sidebar — find by @username text
-      const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
+      // Click the model in the sidebar — find by @username text. CASE-INSENSITIVE: trends_models
+      // stores lowercase handles but FanCore displays mixed case (@CardioLina) — exact:true
+      // silently missed every new model (#29–34), which is why they "weren't in FanCore".
+      const escaped = handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const modelEntry = page.getByText(new RegExp(`^@${escaped}$`, 'i')).first()
       let visible = await modelEntry.isVisible({ timeout: 8_000 }).catch(() => false)
       if (!visible) {
         // 34 models don't all render — scroll the sidebar before declaring absence

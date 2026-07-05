@@ -361,7 +361,10 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     // be clickable, so the click is best-effort and /api/me is the authoritative check.
     // Agency mode: 34 models don't all render in the sidebar — scroll before giving up, then
     // cross-check /api/me so a mis-click can never post to the wrong model.
-    const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
+    // CASE-INSENSITIVE match: trends_models stores lowercase handles but FanCore displays mixed
+    // case (@CardioLina) — the old exact:true lookup silently missed every new model (#29–34).
+    const escapedHandle = handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const modelEntry = page.getByText(new RegExp(`^@${escapedHandle}$`, 'i')).first()
     if (memberCreds) {
       await modelEntry.click({ timeout: 8_000 }).catch(() => {})
       await page.waitForTimeout(1_000)
