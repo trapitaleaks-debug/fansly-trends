@@ -64,7 +64,8 @@ async function run() {
 
   const { data: crmModels, error: cmErr } = await supabase.from('models').select('id, username')
   if (cmErr || !crmModels) { console.error('models:', cmErr?.message); process.exit(1) }
-  const usernameToId = new Map<string, number>((crmModels as any[]).map(m => [m.username, m.id]))
+  // Lowercase keys — CRM stores mixed case (CardioLina) while trends_models is lowercase.
+  const usernameToId = new Map<string, number>((crmModels as any[]).map(m => [String(m.username).toLowerCase(), m.id]))
 
   const savedState = await loadStorageState()
   const browser: Browser = await chromium.launch({ headless: true })
@@ -119,7 +120,7 @@ async function run() {
   }
 
   for (const handle of handles) {
-    const modelId = usernameToId.get(handle)
+    const modelId = usernameToId.get(handle.toLowerCase())
     if (!modelId) { markSkipped(handle, 'no CRM match'); continue }
     console.log(`→ @${handle} (id=${modelId})`)
 
