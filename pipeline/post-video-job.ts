@@ -16,15 +16,15 @@ import { sendTelegram } from '../lib/telegram'
 import { getNextSlot, SLOT_INDEX } from '../lib/scheduling'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
-const FANCORE_URL = 'https://fancore-production.up.railway.app'
-const SESSION_R2_KEY = 'sessions/fancore.json'
+export const FANCORE_URL = 'https://fancore-production.up.railway.app'
+export const SESSION_R2_KEY = 'sessions/fancore.json'
 
-type MemberCreds = { email: string; password: string }
+export type MemberCreds = { email: string; password: string }
 
 // Resolve the per-model FanCore MEMBER account for a handle (isolated session → posting can run in
 // parallel, one member per job). Returns null if the model has no active member or the shared
 // password isn't configured → caller falls back to the main agency account + shared session.
-async function resolveMemberCreds(handle: string): Promise<MemberCreds | null> {
+export async function resolveMemberCreds(handle: string): Promise<MemberCreds | null> {
   const password = process.env.FANCORE_MEMBER_PASSWORD
   if (!password) return null
   const { data } = await supabaseAdmin
@@ -39,6 +39,61 @@ async function resolveMemberCreds(handle: string): Promise<MemberCreds | null> {
 }
 
 const ffmpegBin = () => (process.platform === 'darwin' ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg')
+
+// Authoritative active-model check via FanCore's /api/me. Members are server-scoped to exactly one
+// model and may have no clickable sidebar entry — trust the API over the sidebar.
+export async function getActiveModel(page: Page): Promise<string | null> {
+  return page
+    .evaluate(async () => {
+      try {
+        const r = await fetch('/api/me', { credentials: 'include' })
+        if (!r.ok) return null
+        const j = await r.json()
+        return j?.username ?? null
+      } catch {
+        return null
+      }
+    })
+    .then(u => (u ? String(u).replace(/^@/, '').toLowerCase() : null))
+}
+
+// True if a post at exactly targetIso is visible in the Already Scheduled list for the active
+// model. The UTC browser context makes new Date(label).toISOString() line up with slot ISO
+// strings (both at :00.000). Scrolls BOTH the window and inner scroll containers — window-only
+// scrolling missed lazy-loaded cards, producing verify false-negatives → duplicate re-posts.
+async function slotLandedOnFanCore(page: Page, targetIso: string, budgetMs: number): Promise<boolean> {
+  const pollDeadline = Date.now() + budgetMs
+  while (Date.now() < pollDeadline) {
+    try {
+      await page.locator('text=Already Scheduled').first().click({ timeout: 3_000 })
+      await page.waitForTimeout(1_500)
+      let prevLen = -1
+      for (let s = 0; s < 25; s++) {
+        const landed = await page.evaluate((target: string) => {
+          const datePattern = /\d{1,2}\/\d{1,2}\/\d{4},\s*\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)/
+          const walker = document.createTreeWalker(document.body, 4 /* SHOW_TEXT */)
+          let node: Node | null
+          while ((node = walker.nextNode())) {
+            const m = ((node as Text).textContent ?? '').match(datePattern)
+            if (m) { const d = new Date(m[0]); if (!isNaN(d.getTime()) && d.toISOString() === target) return true }
+          }
+          return false
+        }, targetIso)
+        if (landed) return true
+        const len = await page.evaluate(() => {
+          window.scrollTo(0, document.body.scrollHeight)
+          document.querySelectorAll('main, [class*="overflow-y"], [class*="scroll"]').forEach(el => el.scrollTo(0, el.scrollHeight))
+          return document.body.innerHTML.length
+        })
+        if (len === prevLen) break // no more cards lazy-loaded
+        prevLen = len
+        await page.waitForTimeout(500)
+      }
+    } catch { /* keep polling */ }
+    await page.waitForTimeout(3_000)
+  }
+  return false
+}
 
 async function downloadFromR2(key: string, destPath: string): Promise<void> {
   const ac = new AbortController()
@@ -61,7 +116,7 @@ async function downloadFromR2(key: string, destPath: string): Promise<void> {
 }
 
 // Optional member creds log in as a per-model member account (isolated). Omit → main agency account.
-async function loginFanCore(page: Page, creds?: MemberCreds | null): Promise<void> {
+export async function loginFanCore(page: Page, creds?: MemberCreds | null): Promise<void> {
   const email = creds?.email ?? process.env.FANCORE_EMAIL
   const password = creds?.password ?? process.env.FANCORE_PASSWORD
   if (!email || !password) throw new Error('FANCORE_EMAIL or FANCORE_PASSWORD not set')
@@ -98,7 +153,7 @@ async function loadStorageState(sessionKey: string): Promise<object | null> {
 
 // Returns a new browser context — pre-loaded with saved storageState if available.
 // Caller must check if session is valid and login if not.
-async function createContext(browser: Browser, sessionKey: string): Promise<{ context: BrowserContext; hadSavedSession: boolean }> {
+export async function createContext(browser: Browser, sessionKey: string): Promise<{ context: BrowserContext; hadSavedSession: boolean }> {
   const savedState = await loadStorageState(sessionKey)
   if (savedState) {
     console.log('  ✓ Loaded session from R2')
@@ -118,7 +173,7 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
   // Load job + model
   const { data: job, error: jobErr } = await supabaseAdmin
     .from('video_jobs')
-    .select('id, model_id, output_r2_key, scheduled_for, trends_models(fansly_username)')
+    .select('id, model_id, output_r2_key, scheduled_for, post_fail_count, trends_models(fansly_username)')
     .eq('id', jobId)
     .single()
 
@@ -135,11 +190,14 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
   const memberCreds = await resolveMemberCreds(handle)
   const sessionKey = memberCreds ? `sessions/fancore-${handle.toLowerCase()}.json` : SESSION_R2_KEY
   if (memberCreds) console.log(`  🔐 using member account for @${handle}: ${memberCreds.email}`)
+  else await sendTelegram(`⚠️ <b>FanslyTrends</b>: no member account for @${handle} — posting job ${jobId} via AGENCY account`).catch(() => {})
 
   // Use pre-set scheduled_for if still in the future, otherwise compute the next free slot.
   const existingSlot = (job as unknown as { scheduled_for: string | null }).scheduled_for
   const existingDate = existingSlot ? new Date(existingSlot) : null
-  let scheduledFor = existingDate && existingDate > new Date() ? existingDate : await getNextSlot(job.model_id)
+  const reusedExistingSlot = !!(existingDate && existingDate > new Date())
+  const priorFails = (job as unknown as { post_fail_count: number | null }).post_fail_count ?? 0
+  let scheduledFor = reusedExistingSlot ? existingDate! : await getNextSlot(job.model_id)
 
   // Atomic claim: flip a postable job (approved/done) → posting only if we win the race (prevents
   // double-post), reserving the slot. If the slot collides with another active job (the unique index
@@ -292,24 +350,75 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
       await page.waitForTimeout(1_000)
     }
 
-    // Click the model entry in the left sidebar — wait up to 30s for it to render
+    // Select/verify the active model.
+    // Member mode: the account is server-scoped to exactly ONE model — the sidebar entry may not
+    // be clickable, so the click is best-effort and /api/me is the authoritative check.
+    // Agency mode: 34 models don't all render in the sidebar — scroll before giving up, then
+    // cross-check /api/me so a mis-click can never post to the wrong model.
     const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
-    try {
-      await modelEntry.waitFor({ state: 'visible', timeout: 30_000 })
-    } catch {
-      // Debug: save screenshot of what the page looks like when sidebar fails to load
-      await page.screenshot({ type: 'png' }).then(buf =>
-        uploadToR2(`debug/post-${jobId}-sidebar.png`, buf, 'image/png')
-      ).catch(() => {})
-      console.log(`[post] sidebar debug screenshot → debug/post-${jobId}-sidebar.png`)
-      throw new Error(`Sidebar: @${handle} not visible after 30s — check debug/post-${jobId}-sidebar.png in R2`)
+    if (memberCreds) {
+      await modelEntry.click({ timeout: 8_000 }).catch(() => {})
+      await page.waitForTimeout(1_000)
+      const active = await getActiveModel(page)
+      if (active !== handle.toLowerCase()) {
+        throw new Error(`member ${memberCreds.email}: active model is @${active ?? 'none'}, expected @${handle}`)
+      }
+    } else {
+      for (let i = 0; i < 10 && !(await modelEntry.isVisible().catch(() => false)); i++) {
+        await page.evaluate(() =>
+          document.querySelectorAll('aside, [class*="sidebar"], [class*="overflow"]').forEach(el => el.scrollBy(0, 400))
+        )
+        await page.waitForTimeout(400)
+      }
+      try {
+        await modelEntry.waitFor({ state: 'visible', timeout: 30_000 })
+      } catch {
+        // Debug: save screenshot of what the page looks like when sidebar fails to load
+        await page.screenshot({ type: 'png' }).then(buf =>
+          uploadToR2(`debug/post-${jobId}-sidebar.png`, buf, 'image/png')
+        ).catch(() => {})
+        console.log(`[post] sidebar debug screenshot → debug/post-${jobId}-sidebar.png`)
+        throw new Error(`Sidebar: @${handle} not visible after 30s — check debug/post-${jobId}-sidebar.png in R2`)
+      }
+      await modelEntry.click()
+      await page.waitForTimeout(1_000)
+      const active = await getActiveModel(page)
+      if (active && active !== handle.toLowerCase()) {
+        throw new Error(`agency: active model is @${active}, expected @${handle} — refusing wrong-model post`)
+      }
     }
-    await modelEntry.click()
     // If the target model itself has a past-due subscription, another lockOverlay appears.
     if (await lockOverlay.isVisible({ timeout: 3_000 }).catch(() => false)) {
       throw new Error(`@${handle} subscription is past due on FanCore — cannot post, renew to unlock`)
     }
     await page.waitForTimeout(2000)
+
+    // Pre-flight (retry path only): if a PRIOR attempt for this same slot may have actually
+    // landed (verify false-negative), re-submitting would stack a duplicate post on the same
+    // second. Check Already Scheduled first; slot present → this job IS posted — record & stop.
+    if (priorFails > 0 && reusedExistingSlot) {
+      console.log(`[post] pre-flight: retry with reused slot — checking if already on FanCore`)
+      const already = await slotLandedOnFanCore(page, scheduledFor.toISOString(), 30_000)
+      if (already) {
+        await supabaseAdmin.from('video_jobs').update({
+          status: 'posted',
+          scheduled_for: scheduledFor.toISOString(),
+          posted_at: new Date().toISOString(),
+        }).eq('id', jobId)
+        console.log(`[post] ✓ ${jobId} pre-flight: slot already on FanCore — marked posted, skipping submit`)
+        return
+      }
+      // Not landed — return to the posting form (the check navigated to Already Scheduled).
+      await page.goto(`${FANCORE_URL}/bulk-posts`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {})
+      if (memberCreds) {
+        const active = await getActiveModel(page)
+        if (active !== handle.toLowerCase()) throw new Error(`member re-verify failed after pre-flight: @${active ?? 'none'}`)
+      } else {
+        await modelEntry.click({ timeout: 10_000 }).catch(() => {})
+        await page.waitForTimeout(1_500)
+      }
+    }
 
     // Download video from R2
     const rawVideoPath = path.join(tmpDir, 'output.mp4')
@@ -605,33 +714,7 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     // the 200 and the global "Scheduled (N)" count both lie. Not found → real failure → retry.
     const targetIso = scheduledFor.toISOString()
     console.log(`[post] verifying slot ${targetIso} landed on FanCore (max 60s)`)
-    const pollDeadline = Date.now() + 60_000
-    let landed = false
-    while (Date.now() < pollDeadline && !landed) {
-      try {
-        await page.locator('text=Already Scheduled').first().click({ timeout: 3_000 })
-        await page.waitForTimeout(1_500)
-        let prevLen = -1
-        for (let s = 0; s < 25 && !landed; s++) {
-          landed = await page.evaluate((target: string) => {
-            const datePattern = /\d{1,2}\/\d{1,2}\/\d{4},\s*\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)/
-            const walker = document.createTreeWalker(document.body, 4 /* SHOW_TEXT */)
-            let node: Node | null
-            while ((node = walker.nextNode())) {
-              const m = ((node as Text).textContent ?? '').match(datePattern)
-              if (m) { const d = new Date(m[0]); if (!isNaN(d.getTime()) && d.toISOString() === target) return true }
-            }
-            return false
-          }, targetIso)
-          if (landed) break
-          const len = await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight); return document.body.innerHTML.length })
-          if (len === prevLen) break // no more cards lazy-loaded
-          prevLen = len
-          await page.waitForTimeout(500)
-        }
-      } catch { /* keep polling */ }
-      if (!landed) await page.waitForTimeout(3_000)
-    }
+    const landed = await slotLandedOnFanCore(page, targetIso, 60_000)
     page.off('response', responseListener)
 
     if (!landed) {
@@ -657,6 +740,11 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
       post_fail_count: failCount,
       error_message: `post failed [${failCount}x]: ${msg.slice(0, 400)}`,
     }).eq('id', jobId)
+    if (failCount >= 3) {
+      await sendTelegram(
+        `❌ <b>FanslyTrends</b>: job ${jobId} @${handle} failed posting 3× — slot freed, audit will refill.\nLast error: ${msg.slice(0, 150)}`
+      ).catch(() => {})
+    }
     throw e
   } finally {
     clearTimeout(masterTimer)

@@ -9,10 +9,29 @@ import * as dotenv from 'dotenv'
 import path from 'path'
 dotenv.config({ path: path.resolve(__dirname, '../.env.local') })
 
-import { chromium, type Browser } from 'playwright'
+import { chromium, type Browser, type Page } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { sendTelegram } from '../lib/telegram'
+
+// Authoritative active-model check via FanCore's /api/me — the sidebar text-node heuristics
+// can silently point at the wrong model, and wrong-model reads used to corrupt scheduled_posts
+// (→ false phantom re-queues → duplicate posts). null = API unavailable (fall back carefully).
+async function getActiveModel(page: Page): Promise<string | null> {
+  return page
+    .evaluate(async () => {
+      try {
+        const r = await fetch('/api/me', { credentials: 'include' })
+        if (!r.ok) return null
+        const j = await r.json()
+        return j?.username ?? null
+      } catch {
+        return null
+      }
+    })
+    .then(u => (u ? String(u).replace(/^@/, '').toLowerCase() : null))
+}
 
 const FANCORE_URL = 'https://fancore-production.up.railway.app'
 const SESSION_R2_KEY = 'sessions/fancore.json'
@@ -39,8 +58,9 @@ async function run() {
   const singleModel = process.argv[2] ?? null // optional: only process this handle
 
   const { data: trendModels, error: tmErr } = await supabase
-    .from('trends_models').select('fansly_username').order('fansly_username')
+    .from('trends_models').select('id, fansly_username').order('fansly_username')
   if (tmErr || !trendModels) { console.error('trends_models:', tmErr?.message); process.exit(1) }
+  const handleToTrendsId = new Map<string, string>((trendModels as any[]).map(m => [m.fansly_username, m.id]))
 
   const { data: crmModels, error: cmErr } = await supabase.from('models').select('id, username')
   if (cmErr || !crmModels) { console.error('models:', cmErr?.message); process.exit(1) }
@@ -79,53 +99,80 @@ async function run() {
 
   // FanCore auto-selects the first sidebar model on page load. Clicking an already-selected
   // model deselects it (FanCore toggle behaviour), giving Scheduled(0). Track the currently
-  // selected handle and skip the click when we're already on the right model.
-  let currentlySelected: string | null = await page.evaluate(() => {
-    const walker = document.createTreeWalker(document.body, 4)
-    let node: Node | null
-    while ((node = walker.nextNode())) {
-      const t = (node as Text).textContent?.trim() ?? ''
-      if (t.startsWith('@') && t.length > 1) return t.slice(1)
-    }
-    return null
-  })
+  // selected handle via /api/me (authoritative) and skip the click when already on the model.
+  let currentlySelected: string | null = await getActiveModel(page)
   console.log(`  auto-selected on load: @${currentlySelected ?? 'none'}`)
+
+  const skippedHandles: string[] = []
+  const markSkipped = (handle: string, reason: string) => {
+    skippedHandles.push(handle)
+    console.warn(`  ⚠ @${handle} skipped: ${reason} — NOT touching its rows`)
+  }
+  // Stamp scrape freshness — reconcile_phantom_posts only trusts models with a recent stamp,
+  // so a skipped/failed model can never trigger false phantom re-queues (duplicate posts).
+  const stampFresh = async (handle: string) => {
+    const trendsId = handleToTrendsId.get(handle)
+    if (!trendsId) return
+    await supabase.from('trends_models')
+      .update({ last_seed_scrape_at: new Date().toISOString() })
+      .eq('id', trendsId)
+  }
 
   for (const handle of handles) {
     const modelId = usernameToId.get(handle)
-    if (!modelId) { console.warn(`⚠ @${handle} no CRM match — skip`); continue }
+    if (!modelId) { markSkipped(handle, 'no CRM match'); continue }
     console.log(`→ @${handle} (id=${modelId})`)
 
-    if (currentlySelected !== handle) {
+    if (currentlySelected !== handle.toLowerCase()) {
       // Click the model in the sidebar — find by @username text
       const modelEntry = page.getByText(`@${handle}`, { exact: true }).first()
-      const visible = await modelEntry.isVisible({ timeout: 8_000 }).catch(() => false)
+      let visible = await modelEntry.isVisible({ timeout: 8_000 }).catch(() => false)
+      if (!visible) {
+        // 34 models don't all render — scroll the sidebar before declaring absence
+        for (let i = 0; i < 10 && !visible; i++) {
+          await page.evaluate(() =>
+            document.querySelectorAll('aside, [class*="sidebar"], [class*="overflow"]').forEach(el => el.scrollBy(0, 400))
+          )
+          await page.waitForTimeout(400)
+          visible = await modelEntry.isVisible().catch(() => false)
+        }
+      }
       if (!visible) {
         // Sidebar may be stale — re-navigate and retry once
         await page.goto(`${FANCORE_URL}/bulk-posts/already`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
         await page.waitForTimeout(2000)
         const visible2 = await modelEntry.isVisible({ timeout: 5_000 }).catch(() => false)
-        if (!visible2) { console.warn(`  ⚠ not in sidebar`); continue }
+        if (!visible2) { markSkipped(handle, 'not in sidebar'); continue }
         // After re-navigate, auto-selected model changed — update tracking
         currentlySelected = null
       }
       await modelEntry.click()
       await page.waitForTimeout(2500) // FanCore SPA: fixed wait for XHR + React re-render
-      currentlySelected = handle
+      // Verify the click actually switched context — wrong-model reads corrupt scheduled_posts.
+      const active = await getActiveModel(page)
+      if (active && active !== handle.toLowerCase()) { markSkipped(handle, `wrong model active (@${active})`); continue }
+      currentlySelected = active ?? handle.toLowerCase()
     }
 
     // Click "Scheduled (N)" sub-tab
     const scheduledBtn = page.locator('button').filter({ hasText: /^Scheduled \(\d+\)$/ }).first()
     const scheduledText = await scheduledBtn.textContent({ timeout: 6_000 }).catch(() => '')
-    const totalScheduled = parseInt(scheduledText?.match(/\((\d+)\)/)?.[1] ?? '0', 10)
+    if (!scheduledText || !/\(\d+\)/.test(scheduledText)) {
+      // Button never rendered — page state unknown. The old code parsed '' as Scheduled(0) and
+      // MASS-DELETED the model's future rows → reconcile re-queued landed posts → duplicates.
+      markSkipped(handle, 'Scheduled tab did not render')
+      continue
+    }
+    const totalScheduled = parseInt(scheduledText.match(/\((\d+)\)/)?.[1] ?? '0', 10)
     if (totalScheduled === 0) {
-      // FanCore reports 0 scheduled — clear any stale future rows so CRM reflects reality
+      // FanCore verifiably reports 0 scheduled — clear any stale future rows
       await supabase
         .from('scheduled_posts')
         .delete()
         .eq('model_id', modelId)
         .gte('scheduled_for', todayUTC.toISOString())
       console.log(`  ℹ Scheduled(0) — cleared future rows`)
+      await stampFresh(handle)
       continue
     }
     await scheduledBtn.click()
@@ -205,14 +252,24 @@ async function run() {
 
     if (error) {
       console.error(`  ✗ upsert: ${error.message}`)
+      markSkipped(handle, `insert failed: ${error.message}`)
     } else {
       console.log(`  ✓ upserted ${rows.length} rows`)
       totalInserted += rows.length
+      await stampFresh(handle)
     }
   }
 
   await browser.close()
-  console.log(`\n✅ ${totalInserted} rows across ${handles.length} models`)
+  const okCount = handles.length - skippedHandles.length
+  console.log(`\n✅ ${totalInserted} rows · scraped OK: ${okCount}/${handles.length}` +
+    (skippedHandles.length ? ` · skipped: ${skippedHandles.join(', ')}` : ''))
+  if (skippedHandles.length > 5) {
+    await sendTelegram(
+      `⚠️ <b>FanslyTrends</b> seed scrape: ${skippedHandles.length}/${handles.length} models skipped ` +
+      `(${skippedHandles.slice(0, 10).join(', ')}${skippedHandles.length > 10 ? '…' : ''}) — their reconcile is paused until a clean scrape`
+    ).catch(() => {})
+  }
 
   const { count } = await supabase
     .from('scheduled_posts').select('*', { count: 'exact', head: true })

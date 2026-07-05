@@ -3,7 +3,7 @@ import { supabaseAdmin } from './supabase'
 // Fixed daily posting slots per model (UTC). All models share the same schedule.
 // Exactly 4 slots/day → at most 4 videos/day/model (one video per slot, enforced by the
 // video_jobs_one_per_slot partial unique index + the taken-slot scan below).
-const FIXED_SLOTS: Array<{ hour: number; minute: number }> = [
+export const FIXED_SLOTS: Array<{ hour: number; minute: number }> = [
   { hour: 21, minute: 0 },
   { hour: 21, minute: 10 },
   { hour: 21, minute: 20 },
@@ -11,7 +11,7 @@ const FIXED_SLOTS: Array<{ hour: number; minute: number }> = [
 ]
 
 // FanCore rejects posts scheduled too close to current time.
-const MIN_BUFFER_MS = 45 * 60 * 1000
+export const MIN_BUFFER_MS = 45 * 60 * 1000
 
 // Unique-index names, used to tell the two 23505 conflicts apart in insertVideoJobWithSlot.
 const SLOT_INDEX = 'video_jobs_one_per_slot'                 // (model_id, scheduled_for)
@@ -28,7 +28,7 @@ function addMinuteKey(set: Set<string>, value: string | null | undefined): void 
 // already on FanCore (scheduled_posts). Counting FanCore-existing enforces the hard 4/day even
 // across what's already live (a day with 4 already on FanCore yields 0 new). 'error' jobs are
 // excluded so a failed slot becomes reusable.
-async function getTakenSlots(modelId: string): Promise<Set<string>> {
+export async function getTakenSlots(modelId: string): Promise<Set<string>> {
   const taken = new Set<string>()
   const startOfToday = new Date()
   startOfToday.setUTCHours(0, 0, 0, 0)

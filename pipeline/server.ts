@@ -43,6 +43,7 @@ import { generateBriefs } from './research'
 import { generateSlot } from './generate'
 import { processVideoJob } from './process-job'
 import { postVideoJob } from './post-video-job'
+import { runSchedulerAudit } from './audit'
 import { supabaseAdmin } from '../lib/supabase'
 import { insertVideoJobWithSlot } from '../lib/scheduling'
 import { clipUsageMap, pickFromUsage } from '../lib/footage'
@@ -240,7 +241,7 @@ app.post('/jobs/fill-gaps', (_req, res) => {
         requeued: 0,
         modelsNoFootage: 0,
         insertErrors: 0,
-        skipped: { no_template: 0, tag_mismatch: 0, already_active: 0, in_flight: 0, dup_in_run: 0 },
+        skipped: { no_template: 0, tag_mismatch: 0, already_active: 0, in_flight: 0, dup_in_run: 0, post_fail_terminal: 0 },
       }
       // Two matched ideas can resolve to the same post; the post.video_jobs join is a stale
       // snapshot for the whole run, so we'd insert a duplicate for the 2nd. Track inserts here —
@@ -288,7 +289,7 @@ app.post('/jobs/fill-gaps', (_req, res) => {
         // Load matched ideas
         const { data: ideas } = await supabaseAdmin
           .from('trends_ideas')
-          .select('id, niches, tags, trends_posts(id, text_template, video_jobs(id, status, model_id, output_r2_key))')
+          .select('id, niches, tags, trends_posts(id, text_template, video_jobs(id, status, model_id, output_r2_key, post_fail_count))')
           .overlaps('niches', model.niches)
           .order('created_at', { ascending: false })
 
@@ -299,7 +300,7 @@ app.post('/jobs/fill-gaps', (_req, res) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         for (const rawIdea of (ideas as any[])) {
-          const idea = rawIdea as { id: string; niches: string[]; tags: string[]; trends_posts: { id: string; text_template: string | null; video_jobs: Array<{ id: string; status: string; model_id: string; output_r2_key: string | null }> } | null }
+          const idea = rawIdea as { id: string; niches: string[]; tags: string[]; trends_posts: { id: string; text_template: string | null; video_jobs: Array<{ id: string; status: string; model_id: string; output_r2_key: string | null; post_fail_count: number | null }> } | null }
           const post = idea.trends_posts
           if (!post?.text_template) { summary.skipped.no_template++; continue }
 
@@ -325,7 +326,13 @@ app.post('/jobs/fill-gaps', (_req, res) => {
 
           // Re-queue an errored job in place instead of inserting a duplicate beside it. This is
           // why fill-gaps used to balloon the table on re-runs: 'error' was treated as a gap.
+          // EXCEPT 3×-post-failed videos: those stay dead — the audit refills their freed slot
+          // with a NEW idea instead (user decision, Wave 1).
           const erroredJob = jobs.find(j => j.status === 'error')
+          if (erroredJob && (erroredJob.post_fail_count ?? 0) >= 3) {
+            summary.skipped.post_fail_terminal++
+            continue
+          }
           if (erroredJob) {
             const { error: reqErr } = await supabaseAdmin.from('video_jobs')
               .update({ status: 'pending', render_attempts: 0, post_fail_count: 0, started_at: null, error_message: null })
@@ -416,6 +423,45 @@ app.post('/jobs/fill-gaps', (_req, res) => {
       fillGapsRunning = false
     }
   })()
+})
+
+// ─── Scheduler audit: enforce 4/day, refill freed slots, handle FanCore extras ─
+
+let auditRunning = false
+app.post('/audit', (req, res) => {
+  if (auditRunning) {
+    res.json({ message: 'audit already running — press ignored', alreadyRunning: true })
+    return
+  }
+  auditRunning = true
+  const dry = req.query.dry === '1'
+  const move = req.query.move === '1'
+  res.json({ message: `audit started (${dry ? 'DRY RUN' : 'live'}${move ? ', mover ON' : ''}) — summary lands on Telegram` })
+  ;(async () => {
+    try {
+      await runSchedulerAudit({ days: 3, refill: !dry, moveExtras: move && !dry })
+    } catch (e) {
+      console.error('[audit] Fatal:', (e as Error).message)
+      await sendTelegram(`🚨 <b>FanslyTrends audit failed</b>\n<code>${(e as Error).message.slice(0, 300)}</code>`).catch(() => {})
+    } finally {
+      auditRunning = false
+    }
+  })()
+})
+
+// 12:30 UTC (after the hourly seed scrape) + 19:30 UTC (last refill window that still clears the
+// 45-min buffer before the 21:00–21:30 posting slots).
+cron.schedule('30 12,19 * * *', async () => {
+  if (auditRunning) return
+  auditRunning = true
+  try {
+    await runSchedulerAudit({ days: 3, refill: true, moveExtras: true })
+  } catch (e) {
+    console.error('[cron:audit] Fatal:', (e as Error).message)
+    await sendTelegram(`🚨 <b>FanslyTrends audit cron failed</b>\n<code>${(e as Error).message.slice(0, 300)}</code>`).catch(() => {})
+  } finally {
+    auditRunning = false
+  }
 })
 
 // ─── Trigger endpoint: fire pipeline for a specific model ─────────────────────
@@ -931,6 +977,13 @@ app.listen(PORT, async () => {
   console.log(`\nPipeline server running on port ${PORT}`)
   console.log(`   Cycle: every ${CYCLE_DAYS} days at ${cycleHour}:00 UTC`)
   console.log(`   Cron: ${cycleCron}`)
+
+  if (!process.env.FANCORE_MEMBER_PASSWORD) {
+    console.warn('   ⚠ FANCORE_MEMBER_PASSWORD not set — ALL posts will use the shared agency account')
+    await sendTelegram('⚠️ <b>FanslyTrends</b>: FANCORE_MEMBER_PASSWORD not set on this deploy — all posts fall back to the shared agency account').catch(() => {})
+  } else {
+    console.log('   ✓ Member-account posting enabled')
+  }
 
   // Reset any jobs left in transient states from a previous process that died mid-run.
   // "processing" → pending (so render cron picks them up again)
