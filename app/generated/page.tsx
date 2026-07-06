@@ -19,6 +19,7 @@ interface Job {
   updated_at: string
   trends_models: { fansly_username: string } | null
   trends_posts: { creator_username: string; thumbnail_r2_key: string | null } | null
+  video_templates: { name: string; kind: string } | null
 }
 
 interface WatchState {
@@ -218,6 +219,11 @@ export default function GeneratedPage() {
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-medium text-white">@{username}</span>
                       {creator && <span className="text-[10px] text-[#444]">← @{creator}</span>}
+                      {job.video_templates && (
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded border ${job.video_templates.kind === 'caption' ? 'border-violet-500/40 text-violet-300' : 'border-green-500/40 text-green-400'}`}>
+                          {job.video_templates.kind === 'caption' ? '✨' : '🟩'} {job.video_templates.name}
+                        </span>
+                      )}
                     </div>
                     <p className="text-[11px] text-[#777] leading-snug line-clamp-2">
                       {job.personalized_text ?? '—'}

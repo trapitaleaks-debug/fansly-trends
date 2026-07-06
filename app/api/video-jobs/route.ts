@@ -10,6 +10,7 @@ export async function GET(request: NextRequest) {
     .select(`
       id, post_id, model_id, clip_id, personalized_text, status, created_at, updated_at,
       output_r2_key, thumbnail_r2_key, error_message, post_fail_count, failure_kind, needs_review, diagnosis,
+      video_templates(name, kind),
       trends_models(fansly_username),
       trends_posts(creator_username, thumbnail_r2_key)
     `)

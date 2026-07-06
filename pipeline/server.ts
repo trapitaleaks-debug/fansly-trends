@@ -378,7 +378,7 @@ app.post('/jobs/fill-gaps', (_req, res) => {
 
           // Wave B: weighted template pick (classic caption stays in rotation). Meme templates
           // carry their own fixed text lines; caption templates reuse the trending post's text.
-          const pick = await pickTemplate(idea.tags)
+          const pick = await pickTemplate(idea.tags, model.niches)
           const personalizedText = pick.fixedLines
             ? resolveMemeText(pick.fixedLines, placeholder)
             : post.text_template.replace(/\[placeholder\]/gi, placeholder)
@@ -508,6 +508,30 @@ cron.schedule('0 10 * * *', async () => {
   } finally {
     hygieneRunning = false
   }
+})
+
+// ─── Template preview renders (Templates page "how does it look") ─────────────
+
+const previewsRunning = new Set<string>()
+app.post('/templates/preview/:id', (req, res) => {
+  const { id } = req.params
+  if (previewsRunning.has(id)) {
+    res.json({ message: 'preview already rendering', alreadyRunning: true })
+    return
+  }
+  previewsRunning.add(id)
+  res.json({ message: 'preview render started (~30s)' })
+  ;(async () => {
+    try {
+      const { renderTemplatePreview } = await import('./template-preview')
+      const key = await renderTemplatePreview(id)
+      console.log(`[preview] ✓ ${id} → ${key}`)
+    } catch (e) {
+      console.error(`[preview] ✗ ${id}:`, (e as Error).message)
+    } finally {
+      previewsRunning.delete(id)
+    }
+  })()
 })
 
 // ─── Trigger endpoint: fire pipeline for a specific model ─────────────────────

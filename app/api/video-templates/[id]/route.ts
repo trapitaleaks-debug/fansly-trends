@@ -6,7 +6,7 @@ type Params = { params: Promise<{ id: string }> }
 export async function PATCH(request: NextRequest, { params }: Params) {
   const { id } = await params
   const body = await request.json()
-  const allowed = ['name', 'status', 'manifest', 'content_tags', 'weight', 'preview_r2_key']
+  const allowed = ['name', 'status', 'manifest', 'content_tags', 'niches', 'weight', 'preview_r2_key']
   const update: Record<string, unknown> = {}
   for (const key of allowed) {
     if (key in body) update[key] = body[key]

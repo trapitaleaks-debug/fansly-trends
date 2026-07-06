@@ -8,7 +8,7 @@ import { getSignedUploadUrl, getSignedVideoUrl } from '@/lib/r2'
 export async function GET() {
   const { data, error } = await supabaseAdmin
     .from('video_templates')
-    .select('id, name, kind, status, manifest, source_r2_key, preview_r2_key, content_tags, weight, created_at')
+    .select('id, name, kind, status, manifest, source_r2_key, preview_r2_key, content_tags, niches, weight, created_at')
     .order('created_at', { ascending: false })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 

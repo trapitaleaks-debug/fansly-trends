@@ -139,7 +139,7 @@ async function refillModel(model: ModelRow, deficitCount: number): Promise<{ ref
 
     const options = model.placeholder_options ?? []
     const placeholder = options.length > 0 ? options[Math.floor(Math.random() * options.length)] : ''
-    const pick = await pickTemplate(idea.tags)
+    const pick = await pickTemplate(idea.tags, model.niches)
     const res = await insertVideoJobWithSlot(model.id, {
       post_id: post.id,
       model_id: model.id,

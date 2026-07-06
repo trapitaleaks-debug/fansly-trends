@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
 import { insertVideoJobWithSlot } from '@/lib/scheduling'
 import { clipUsageMap, pickFromUsage } from '@/lib/footage'
-import { resolveMemeText } from '@/lib/template-select'
+import { pickTemplate, resolveMemeText } from '@/lib/template-select'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ username: string }> }) {
   const { username } = await params
@@ -12,27 +12,37 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // Clamp requested duration between 3 and 15 seconds, default 5
   let durationSeconds = Math.min(15, Math.max(3, typeof duration === 'number' ? Math.round(duration) : 5))
 
-  // Explicit template (canary lever + manual testing). Meme templates override text/duration.
+  const [{ data: model }, { data: post }] = await Promise.all([
+    supabaseAdmin.from('trends_models').select('id, placeholder_options, niches').ilike('fansly_username', username).single(),
+    supabaseAdmin.from('trends_posts').select('text_template, trends_ideas(tags)').eq('id', post_id).single(),
+  ])
+
+  if (!model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
+  if (!post?.text_template) return NextResponse.json({ error: 'Post has no template' }, { status: 400 })
+
+  // Template selection: 'auto' = the same weighted two-stage pick used by fill-gaps;
+  // a uuid forces a specific template; null/absent = classic layout.
   let memeFixedLines: string[] | null = null
-  if (template_id) {
+  let resolvedTemplateId: string | null = null
+  if (template_id === 'auto') {
+    const rawIdea = (post as { trends_ideas?: unknown }).trends_ideas
+    const idea = (Array.isArray(rawIdea) ? rawIdea[0] : rawIdea) as { tags?: string[] } | undefined
+    const pick = await pickTemplate(idea?.tags ?? [], (model as { niches?: string[] }).niches ?? [])
+    resolvedTemplateId = pick.templateId
+    if (pick.durationSec) durationSeconds = Math.min(10, pick.durationSec)
+    memeFixedLines = pick.fixedLines
+  } else if (template_id) {
     const { data: tpl } = await supabaseAdmin
       .from('video_templates')
       .select('id, status, manifest')
       .eq('id', template_id)
       .maybeSingle()
     if (!tpl) return NextResponse.json({ error: 'Template not found' }, { status: 404 })
+    resolvedTemplateId = template_id
     const manifest = (tpl as { manifest: { duration_sec?: number; fixed_lines?: string[] } | null }).manifest
     if (manifest?.duration_sec) durationSeconds = Math.min(10, manifest.duration_sec)
     memeFixedLines = manifest?.fixed_lines ?? null
   }
-
-  const [{ data: model }, { data: post }] = await Promise.all([
-    supabaseAdmin.from('trends_models').select('id, placeholder_options').ilike('fansly_username', username).single(),
-    supabaseAdmin.from('trends_posts').select('text_template').eq('id', post_id).single(),
-  ])
-
-  if (!model) return NextResponse.json({ error: 'Model not found' }, { status: 404 })
-  if (!post?.text_template) return NextResponse.json({ error: 'Post has no template' }, { status: 400 })
 
   const options: string[] = model.placeholder_options ?? []
   const randomOption = options.length > 0 ? options[Math.floor(Math.random() * options.length)] : ''
@@ -93,7 +103,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     clip_id: clipId,
     clip_index: clipIndex,
     duration_seconds: durationSeconds,
-    template_id: template_id ?? null,
+    template_id: resolvedTemplateId,
     original_template: post.text_template,
     personalized_text: personalizedText,
     status: 'pending',

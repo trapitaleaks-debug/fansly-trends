@@ -90,6 +90,16 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null)
   const [pendingGenerate, setPendingGenerate] = useState<{ postId: string } | null>(null)
   const [selectedDuration, setSelectedDuration] = useState(5)
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('auto')
+  const [liveTemplates, setLiveTemplates] = useState<Array<{ id: string; name: string; kind: string }>>([])
+
+  useEffect(() => {
+    fetch('/api/video-templates')
+      .then(r => r.json())
+      .then(d => setLiveTemplates(((d.templates ?? []) as Array<{ id: string; name: string; kind: string; status: string }>)
+        .filter(t => t.status === 'live')))
+      .catch(() => {})
+  }, [])
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [watchJob, setWatchJob] = useState<{ id: string; url: string | null; text: string | null; loading: boolean } | null>(null)
@@ -183,12 +193,13 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
     }
   }
 
-  async function generateIdea(postId: string, duration: number) {
+  async function generateIdea(postId: string, duration: number, templateId: string = 'auto') {
     setGeneratingIds(prev => ({ ...prev, [postId]: 'pending' }))
     const res = await fetch(`/api/models/${username}/generate-idea`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ post_id: postId, duration }),
+      // template_id: 'auto' = weighted meme/style pick, '' = classic, uuid = forced
+      body: JSON.stringify({ post_id: postId, duration, template_id: templateId === '' ? null : templateId }),
     })
     if (res.ok) {
       setGeneratingIds(prev => { const n = { ...prev }; delete n[postId]; return n })
@@ -604,10 +615,22 @@ export default function ModelDetailPage({ params }: { params: Promise<{ username
                 className="w-full accent-violet-500"
               />
             </div>
+            <div>
+              <p className="text-xs text-[#666] mb-1">Look</p>
+              {/* Auto = the same weighted meme/style pick the pipeline uses; or force one. */}
+              <select value={selectedTemplate} onChange={e => setSelectedTemplate(e.target.value)}
+                className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-2 py-2 text-xs text-[#ccc]">
+                <option value="auto">🎲 Auto (weighted pick)</option>
+                <option value="">Classic caption</option>
+                {liveTemplates.map(t => (
+                  <option key={t.id} value={t.id}>{t.kind === 'caption' ? '✨' : '🟩'} {t.name}</option>
+                ))}
+              </select>
+            </div>
             <div className="flex gap-2">
               <button
                 onClick={() => {
-                  generateIdea(pendingGenerate.postId, selectedDuration)
+                  generateIdea(pendingGenerate.postId, selectedDuration, selectedTemplate)
                   setPendingGenerate(null)
                 }}
                 className="flex-1 text-xs font-medium bg-white text-black px-3 py-2 rounded-lg hover:bg-[#e5e5e5] transition-colors">
