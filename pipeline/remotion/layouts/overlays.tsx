@@ -66,7 +66,7 @@ function HeartsOverlay({ spec, accent }: { spec: TemplateOverlaySpec; accent: st
         const t = (frame + phase) % durationInFrames
         const y = 105 - (t * speed * 100) / height * 6
         const wobble = Math.sin((t / 30) * Math.PI * 2 + i) * 3
-        const opacity = interpolate(y, [105, 85, 20, -5], [0, 0.8, 0.7, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
+        const opacity = interpolate(y, [-5, 20, 85, 105], [0, 0.7, 0.8, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
         return (
           <div key={i} style={{ position: 'absolute', left: `${x0 + wobble}%`, top: `${y}%`, fontSize: size, opacity, filter: `blur(${random(seed + 'b') * 1.5}px) drop-shadow(0 0 10px ${accent})` }}>
             💗
