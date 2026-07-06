@@ -510,6 +510,82 @@ cron.schedule('0 10 * * *', async () => {
   }
 })
 
+// ─── Wave C: FYP analytics sweep + weekly repost pick ──────────────────────────
+
+let fypSweepRunning = false
+app.post('/fyp-analytics', (req, res) => {
+  if (fypSweepRunning) {
+    res.json({ message: 'fyp sweep already running', alreadyRunning: true })
+    return
+  }
+  fypSweepRunning = true
+  const handle = typeof req.query.handle === 'string' ? req.query.handle : undefined
+  res.json({ message: `fyp analytics sweep started${handle ? ` for @${handle}` : ''}` })
+  ;(async () => {
+    try {
+      const { runFypAnalyticsSweep } = await import('./fyp-analytics')
+      await runFypAnalyticsSweep(handle)
+    } catch (e) {
+      console.error('[fyp] sweep fatal:', (e as Error).message)
+      await sendTelegram(`🔴 <b>FanslyTrends</b> FYP sweep fatal: ${(e as Error).message.slice(0, 150)}`).catch(() => {})
+    } finally {
+      fypSweepRunning = false
+    }
+  })()
+})
+
+let repostPickRunning = false
+app.post('/reposts/pick', (req, res) => {
+  if (repostPickRunning) {
+    res.json({ message: 'repost pick already running', alreadyRunning: true })
+    return
+  }
+  repostPickRunning = true
+  const dry = req.query.dry === '1'
+  const handle = typeof req.query.handle === 'string' ? req.query.handle : undefined
+  res.json({ message: `repost pick started${dry ? ' (dry)' : ''}${handle ? ` for @${handle}` : ''}` })
+  ;(async () => {
+    try {
+      const { runWeeklyRepostPick } = await import('./reposter')
+      await runWeeklyRepostPick({ dry, onlyHandle: handle })
+    } catch (e) {
+      console.error('[repost] pick fatal:', (e as Error).message)
+      await sendTelegram(`🔴 <b>FanslyTrends</b> repost pick fatal: ${(e as Error).message.slice(0, 150)}`).catch(() => {})
+    } finally {
+      repostPickRunning = false
+    }
+  })()
+})
+
+// Daily FYP stats snapshot (09:00 UTC, before the 10:00 hygiene watchdog)
+cron.schedule('0 9 * * *', async () => {
+  if (fypSweepRunning) return
+  fypSweepRunning = true
+  try {
+    const { runFypAnalyticsSweep } = await import('./fyp-analytics')
+    await runFypAnalyticsSweep()
+  } catch (e) {
+    console.error('[cron:fyp] Fatal:', (e as Error).message)
+  } finally {
+    fypSweepRunning = false
+  }
+})
+
+// Weekly repost pick: Sunday 18:00 UTC → queues Mon–Fri reposts for the coming week
+cron.schedule('0 18 * * 0', async () => {
+  if (repostPickRunning) return
+  repostPickRunning = true
+  try {
+    const { runWeeklyRepostPick } = await import('./reposter')
+    await runWeeklyRepostPick()
+  } catch (e) {
+    console.error('[cron:repost] Fatal:', (e as Error).message)
+    await sendTelegram(`🚨 <b>FanslyTrends repost cron failed</b>\n<code>${(e as Error).message.slice(0, 300)}</code>`).catch(() => {})
+  } finally {
+    repostPickRunning = false
+  }
+})
+
 // ─── Template preview renders (Templates page "how does it look") ─────────────
 
 const previewsRunning = new Set<string>()
