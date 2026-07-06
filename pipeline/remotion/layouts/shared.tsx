@@ -99,9 +99,9 @@ export function WordStagger({
   const fadeDuration = Math.min(12, Math.max(4, staggerDelay))
 
   return (
-    // 9% side margins — long captions wrap to a new centered line instead of hugging the
+    // ~11% side margins — long captions wrap to a new centered line instead of hugging the
     // video borders (user feedback, round 3).
-    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '1.2em', padding: '0 97px' }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '1.2em', padding: '0 120px' }}>
       {words.map((word, wi) => {
         const wordFrame = startFrame + wi * staggerDelay
         const opacity = interpolate(frame, [wordFrame, wordFrame + fadeDuration], [0, 1], {
@@ -205,7 +205,7 @@ export function CaptionTrack({
             {stagger ? (
               <WordStagger words={words} startFrame={startFrame} windowFrames={windowFrames} brandConfig={brandConfig} textSpec={textSpec} emojiImages={emojiImages} />
             ) : (
-              <div style={{ opacity: fade, textAlign: 'center', padding: '0 97px' }}>
+              <div style={{ opacity: fade, textAlign: 'center', padding: '0 120px' }}>
                 <span style={buildWordStyle(brandConfig, textSpec)}>
                   <EmojiText text={line.text} emojiImages={emojiImages} />
                 </span>
