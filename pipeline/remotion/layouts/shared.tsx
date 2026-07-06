@@ -2,7 +2,7 @@
 // animation, and the sequential caption track (lines replace each other, |N% timing
 // already resolved to startSec server-side).
 import React from 'react'
-import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from 'remotion'
+import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion'
 import type { CaptionLine, TemplateTextSpec, VideoBrandConfig } from '../types'
 
 // Per-word styling from the model's brand pack. Effects compose:
@@ -23,11 +23,13 @@ export function buildWordStyle(
 
   const useDisplayFont = textSpec?.font_role === 'display' && textSpec.font_family
   const fallback = brandConfig?.font_fallback ? `"${brandConfig.font_fallback}", ` : ''
+  // "Noto Color Emoji" at the end: without it Linux Chrome renders emojis in an ancient
+  // monochrome fallback ("90s emojis" — user complaint). Loaded in the composition font effect.
   const fontFamily = useDisplayFont
-    ? `"${textSpec!.font_family}", "Arial Black", sans-serif`
+    ? `"${textSpec!.font_family}", "Arial Black", sans-serif, "Noto Color Emoji"`
     : brandConfig?.font_primary
-      ? `"${brandConfig.font_primary}", ${fallback}"Arial Black", sans-serif`
-      : '"Arial Black", sans-serif'
+      ? `"${brandConfig.font_primary}", ${fallback}"Arial Black", sans-serif, "Noto Color Emoji"`
+      : '"Arial Black", sans-serif, "Noto Color Emoji"'
   const fontWeight = useDisplayFont
     ? (textSpec?.font_weights?.[textSpec.font_weights.length - 1] ?? 400)
     : parseInt(brandConfig?.font_weight ?? '700', 10) || 700
@@ -81,7 +83,11 @@ export function WordStagger({
   textSpec?: TemplateTextSpec | null
 }) {
   const frame = useCurrentFrame()
+  const { fps } = useVideoConfig()
   const wordStyle = buildWordStyle(brandConfig, textSpec)
+  // Per-model entrance from the brand pack (was ignored pre-Wave-B): slide-up | pop-in |
+  // typewriter (→fade) | fade default. Visible motion, not just opacity.
+  const anim = brandConfig?.animation_primary ?? 'fade'
 
   // Stagger uses 70% of the caption window so all words finish well before it ends.
   // Single-word captions get no stagger (instant).
@@ -98,8 +104,19 @@ export function WordStagger({
           extrapolateLeft: 'clamp',
           extrapolateRight: 'clamp',
         })
+        let transform: string | undefined
+        if (anim === 'slide-up') {
+          const y = interpolate(frame, [wordFrame, wordFrame + fadeDuration + 4], [46, 0], {
+            extrapolateLeft: 'clamp',
+            extrapolateRight: 'clamp',
+          })
+          transform = `translateY(${y}px)`
+        } else if (anim === 'pop-in') {
+          const s = spring({ frame: frame - wordFrame, fps, config: { damping: 10, stiffness: 180, mass: 0.6 } })
+          transform = `scale(${Math.max(0.001, s)})`
+        }
         return (
-          <span key={wi} style={{ ...wordStyle, opacity }}>
+          <span key={wi} style={{ ...wordStyle, opacity, transform, transformOrigin: 'center bottom' }}>
             {word}
           </span>
         )

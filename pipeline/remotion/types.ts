@@ -16,6 +16,7 @@ export interface VideoBrandConfig {
   color_shadow?: string
   effects?: string[] // 'glow' | 'outline' | 'drop-shadow' | 'gradient-fill'
   stickers?: string[]
+  animation_primary?: string // 'slide-up' | 'pop-in' | 'typewriter' | 'fade'
   animation_duration_ms?: number
   filter_css?: string // very-slight per-model video color grade; derived from color_accent when absent
 }

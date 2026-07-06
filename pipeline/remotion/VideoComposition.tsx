@@ -88,10 +88,9 @@ export const VideoComposition: React.FC<VideoCompositionProps> = (props) => {
     if (template?.manifest.text?.font_role === 'display' && template.manifest.text.font_family) {
       families.push({ family: template.manifest.text.font_family, weights: template.manifest.text.font_weights?.filter(w => w !== 400) ?? [] })
     }
-    if (families.length === 0) {
-      continueRender(fontHandle)
-      return
-    }
+    // Always load the modern color emoji set — Linux Chrome's default emoji fallback is an
+    // ancient monochrome font (the "90s emoji" complaint).
+    families.push({ family: 'Noto Color Emoji', weights: [] })
 
     // The Google Fonts CSS2 API returns HTTP 400 for the WHOLE request when a family lacks a
     // requested weight (e.g. Pirata One is 400-only), so the old hardcoded ':wght@400;700'
