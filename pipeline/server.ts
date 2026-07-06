@@ -45,6 +45,7 @@ import { processVideoJob } from './process-job'
 import { postVideoJob } from './post-video-job'
 import { runSchedulerAudit } from './audit'
 import { runCapacityWatchdog } from './fancore-hygiene'
+import { pickTemplate, resolveMemeText } from '../lib/template-select'
 import { supabaseAdmin } from '../lib/supabase'
 import { insertVideoJobWithSlot } from '../lib/scheduling'
 import { clipUsageMap, pickFromUsage } from '../lib/footage'
@@ -374,7 +375,13 @@ app.post('/jobs/fill-gaps', (_req, res) => {
 
           const options: string[] = (model as unknown as { placeholder_options: string[] }).placeholder_options ?? []
           const placeholder = options.length > 0 ? options[Math.floor(Math.random() * options.length)] : ''
-          const personalizedText = post.text_template.replace(/\[placeholder\]/gi, placeholder)
+
+          // Wave B: weighted template pick (classic caption stays in rotation). Meme templates
+          // carry their own fixed text lines; caption templates reuse the trending post's text.
+          const pick = await pickTemplate(idea.tags)
+          const personalizedText = pick.fixedLines
+            ? resolveMemeText(pick.fixedLines, placeholder)
+            : post.text_template.replace(/\[placeholder\]/gi, placeholder)
 
           // insertVideoJobWithSlot assigns a collision-free slot (4/day cap) and retries if it
           // loses the slot race; skipped_duplicate = this model already has an active job for the post.
@@ -383,7 +390,8 @@ app.post('/jobs/fill-gaps', (_req, res) => {
             model_id: model.id,
             clip_id: clipId,
             clip_index: clipIndex,
-            duration_seconds: 5,
+            duration_seconds: pick.durationSec ?? 5,
+            template_id: pick.templateId,
             original_template: post.text_template,
             personalized_text: personalizedText,
             status: 'pending',
@@ -675,8 +683,11 @@ cron.schedule('*/30 * * * * *', async () => {
   }
 })
 
-// Every minute: auto-approve all done video_jobs (skip manual review step)
+// Every minute: auto-approve all done video_jobs (skip manual review step).
+// AUTO_APPROVE=0 = the Wave B approval gate: renders wait in 'done' for manual approval
+// on the model pages until the user is happy with the new templates.
 cron.schedule('* * * * *', async () => {
+  if (process.env.AUTO_APPROVE === '0') return
   try {
     await supabaseAdmin
       .from('video_jobs')

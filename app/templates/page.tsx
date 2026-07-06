@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import GenerateModal from './GenerateModal'
+import VideoTemplates from './VideoTemplates'
 import { useNiches } from '@/components/NichesProvider'
 
 interface Template {
@@ -14,6 +15,8 @@ export default function TemplatesPage() {
   const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState<Template | null>(null)
+  const [view, setView] = useState<'text' | 'video'>('text')
+  const [contentTags, setContentTags] = useState<string[]>([])
 
   useEffect(() => {
     fetch('/api/templates')
@@ -22,6 +25,10 @@ export default function TemplatesPage() {
         setTemplates(templates ?? [])
         setLoading(false)
       })
+    fetch('/api/settings/content-tags')
+      .then(r => r.json())
+      .then(d => setContentTags(d.tags ?? d.content_tags ?? []))
+      .catch(() => {})
   }, [])
 
   return (
@@ -38,10 +45,19 @@ export default function TemplatesPage() {
       </nav>
 
       <div className="px-6 py-5 border-b border-[#1a1a1a] flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-white">Text Templates</h2>
-          <p className="text-xs text-[#555] mt-0.5">
-            {loading ? '...' : `${templates.length} saved · click Generate to personalize per model`}
+        <div className="flex items-center gap-4">
+          <div className="flex gap-1 bg-[#111] border border-[#1e1e1e] rounded-xl p-1">
+            {([['text', 'Text Templates'], ['video', 'Video Templates']] as const).map(([key, label]) => (
+              <button key={key} onClick={() => setView(key)}
+                className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${view === key ? 'bg-white text-black font-medium' : 'text-[#666] hover:text-[#999]'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-[#555]">
+            {view === 'text'
+              ? (loading ? '...' : `${templates.length} saved · click Generate to personalize per model`)
+              : 'CapCut-style render layouts — applied automatically by content tag'}
           </p>
         </div>
         <Link
@@ -52,13 +68,15 @@ export default function TemplatesPage() {
         </Link>
       </div>
 
-      {loading && (
+      {view === 'video' && <VideoTemplates contentTags={contentTags} />}
+
+      {view === 'text' && loading && (
         <div className="flex justify-center py-20">
           <div className="w-5 h-5 border-2 border-[#333] border-t-white rounded-full animate-spin" />
         </div>
       )}
 
-      {!loading && templates.length === 0 && (
+      {view === 'text' && !loading && templates.length === 0 && (
         <div className="text-center py-24 text-[#444]">
           <p className="text-base mb-1">No templates yet</p>
           <p className="text-sm">Open a post in the Feed and type in the Text template field</p>
@@ -68,15 +86,17 @@ export default function TemplatesPage() {
         </div>
       )}
 
-      <div className="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {templates.map(t => (
-          <TemplateCard
-            key={t.id}
-            template={t}
-            onGenerate={() => setGenerating(t)}
-          />
-        ))}
-      </div>
+      {view === 'text' && (
+        <div className="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {templates.map(t => (
+            <TemplateCard
+              key={t.id}
+              template={t}
+              onGenerate={() => setGenerating(t)}
+            />
+          ))}
+        </div>
+      )}
 
       {generating && (
         <GenerateModal

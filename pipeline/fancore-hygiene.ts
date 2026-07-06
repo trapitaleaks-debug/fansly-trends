@@ -92,7 +92,7 @@ export async function cleanFailedRecords(
   const max = opts.max ?? 5000
   return withBulkPostsPage(handle, async page => {
     const openFailedTab = async () => {
-      await page.locator('button').filter({ hasText: /^Failed \(\d+\)$/ }).first().click({ timeout: 10_000 })
+      await page.locator('button').filter({ hasText: /^Failed \(\d+\)$/ }).first().click({ timeout: 10_000 }).catch(() => {})
       await page.waitForTimeout(1_500)
     }
     const rawBefore = await readCountsFromPage(page)
@@ -122,8 +122,10 @@ export async function cleanFailedRecords(
         continue
       }
       const delResp = page.waitForResponse(r => r.request().method() === 'DELETE' && /bulk-posts/.test(r.url()), { timeout: 8_000 }).catch(() => null)
-      await trash.click()
-      const resp = await delResp
+      // Click can time out when the last card is mid-removal/animating — treat as a soft miss,
+      // not a crash (an uncaught throw here used to mark fully-cleaned models as FAILED).
+      const clickOk = await trash.click({ timeout: 8_000 }).then(() => true).catch(() => false)
+      const resp = clickOk ? await delResp : null
       if (resp && resp.status() >= 200 && resp.status() < 300) {
         deleted++
         stuck = 0
@@ -145,6 +147,84 @@ export async function cleanFailedRecords(
     const rawAfter = await readCountsFromPage(page)
     const after: TabCounts = { all: rawAfter.all ?? 0, scheduled: rawAfter.scheduled ?? 0, sent: rawAfter.sent ?? 0, failed: rawAfter.failed ?? 0 }
     return { deleted, before, after }
+  })
+}
+
+// ─── Scheduled-stack dedup ────────────────────────────────────────────────────────────────────
+// Capacity-era blind retries created N copies of posts stacked on the same second (e.g. ×20 at
+// one slot). Keeps exactly ONE post per timestamp and deletes the surplus — pending scheduled
+// posts only (nothing is on Fansly yet). User-approved 06.07.2026. Never deletes the last copy.
+
+export type DedupResult = { slotsDeduped: number; deleted: number }
+
+export async function dedupScheduledStacks(handle: string): Promise<DedupResult> {
+  return withBulkPostsPage(handle, async page => {
+    const openScheduled = async () => {
+      await page.locator('button').filter({ hasText: /^Scheduled \(\d+\)$/ }).first().click({ timeout: 10_000 })
+      await page.waitForTimeout(1_500)
+      // lazy-load everything (scheduled counts are small post-cleanup)
+      let prevLen = -1
+      for (let s = 0; s < 30; s++) {
+        const len = await page.evaluate(() => {
+          window.scrollTo(0, document.body.scrollHeight)
+          document.querySelectorAll('main, [class*="overflow-y"], [class*="scroll"]').forEach(el => el.scrollTo(0, el.scrollHeight))
+          return document.body.innerHTML.length
+        })
+        if (len === prevLen) break
+        prevLen = len
+        await page.waitForTimeout(500)
+      }
+    }
+    const readStacks = (): Promise<Record<string, number>> => page.evaluate(() => {
+      const datePattern = /\d{1,2}\/\d{1,2}\/\d{4},\s*\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)/
+      const walker = document.createTreeWalker(document.body, 4)
+      const counts: Record<string, number> = {}
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const m = ((node as Text).textContent ?? '').match(datePattern)
+        if (m) counts[m[0]] = (counts[m[0]] ?? 0) + 1
+      }
+      return counts
+    })
+    // Click the trash button INSIDE the first card showing this timestamp (native confirm()
+    // is auto-accepted by the page dialog handler in withBulkPostsPage).
+    const clickTrashFor = (ts: string): Promise<boolean> => page.evaluate((t: string) => {
+      const walker = document.createTreeWalker(document.body, 4)
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        if (!((node as Text).textContent ?? '').includes(t)) continue
+        let el: HTMLElement | null = (node as Text).parentElement
+        for (let d = 0; d < 8 && el; d++, el = el.parentElement) {
+          const btn = el.querySelector<HTMLElement>('button.trigger-icon-btn.danger')
+          if (btn && el.getBoundingClientRect().height < 400) { btn.click(); return true }
+        }
+      }
+      return false
+    }, ts)
+
+    await openScheduled()
+    const result: DedupResult = { slotsDeduped: 0, deleted: 0 }
+    for (let round = 0; round < 60; round++) {
+      const stacks = Object.entries(await readStacks()).filter(([, c]) => c > 1)
+      if (stacks.length === 0) break
+      const [ts, count] = stacks[0]
+      // delete count-1 copies of this timestamp, re-counting each time (never the last copy)
+      let remaining = count
+      while (remaining > 1) {
+        const delResp = page.waitForResponse(r => r.request().method() === 'DELETE' && /bulk-posts/.test(r.url()), { timeout: 8_000 }).catch(() => null)
+        const clicked = await clickTrashFor(ts)
+        if (!clicked) break
+        const resp = await delResp
+        if (!resp || resp.status() < 200 || resp.status() >= 300) break
+        result.deleted++
+        await page.waitForTimeout(400)
+        remaining = (await readStacks())[ts] ?? 0
+      }
+      result.slotsDeduped++
+      if (round % 10 === 9) { await page.reload({ waitUntil: 'domcontentloaded' }); await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {}); await openScheduled() }
+    }
+    console.log(`[hygiene] @${handle} dedup: ${result.deleted} surplus copies removed across ${result.slotsDeduped} slots`)
+    return result
   })
 }
 

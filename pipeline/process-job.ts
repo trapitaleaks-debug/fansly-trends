@@ -65,7 +65,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
   const { data: job, error: jobErr } = await supabaseAdmin
     .from('video_jobs')
     .select(`
-      id, post_id, model_id, clip_id, personalized_text, status, duration_seconds,
+      id, post_id, model_id, clip_id, personalized_text, status, duration_seconds, template_id,
       model_clips ( r2_key ),
       trends_models ( fansly_username, brand_html_r2_key, video_brand_config ),
       trends_posts ( video_r2_key, fansly_post_id )
@@ -173,8 +173,63 @@ export async function processVideoJob(jobId: string): Promise<void> {
       } catch { fullDuration = 15 }
     }
     const clipDuration = trimEnd != null ? trimEnd - trimStart : fullDuration - trimStart
-    // Cap output to the user-requested duration; never exceed actual clip length
-    const duration = Math.min(requestedDuration, clipDuration)
+
+    // Wave B template (template_id NULL → classic caption path, byte-identical to pre-template).
+    // A missing/non-live template row degrades to classic instead of failing the render.
+    type TemplateRow = { manifest: import('./remotion/types').TemplateManifest | null; status: string }
+    let templateRow: TemplateRow | null = null
+    const templateId = (job as unknown as { template_id: string | null }).template_id
+    if (templateId) {
+      const { data: t } = await supabaseAdmin
+        .from('video_templates')
+        .select('manifest, status')
+        .eq('id', templateId)
+        .maybeSingle()
+      if (t && (t as TemplateRow).status === 'live' && (t as TemplateRow).manifest) {
+        templateRow = t as TemplateRow
+      } else {
+        console.log(`  Template ${templateId} missing/not-live — rendering classic caption layout`)
+      }
+    }
+    const manifest = templateRow?.manifest ?? null
+
+    // Template duration wins (the clip loops in-layout when shorter); classic path keeps
+    // "never exceed actual clip length".
+    const duration = manifest?.duration_sec
+      ? Math.min(manifest.duration_sec, 10)
+      : Math.min(requestedDuration, clipDuration)
+
+    // Download template assets into tmpDir (served by the render file server) with
+    // collision-safe names (raw.mp4/scaled.mp4/audio.aac live in the same dir).
+    const templateAssetPaths: Record<string, string> = {}
+    let stickerPath: string | undefined
+    if (manifest) {
+      const assetKeys = [
+        manifest.slot?.frame_asset,
+        manifest.slot?.fg_asset,
+        ...(manifest.overlays ?? []).map(o => o.src),
+      ].filter(Boolean) as string[]
+      let n = 0
+      for (const key of assetKeys) {
+        const local = path.join(tmpDir, `tpl_${n++}${path.extname(key) || '.png'}`)
+        await downloadFromR2(key, local)
+        templateAssetPaths[key] = local
+      }
+      // Sticker slot → deterministic caption-mood pick from the shared pack (no LLM).
+      if ((manifest.overlays ?? []).some(o => o.type === 'sticker') && process.env.STICKERS_LIVE === '1') {
+        try {
+          const { pickStickerKey } = await import('../lib/sticker-map')
+          const stickerKey = await pickStickerKey(overlayText, jobId)
+          if (stickerKey) {
+            stickerPath = path.join(tmpDir, `tpl_sticker${path.extname(stickerKey) || '.png'}`)
+            await downloadFromR2(stickerKey, stickerPath)
+          }
+        } catch (e) {
+          console.log(`  Sticker pick failed (rendering without): ${(e as Error).message.slice(0, 80)}`)
+          stickerPath = undefined
+        }
+      }
+    }
 
     // 3. Try to extract audio from trending post's source video
     let hasAudio = false
@@ -222,14 +277,16 @@ export async function processVideoJob(jobId: string): Promise<void> {
       return { text: l.text, startSec }
     })
 
-    console.log(`  Rendering with Remotion: ${captionLines.length} caption line(s), font="${brandConfig?.font_primary ?? 'default'}"`)
+    console.log(`  Rendering with Remotion: ${captionLines.length} caption line(s), font="${brandConfig?.font_primary ?? 'default'}"${manifest ? `, template layout=${manifest.layout}` : ''}`)
     await renderWithRemotion({
       videoPath: scaledPath,
       audioPath: hasAudio ? audioPath : undefined,
       captionLines,
       brandConfig: brandConfig as import('./remotion/types').VideoBrandConfig | null,
       durationSec: duration,
+      clipDurationSec: Math.min(clipDuration, duration),
       outputPath: finalPath,
+      template: manifest ? { manifest, assetPaths: templateAssetPaths, stickerPath } : undefined,
     })
 
     // 7. Thumbnail — first frame, no seek (avoids ENOENT on clips shorter than 1s)

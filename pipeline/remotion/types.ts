@@ -26,6 +26,7 @@ export type TemplateLayout = 'caption' | 'meme-slot' | 'overlay-elements'
 
 export interface TemplateTextSpec {
   zone?: 'bottom' | 'top'
+  align?: 'center' | 'left'
   font_role?: 'brand' | 'display'
   font_family?: string // Google Fonts family (display role)
   font_weights?: number[] // weights to request — prevents the 400-only @import bug

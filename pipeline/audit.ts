@@ -18,6 +18,7 @@ import { supabaseAdmin } from '../lib/supabase'
 import { sendTelegram } from '../lib/telegram'
 import { getTakenSlots, getNextSlot, insertVideoJobWithSlot, FIXED_SLOTS, MIN_BUFFER_MS } from '../lib/scheduling'
 import { clipUsageMap, pickFromUsage } from '../lib/footage'
+import { pickTemplate, resolveMemeText } from '../lib/template-select'
 import {
   resolveMemberCreds, loginFanCore, createContext, getActiveModel,
   FANCORE_URL, SESSION_R2_KEY,
@@ -138,14 +139,18 @@ async function refillModel(model: ModelRow, deficitCount: number): Promise<{ ref
 
     const options = model.placeholder_options ?? []
     const placeholder = options.length > 0 ? options[Math.floor(Math.random() * options.length)] : ''
+    const pick = await pickTemplate(idea.tags)
     const res = await insertVideoJobWithSlot(model.id, {
       post_id: post.id,
       model_id: model.id,
       clip_id: clipId,
       clip_index: clipIndex,
-      duration_seconds: 5,
+      duration_seconds: pick.durationSec ?? 5,
+      template_id: pick.templateId,
       original_template: post.text_template,
-      personalized_text: post.text_template.replace(/\[placeholder\]/gi, placeholder),
+      personalized_text: pick.fixedLines
+        ? resolveMemeText(pick.fixedLines, placeholder)
+        : post.text_template.replace(/\[placeholder\]/gi, placeholder),
       status: 'pending',
     })
     if (res.status === 'created') { result.refilled++; usedPosts.add(post.id) }

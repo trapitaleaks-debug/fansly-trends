@@ -19,3 +19,10 @@ export async function uploadToR2(key: string, body: Buffer, contentType: string)
 export async function getSignedVideoUrl(key: string, expiresIn = 3600) {
   return getSignedUrl(r2, new GetObjectCommand({ Bucket: BUCKET, Key: key }), { expiresIn })
 }
+
+// Presigned PUT for direct browser→R2 uploads (Vercel serverless caps request bodies at
+// 4.5MB, so CapCut template exports must bypass the server). Requires R2 bucket CORS to
+// allow PUT from the app origin.
+export async function getSignedUploadUrl(key: string, contentType: string, expiresIn = 900) {
+  return getSignedUrl(r2, new PutObjectCommand({ Bucket: BUCKET, Key: key, ContentType: contentType }), { expiresIn })
+}

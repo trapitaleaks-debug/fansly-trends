@@ -5,7 +5,7 @@ import net from 'net'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import type { CaptionLine, VideoBrandConfig } from './remotion/types'
+import type { CaptionLine, TemplateManifest, VideoBrandConfig } from './remotion/types'
 
 export type { CaptionLine, VideoBrandConfig }
 
@@ -16,6 +16,15 @@ export interface RemotionRenderOptions {
   brandConfig: VideoBrandConfig | null
   durationSec: number
   outputPath: string
+  // Actual footage-clip duration (before looping to fill the template duration).
+  clipDurationSec?: number
+  // Wave B template: assets already downloaded into the SAME tmpDir as videoPath
+  // (the local file server serves one directory). Keyed by the manifest's R2 key.
+  template?: {
+    manifest: TemplateManifest
+    assetPaths: Record<string, string> // manifest R2 key → local file path in tmpDir
+    stickerPath?: string
+  }
 }
 
 // Whole-render wall-clock cap. Good renders of these short clips finish in well under ~90s, so a
@@ -63,6 +72,12 @@ function serveDirectory(dir: string, port: number): http.Server {
     '.aac': 'audio/aac',
     '.m4a': 'audio/mp4',
     '.webm': 'video/webm',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
   }
   const server = http.createServer((req, res) => {
     const filePath = path.join(dir, decodeURIComponent(req.url ?? '').replace(/^\//, ''))
@@ -110,6 +125,16 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
     captionLines: opts.captionLines,
     brandConfig: opts.brandConfig,
     durationSec: opts.durationSec,
+    clipDurationSec: opts.clipDurationSec,
+    template: opts.template
+      ? {
+          manifest: opts.template.manifest,
+          assetUrls: Object.fromEntries(
+            Object.entries(opts.template.assetPaths).map(([r2Key, localPath]) => [r2Key, toHttp(localPath)])
+          ),
+          stickerUrl: opts.template.stickerPath ? toHttp(opts.template.stickerPath) : undefined,
+        }
+      : undefined,
   }
 
   console.log(`[remotion] Serving media via http://127.0.0.1:${port}`)
