@@ -11,6 +11,10 @@ interface Job {
   output_r2_key: string | null
   thumbnail_r2_key: string | null
   error_message: string | null
+  post_fail_count: number | null
+  failure_kind: string | null
+  needs_review: boolean | null
+  diagnosis: string | null
   created_at: string
   updated_at: string
   trends_models: { fansly_username: string } | null
@@ -38,7 +42,7 @@ const STATUS_DOT: Record<JobStatus, string> = {
   error: 'bg-red-400',
 }
 
-type FilterTab = 'all' | 'queue' | 'done' | 'error'
+type FilterTab = 'all' | 'queue' | 'done' | 'error' | 'flagged'
 
 export default function GeneratedPage() {
   const [jobs, setJobs] = useState<Job[]>([])
@@ -98,6 +102,17 @@ export default function GeneratedPage() {
     setRetrying(null)
   }
 
+  async function retryPost(job: Job) {
+    setRetrying(job.id)
+    await fetch(`/api/video-jobs/${job.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'retry_post' }),
+    })
+    await fetchJobs(true)
+    setRetrying(null)
+  }
+
   async function deleteJob(id: string) {
     setDeletingId(id)
     await fetch(`/api/video-jobs/${id}`, { method: 'DELETE' })
@@ -108,10 +123,12 @@ export default function GeneratedPage() {
   const queue = jobs.filter(j => j.status === 'pending' || j.status === 'processing')
   const done = jobs.filter(j => j.status === 'done')
   const errors = jobs.filter(j => j.status === 'error')
+  const flagged = jobs.filter(j => j.needs_review)
 
   const filtered = tab === 'queue' ? queue
     : tab === 'done' ? done
     : tab === 'error' ? errors
+    : tab === 'flagged' ? flagged
     : jobs
 
   function timeAgo(iso: string) {
@@ -162,6 +179,7 @@ export default function GeneratedPage() {
             ['queue', `Queue (${queue.length})`],
             ['done', `Done (${done.length})`],
             ['error', `Errors (${errors.length})`],
+            ['flagged', `🚩 Flagged (${flagged.length})`],
           ] as const).map(([key, label]) => (
             <button key={key} onClick={() => setTab(key)}
               className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${tab === key ? 'bg-white text-black font-medium' : 'text-[#666] hover:text-[#999]'}`}>
@@ -207,6 +225,19 @@ export default function GeneratedPage() {
                     {job.status === 'error' && job.error_message && (
                       <p className="text-[10px] text-red-400 leading-snug">{job.error_message}</p>
                     )}
+                    {job.needs_review && (
+                      <div className="mt-1 space-y-0.5">
+                        <span className="inline-block text-[9px] font-semibold uppercase tracking-wide bg-red-500/15 text-red-400 border border-red-500/30 rounded px-1.5 py-0.5">
+                          🚩 {job.failure_kind ?? 'needs review'}
+                        </span>
+                        {job.diagnosis && (
+                          <p className="text-[10px] text-[#997] leading-snug whitespace-pre-line">{job.diagnosis}</p>
+                        )}
+                        {job.post_fail_count != null && job.post_fail_count > 0 && (
+                          <p className="text-[10px] text-[#555]">{job.post_fail_count} posting attempts</p>
+                        )}
+                      </div>
+                    )}
                     <p className="text-[10px] text-[#333]">{timeAgo(job.created_at)}</p>
                   </div>
 
@@ -224,7 +255,12 @@ export default function GeneratedPage() {
                       </button>
                     )}
 
-                    {job.status === 'error' && (
+                    {job.needs_review && job.output_r2_key ? (
+                      <button onClick={() => retryPost(job)} disabled={retrying === job.id}
+                        className="text-[10px] font-medium px-2 py-1 rounded-lg border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 disabled:opacity-40 transition-colors">
+                        {retrying === job.id ? '...' : 'Re-try post'}
+                      </button>
+                    ) : job.status === 'error' && (
                       <button onClick={() => retryJob(job)} disabled={retrying === job.id}
                         className="text-[10px] px-2 py-1 rounded-lg border border-[#2a2a2a] text-[#666] hover:text-white hover:border-[#3a3a3a] disabled:opacity-40 transition-colors">
                         {retrying === job.id ? '...' : 'Retry'}

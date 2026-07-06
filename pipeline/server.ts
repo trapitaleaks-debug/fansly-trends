@@ -44,6 +44,7 @@ import { generateSlot } from './generate'
 import { processVideoJob } from './process-job'
 import { postVideoJob } from './post-video-job'
 import { runSchedulerAudit } from './audit'
+import { runCapacityWatchdog } from './fancore-hygiene'
 import { supabaseAdmin } from '../lib/supabase'
 import { insertVideoJobWithSlot } from '../lib/scheduling'
 import { clipUsageMap, pickFromUsage } from '../lib/footage'
@@ -461,6 +462,43 @@ cron.schedule('30 12,19 * * *', async () => {
     await sendTelegram(`🚨 <b>FanslyTrends audit cron failed</b>\n<code>${(e as Error).message.slice(0, 300)}</code>`).catch(() => {})
   } finally {
     auditRunning = false
+  }
+})
+
+// ─── FanCore capacity hygiene: keep every model under the ~1000-record window ─
+
+let hygieneRunning = false
+app.post('/hygiene', (req, res) => {
+  if (hygieneRunning) {
+    res.json({ message: 'hygiene already running — press ignored', alreadyRunning: true })
+    return
+  }
+  hygieneRunning = true
+  const dry = req.query.dry === '1'
+  res.json({ message: `capacity watchdog started (${dry ? 'snapshot only' : 'auto-clean ON'}) — summary lands on Telegram` })
+  ;(async () => {
+    try {
+      await runCapacityWatchdog({ autoClean: !dry })
+    } catch (e) {
+      console.error('[hygiene] Fatal:', (e as Error).message)
+      await sendTelegram(`🚨 <b>FanslyTrends hygiene failed</b>\n<code>${(e as Error).message.slice(0, 300)}</code>`).catch(() => {})
+    } finally {
+      hygieneRunning = false
+    }
+  })()
+})
+
+// Daily 10:00 UTC — before the 12:30 audit, so the audit sees clean capacity.
+cron.schedule('0 10 * * *', async () => {
+  if (hygieneRunning) return
+  hygieneRunning = true
+  try {
+    await runCapacityWatchdog({ autoClean: true })
+  } catch (e) {
+    console.error('[cron:hygiene] Fatal:', (e as Error).message)
+    await sendTelegram(`🚨 <b>FanslyTrends hygiene cron failed</b>\n<code>${(e as Error).message.slice(0, 300)}</code>`).catch(() => {})
+  } finally {
+    hygieneRunning = false
   }
 })
 

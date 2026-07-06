@@ -24,6 +24,18 @@ export async function GET(_request: NextRequest, { params }: Params) {
 export async function PATCH(request: NextRequest, { params }: Params) {
   const { jobId } = await params
   const body = await request.json()
+
+  // Flagged-tab "Re-try" — full reset of a flagged/failed post so the pool re-posts it fresh.
+  if (body.action === 'retry_post') {
+    const { error } = await supabaseAdmin.from('video_jobs').update({
+      status: 'approved', post_fail_count: 0, scheduled_for: null, started_at: null,
+      error_message: null, failure_kind: null, needs_review: false, diagnosis: null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', jobId)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ ok: true })
+  }
+
   const allowed = ['personalized_text', 'clip_id', 'status']
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
   for (const key of allowed) {

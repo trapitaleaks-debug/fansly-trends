@@ -10,7 +10,7 @@ import os from 'os'
 import { execSync } from 'child_process'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { r2, uploadToR2 } from '../lib/r2'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
 import { sendTelegram } from '../lib/telegram'
 import { getNextSlot, SLOT_INDEX } from '../lib/scheduling'
@@ -39,6 +39,33 @@ export async function resolveMemberCreds(handle: string): Promise<MemberCreds | 
 }
 
 const ffmpegBin = () => (process.platform === 'darwin' ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg')
+
+// Kill-switch for the failure-remediation layer (classify → remediate → retry → flag).
+const REMEDIATION_ON = process.env.FAILURE_REMEDIATION !== '0'
+
+export type FailureKind =
+  | 'capacity_full' | 'session_expired' | 'media_upload_timeout' | 'subscription_past_due'
+  | 'model_not_found' | 'verify_timeout' | 'unknown'
+
+// Classify a posting failure. capacity_full vs verify_timeout is disambiguated via the latest
+// fancore_capacity snapshot (populated by the daily watchdog + every cleanup): a model pinned at
+// the ~1000-record window silently swallows submits — FanCore returns 200 and nothing lands.
+// Dynamic import avoids a circular dependency (fancore-hygiene imports our browser helpers).
+async function classifyPostFailure(msg: string, modelNumber: number | null): Promise<FailureKind> {
+  if (/past due/i.test(msg)) return 'subscription_past_due'
+  if (/active model is|expected @|refusing wrong-model|member re-verify|Sidebar: @/i.test(msg)) return 'model_not_found'
+  if (/media never attached/i.test(msg)) return 'media_upload_timeout'
+  if (/not on FanCore|absent from Scheduled/i.test(msg)) {
+    try {
+      const { latestCapacity, CAPACITY_WINDOW } = await import('./fancore-hygiene')
+      const cap = await latestCapacity(modelNumber)
+      if (cap && cap.all >= CAPACITY_WINDOW) return 'capacity_full'
+    } catch { /* no snapshot yet → assume verify path */ }
+    return 'verify_timeout'
+  }
+  if (/signin|login|FANCORE_EMAIL/i.test(msg)) return 'session_expired'
+  return 'unknown'
+}
 
 // Authoritative active-model check via FanCore's /api/me. Members are server-scoped to exactly one
 // model and may have no clickable sidebar entry — trust the API over the sidebar.
@@ -179,17 +206,19 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
   // Load job + model
   const { data: job, error: jobErr } = await supabaseAdmin
     .from('video_jobs')
-    .select('id, model_id, output_r2_key, scheduled_for, post_fail_count, trends_models(fansly_username)')
+    .select('id, model_id, output_r2_key, scheduled_for, post_fail_count, diagnosis, trends_models(fansly_username, model_number)')
     .eq('id', jobId)
     .single()
 
   if (jobErr || !job) throw new Error(`postVideoJob: job not found — ${jobErr?.message}`)
   if (!job.output_r2_key) throw new Error(`postVideoJob: no output_r2_key for job ${jobId}`)
 
-  const modelMeta = (job as unknown as { trends_models: { fansly_username: string } | null }).trends_models
+  const modelMeta = (job as unknown as { trends_models: { fansly_username: string; model_number: number | null } | null }).trends_models
   if (!modelMeta) throw new Error(`postVideoJob: no model data for job ${jobId}`)
 
   const handle = modelMeta.fansly_username
+  const modelNumber = modelMeta.model_number
+  const jobDiagnosis = (job as unknown as { diagnosis: string | null }).diagnosis
 
   // Per-model member account → isolated session (parallel-safe). Falls back to the main agency
   // account + shared session key when the model has no active member / no member password set.
@@ -251,6 +280,27 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     return
   }
   console.log(`[post] Scheduling job ${jobId} for @${handle} at ${scheduledFor.toUTCString()} (${existingSlot ? 'pre-set' : 'computed'})`)
+
+  // Pre-submit capacity gate: a model at FanCore's record window silently swallows submits —
+  // don't burn attempts. Park the job as capacity_full; the hygiene queue cleans the model's
+  // Failed records and auto-revives every job it parked.
+  if (REMEDIATION_ON) {
+    try {
+      const { latestCapacity, requestCapacityClean } = await import('./fancore-hygiene')
+      const cap = await latestCapacity(modelNumber)
+      if (cap && cap.all >= 950 && cap.failed > 0) {
+        console.log(`[post] ${jobId} capacity gate: @${handle} at ${cap.all}/1000 — parking, auto-clean queued`)
+        await supabaseAdmin.from('video_jobs').update({
+          status: 'error', failure_kind: 'capacity_full', started_at: null,
+          diagnosis: `pre-submit capacity gate: model at ${cap.all}/1000 — auto-clean queued`,
+        }).eq('id', jobId)
+        requestCapacityClean(handle, job.model_id)
+        return
+      }
+    } catch (gateErr) {
+      console.log(`[post] capacity gate check failed (continuing): ${(gateErr as Error).message.slice(0, 80)}`)
+    }
+  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc_post_'))
 
@@ -458,10 +508,14 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     // server-side upload TIMES OUT on big files → "0 media / Upload timed out" (the failures).
     // Cap bitrate → typically 2-7MB, which uploads in ~2s. Fall back to the original if ffmpeg fails.
     const videoPath = path.join(tmpDir, 'upload.mp4')
+    // After a media_upload_timeout failure the remediation marks the job 'recompress-low' —
+    // halve the bitrate so FanCore's server-side upload has an easier time on the retry.
+    const lowBitrate = jobDiagnosis?.includes('recompress-low') ?? false
+    const rateArgs = lowBitrate ? '-crf 30 -maxrate 2000k -bufsize 4000k' : '-crf 28 -maxrate 4000k -bufsize 8000k'
     try {
       execSync(
-        `${ffmpegBin()} -y -i "${rawVideoPath}" -c:v libx264 -preset veryfast -crf 28 ` +
-        `-maxrate 4000k -bufsize 8000k -c:a aac -b:a 128k -movflags +faststart "${videoPath}"`,
+        `${ffmpegBin()} -y -i "${rawVideoPath}" -c:v libx264 -preset veryfast ${rateArgs} ` +
+        `-c:a aac -b:a 128k -movflags +faststart "${videoPath}"`,
         { stdio: 'pipe', timeout: 120_000 },
       )
       const rawMB = (fs.statSync(rawVideoPath).size / 1048576).toFixed(1)
@@ -764,15 +818,76 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     const msg = (e as Error).message
     console.error(`[post] ✗ Failed ${jobId}:`, msg)
     const { data: cur } = await supabaseAdmin.from('video_jobs').select('post_fail_count').eq('id', jobId).single()
-    const failCount = ((cur as unknown as { post_fail_count: number } | null)?.post_fail_count ?? 0) + 1
+    let failCount = ((cur as unknown as { post_fail_count: number } | null)?.post_fail_count ?? 0) + 1
+
+    // Classify → remediate → retry/flag. Each known failure kind gets a targeted fix applied
+    // BEFORE the next retry so retries aren't blind repeats of the same failure.
+    const kind: FailureKind = REMEDIATION_ON ? await classifyPostFailure(msg, modelNumber) : 'unknown'
+    let status: string = failCount >= 3 ? 'error' : 'done'
+    let needsReview = false
+    let diagnosis: string | null = null
+
+    if (REMEDIATION_ON) {
+      switch (kind) {
+        case 'capacity_full': {
+          // Park regardless of attempt count — retries are pointless until the clean finishes.
+          // The hygiene queue cleans the model's Failed records and auto-revives parked jobs.
+          status = 'error'
+          diagnosis = 'capacity_full: FanCore record window full — auto-clean queued, job will be revived'
+          try {
+            const { requestCapacityClean } = await import('./fancore-hygiene')
+            requestCapacityClean(handle, job.model_id)
+          } catch { /* queue unavailable — daily watchdog will catch it */ }
+          break
+        }
+        case 'session_expired': {
+          // Purge the cached session so the next attempt logs in fresh.
+          await r2.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: sessionKey })).catch(() => {})
+          diagnosis = 'session_expired: cached session purged — fresh login on next attempt'
+          break
+        }
+        case 'media_upload_timeout': {
+          diagnosis = 'media_upload_timeout: recompress-low — next attempt uploads at half bitrate'
+          break
+        }
+        case 'subscription_past_due': {
+          status = 'error'
+          failCount = Math.max(failCount, 3)
+          needsReview = true
+          diagnosis = 'subscription_past_due: FanCore subscription needs renewal — no retry until paid'
+          break
+        }
+        case 'verify_timeout': {
+          // The existing pre-flight already-landed check covers the async-landing case on the
+          // next attempt (it scans the Scheduled filter before re-submitting). Just label it.
+          diagnosis = 'verify_timeout: post may land late — pre-flight will detect it on retry'
+          break
+        }
+        default: break
+      }
+    }
+
+    if (failCount >= 3 && status === 'error' && kind !== 'capacity_full' && !needsReview) needsReview = true
+    if (needsReview) {
+      diagnosis = `${diagnosis ?? kind}\ndebug: debug/post-${jobId}-*.png (R2)\nlast error: ${msg.slice(0, 250)}`
+    }
+
     await supabaseAdmin.from('video_jobs').update({
-      status: failCount >= 3 ? 'error' : 'done',
+      status,
       post_fail_count: failCount,
       error_message: `post failed [${failCount}x]: ${msg.slice(0, 400)}`,
+      failure_kind: kind,
+      needs_review: needsReview,
+      ...(diagnosis ? { diagnosis } : {}),
     }).eq('id', jobId)
-    if (failCount >= 3) {
+
+    if (needsReview) {
       await sendTelegram(
-        `❌ <b>FanslyTrends</b>: job ${jobId} @${handle} failed posting 3× — slot freed, audit will refill.\nLast error: ${msg.slice(0, 150)}`
+        `🚩 <b>FanslyTrends</b>: @${handle} job ${jobId} flagged (<b>${kind}</b>) — see the Flagged tab or ask Claude to investigate.\n${msg.slice(0, 150)}`
+      ).catch(() => {})
+    } else if (failCount >= 3 && status === 'error') {
+      await sendTelegram(
+        `❌ <b>FanslyTrends</b>: job ${jobId} @${handle} failed posting 3× (${kind}) — slot freed, audit will refill.\nLast error: ${msg.slice(0, 150)}`
       ).catch(() => {})
     }
     throw e
