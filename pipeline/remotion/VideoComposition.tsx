@@ -29,6 +29,60 @@ export const calculateMetadata: CalculateMetadataFunction<VideoCompositionProps>
   height: 1920,
 })
 
+// Per-word styling from the model's brand pack. Effects compose:
+//   outline    → 4-way offset shadow in color_shadow (the classic legibility outline)
+//   glow       → soft accent-colored halo layers
+//   drop-shadow→ soft dark drop
+//   gradient-fill → text gradient (color_text → color_accent) via background-clip; shadows
+//                   switch to filter:drop-shadow (textShadow looks muddy under clipped text)
+// No effects array in the config → classic outline + drop-shadow (pre-Wave-B look).
+export function buildWordStyle(brandConfig: VideoBrandConfig | null, sizeOverride?: number, effectsOverride?: string[]): React.CSSProperties {
+  const textColor = brandConfig?.color_text || '#ffffff'
+  const shadowColor = brandConfig?.color_shadow || '#000000'
+  const accent = brandConfig?.color_accent || textColor
+  const effects = effectsOverride ?? brandConfig?.effects ?? ['outline', 'drop-shadow']
+
+  const fallback = brandConfig?.font_fallback ? `"${brandConfig.font_fallback}", ` : ''
+  const fontFamily = brandConfig?.font_primary
+    ? `"${brandConfig.font_primary}", ${fallback}"Arial Black", sans-serif`
+    : '"Arial Black", sans-serif'
+  const fontWeight = parseInt(brandConfig?.font_weight ?? '700', 10) || 700
+  const fontStyle = brandConfig?.font_style === 'italic' ? 'italic' : 'normal'
+
+  const gradientFill = effects.includes('gradient-fill')
+  const shadows: string[] = []
+  if (effects.includes('outline')) {
+    shadows.push(`-3px -3px 0 ${shadowColor}`, `3px -3px 0 ${shadowColor}`, `-3px 3px 0 ${shadowColor}`, `3px 3px 0 ${shadowColor}`)
+  }
+  if (effects.includes('glow')) {
+    shadows.push(`0 0 24px ${accent}`, `0 0 56px ${accent}`)
+  }
+  if (effects.includes('drop-shadow')) {
+    shadows.push(`0 4px 12px rgba(0,0,0,0.8)`)
+  }
+
+  const style: React.CSSProperties = {
+    display: 'inline-block',
+    fontSize: sizeOverride ?? 72,
+    fontFamily,
+    fontWeight,
+    fontStyle,
+    color: textColor,
+    lineHeight: 1.15,
+  }
+  if (gradientFill) {
+    style.backgroundImage = `linear-gradient(180deg, ${textColor} 30%, ${accent} 100%)`
+    style.WebkitBackgroundClip = 'text'
+    style.backgroundClip = 'text'
+    style.color = 'transparent'
+    style.filter = `drop-shadow(0 3px 3px ${shadowColor}) drop-shadow(0 4px 12px rgba(0,0,0,0.7))` +
+      (effects.includes('glow') ? ` drop-shadow(0 0 18px ${accent})` : '')
+  } else if (shadows.length > 0) {
+    style.textShadow = shadows.join(', ')
+  }
+  return style
+}
+
 function WordStagger({
   words,
   startFrame,
@@ -41,12 +95,7 @@ function WordStagger({
   brandConfig: VideoBrandConfig | null
 }) {
   const frame = useCurrentFrame()
-  const textColor = brandConfig?.color_text || '#ffffff'
-  const shadowColor = brandConfig?.color_shadow || '#000000'
-
-  const fontFamily = brandConfig?.font_primary
-    ? `"${brandConfig.font_primary}", "Arial Black", sans-serif`
-    : '"Arial Black", sans-serif'
+  const wordStyle = buildWordStyle(brandConfig)
 
   // Stagger uses 70% of the caption window so all words finish well before it ends.
   // Single-word captions get no stagger (instant).
@@ -73,30 +122,34 @@ function WordStagger({
           extrapolateRight: 'clamp',
         })
         return (
-          <span
-            key={wi}
-            style={{
-              display: 'inline-block',
-              opacity,
-              fontSize: 72,
-              fontFamily,
-              fontWeight: 700,
-              color: textColor,
-              textShadow: [
-                `-3px -3px 0 ${shadowColor}`,
-                `3px -3px 0 ${shadowColor}`,
-                `-3px 3px 0 ${shadowColor}`,
-                `3px 3px 0 ${shadowColor}`,
-                `0 4px 12px rgba(0,0,0,0.8)`,
-              ].join(', '),
-              lineHeight: 1.15,
-            }}
-          >
+          <span key={wi} style={{ ...wordStyle, opacity }}>
             {word}
           </span>
         )
       })}
     </div>
+  )
+}
+
+// Very-slight per-model color grade (user: "barely noticeable"). filter_css wins; otherwise a
+// subtle derived grade. Applied to the video layer only — captions/overlays stay unfiltered.
+export function brandVideoFilter(brandConfig: VideoBrandConfig | null): string | undefined {
+  if (brandConfig?.filter_css) return brandConfig.filter_css
+  if (brandConfig?.color_accent) return 'saturate(1.06) contrast(1.03)'
+  return undefined
+}
+
+// ~5%-opacity accent tint, top and bottom — cheap "graded, not raw" feel.
+export function AccentTint({ brandConfig }: { brandConfig: VideoBrandConfig | null }) {
+  const accent = brandConfig?.color_accent
+  if (!accent) return null
+  return (
+    <AbsoluteFill
+      style={{
+        background: `linear-gradient(180deg, ${accent}0D 0%, transparent 35%, transparent 70%, ${accent}0A 100%)`,
+        pointerEvents: 'none',
+      }}
+    />
   )
 }
 
@@ -112,15 +165,28 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   const [fontHandle] = useState(() => delayRender('Loading font'))
 
   useEffect(() => {
-    const fontName = brandConfig?.font_primary
-    if (!fontName) {
+    const families = [brandConfig?.font_primary, brandConfig?.font_fallback].filter(Boolean) as string[]
+    if (families.length === 0) {
       continueRender(fontHandle)
       return
     }
 
-    const style = document.createElement('style')
-    style.textContent = `@import url('https://fonts.googleapis.com/css2?family=${fontName.replace(/ /g, '+')}:wght@400;700&display=swap');`
-    document.head.appendChild(style)
+    // The Google Fonts CSS2 API returns HTTP 400 for the WHOLE request when a family lacks a
+    // requested weight (e.g. Pirata One is 400-only), so the old hardcoded ':wght@400;700'
+    // silently killed the font AND ate the full 4s delayRender stall. Load in two independent
+    // <style> imports per family: a bare one (always valid) + a best-effort weighted one.
+    const weight = brandConfig?.font_weight && brandConfig.font_weight !== '400' ? brandConfig.font_weight : null
+    for (const family of families) {
+      const plus = family.replace(/ /g, '+')
+      const bare = document.createElement('style')
+      bare.textContent = `@import url('https://fonts.googleapis.com/css2?family=${plus}&display=swap');`
+      document.head.appendChild(bare)
+      if (weight) {
+        const weighted = document.createElement('style')
+        weighted.textContent = `@import url('https://fonts.googleapis.com/css2?family=${plus}:wght@${weight}&display=swap');`
+        document.head.appendChild(weighted)
+      }
+    }
 
     const timer = setTimeout(() => continueRender(fontHandle), 4000)
     document.fonts.ready.then(() => {
@@ -129,7 +195,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
     })
 
     return () => clearTimeout(timer)
-  }, [fontHandle, brandConfig?.font_primary])
+  }, [fontHandle, brandConfig?.font_primary, brandConfig?.font_fallback, brandConfig?.font_weight])
 
   const totalFrames = Math.max(1, Math.round(durationSec * fps))
 
@@ -138,8 +204,11 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
       {/* Background video — OffthreadVideo extracts frames via ffmpeg (frame-accurate, no Chrome seek artifacts) */}
       <OffthreadVideo
         src={videoSrc}
-        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        style={{ width: '100%', height: '100%', objectFit: 'cover', filter: brandVideoFilter(brandConfig) }}
       />
+
+      {/* Very-slight per-brand color grade tint (below captions) */}
+      <AccentTint brandConfig={brandConfig} />
 
       {/* Trending post audio */}
       {audioSrc && <Audio src={audioSrc} />}
