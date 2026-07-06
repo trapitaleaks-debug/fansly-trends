@@ -15,6 +15,7 @@ export function OverlayElementsLayout({
   durationSec,
   clipDurationSec,
   template,
+  emojiImages,
 }: {
   videoSrc: string
   audioSrc?: string
@@ -23,6 +24,7 @@ export function OverlayElementsLayout({
   durationSec: number
   clipDurationSec?: number
   template: TemplateInputProps
+  emojiImages?: Record<string, string>
 }) {
   const { fps } = useVideoConfig()
   const m = template.manifest
@@ -51,6 +53,7 @@ export function OverlayElementsLayout({
         brandConfig={brandConfig}
         textSpec={m.text}
         stagger
+        emojiImages={emojiImages}
       />
 
       {audioSrc && <Audio src={audioSrc} />}

@@ -75,12 +75,14 @@ export function WordStagger({
   windowFrames,
   brandConfig,
   textSpec,
+  emojiImages,
 }: {
   words: string[]
   startFrame: number
   windowFrames: number
   brandConfig: VideoBrandConfig | null
   textSpec?: TemplateTextSpec | null
+  emojiImages?: Record<string, string>
 }) {
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
@@ -97,7 +99,9 @@ export function WordStagger({
   const fadeDuration = Math.min(12, Math.max(4, staggerDelay))
 
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '1.2em', padding: '0 40px' }}>
+    // 9% side margins — long captions wrap to a new centered line instead of hugging the
+    // video borders (user feedback, round 3).
+    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '1.2em', padding: '0 97px' }}>
       {words.map((word, wi) => {
         const wordFrame = startFrame + wi * staggerDelay
         const opacity = interpolate(frame, [wordFrame, wordFrame + fadeDuration], [0, 1], {
@@ -117,12 +121,43 @@ export function WordStagger({
         }
         return (
           <span key={wi} style={{ ...wordStyle, opacity, transform, transformOrigin: 'center bottom' }}>
-            {word}
+            <EmojiText text={word} emojiImages={emojiImages} />
           </span>
         )
       })}
     </div>
   )
+}
+
+// Render text with Apple emoji images swapped in for emoji characters. The emoji→dataURI map
+// is computed server-side (lib/apple-emoji.ts) and passed via inputProps; here we only do a
+// longest-match split against the map's keys (browser-safe, no node deps).
+export function EmojiText({ text, emojiImages }: { text: string; emojiImages?: Record<string, string> }) {
+  if (!emojiImages || Object.keys(emojiImages).length === 0) return <>{text}</>
+  const keys = Object.keys(emojiImages).sort((a, b) => b.length - a.length)
+  const parts: React.ReactNode[] = []
+  let rest = text
+  let k = 0
+  while (rest.length > 0) {
+    let idx = -1
+    let hit = ''
+    for (const key of keys) {
+      const i = rest.indexOf(key)
+      if (i !== -1 && (idx === -1 || i < idx)) { idx = i; hit = key }
+    }
+    if (idx === -1) { parts.push(rest); break }
+    if (idx > 0) parts.push(rest.slice(0, idx))
+    parts.push(
+      <img
+        key={k++}
+        src={emojiImages[hit]}
+        alt={hit}
+        style={{ height: '1.02em', width: 'auto', verticalAlign: '-0.14em', display: 'inline-block' }}
+      />
+    )
+    rest = rest.slice(idx + hit.length)
+  }
+  return <>{parts}</>
 }
 
 // Sequential caption track: line i shows from its startSec until the next line's start.
@@ -133,12 +168,14 @@ export function CaptionTrack({
   brandConfig,
   textSpec,
   stagger = true,
+  emojiImages,
 }: {
   captionLines: CaptionLine[]
   durationSec: number
   brandConfig: VideoBrandConfig | null
   textSpec?: TemplateTextSpec | null
   stagger?: boolean
+  emojiImages?: Record<string, string>
 }) {
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
@@ -166,10 +203,12 @@ export function CaptionTrack({
             }}
           >
             {stagger ? (
-              <WordStagger words={words} startFrame={startFrame} windowFrames={windowFrames} brandConfig={brandConfig} textSpec={textSpec} />
+              <WordStagger words={words} startFrame={startFrame} windowFrames={windowFrames} brandConfig={brandConfig} textSpec={textSpec} emojiImages={emojiImages} />
             ) : (
-              <div style={{ opacity: fade, textAlign: 'center', padding: '0 40px' }}>
-                <span style={buildWordStyle(brandConfig, textSpec)}>{line.text}</span>
+              <div style={{ opacity: fade, textAlign: 'center', padding: '0 97px' }}>
+                <span style={buildWordStyle(brandConfig, textSpec)}>
+                  <EmojiText text={line.text} emojiImages={emojiImages} />
+                </span>
               </div>
             )}
           </AbsoluteFill>

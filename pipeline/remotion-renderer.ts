@@ -25,6 +25,8 @@ export interface RemotionRenderOptions {
     assetPaths: Record<string, string> // manifest R2 key → local file path in tmpDir
     stickerPath?: string
   }
+  // Apple emoji artwork for emojis appearing in the captions (char → PNG data URI).
+  emojiImages?: Record<string, string>
 }
 
 // Whole-render wall-clock cap. Good renders of these short clips finish in well under ~90s, so a
@@ -126,6 +128,7 @@ export async function renderWithRemotion(opts: RemotionRenderOptions): Promise<v
     brandConfig: opts.brandConfig,
     durationSec: opts.durationSec,
     clipDurationSec: opts.clipDurationSec,
+    emojiImages: opts.emojiImages,
     template: opts.template
       ? {
           manifest: opts.template.manifest,

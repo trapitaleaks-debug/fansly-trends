@@ -32,6 +32,7 @@
     "@types/express": "^5.0.6",
     "@types/node-cron": "^3.0.11",
     "dotenv": "^17.4.2",
+    "emoji-datasource-apple": "^16.0.0",
     "express": "^5.2.1",
     "hyperframes": "^0.6.84",
     "next": "16.2.7",

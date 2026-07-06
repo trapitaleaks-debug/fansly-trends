@@ -30,6 +30,10 @@ export default function VideoTemplates({ contentTags }: { contentTags: string[] 
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [editing, setEditing] = useState<VideoTemplate | null>(null)
+  const [editTags, setEditTags] = useState<string[]>([])
+  const [editLines, setEditLines] = useState('')
+  const [saving, setSaving] = useState(false)
 
   const fetchTemplates = useCallback(async () => {
     setLoading(true)
@@ -77,6 +81,32 @@ export default function VideoTemplates({ contentTags }: { contentTags: string[] 
     await fetch(`/api/video-templates/${id}`, { method: 'DELETE' })
     setTemplates(prev => prev.filter(t => t.id !== id))
     setDeletingId(null)
+  }
+
+  function openEdit(t: VideoTemplate) {
+    setEditing(t)
+    setEditTags(t.content_tags)
+    const m = (t.manifest ?? {}) as { fixed_lines?: string[] }
+    setEditLines((m.fixed_lines ?? []).join('\n'))
+  }
+
+  // Tags gate which videos may use the template; fixed_lines is the template's own on-screen
+  // text ([placeholder] is swapped per model) — user-authored only, never invented.
+  async function saveEdit() {
+    if (!editing) return
+    setSaving(true)
+    const manifest = { ...((editing.manifest ?? {}) as Record<string, unknown>) }
+    if ('fixed_lines' in manifest || editLines.trim().length > 0 || editing.kind !== 'caption') {
+      manifest.fixed_lines = editLines.split('\n').map(s => s.trim()).filter(Boolean)
+    }
+    await fetch(`/api/video-templates/${editing.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content_tags: editTags, manifest }),
+    })
+    setSaving(false)
+    setEditing(null)
+    await fetchTemplates()
   }
 
   return (
@@ -148,6 +178,44 @@ export default function VideoTemplates({ contentTags }: { contentTags: string[] 
         </div>
       )}
 
+      {editing && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#111] border border-[#2a2a2a] rounded-2xl p-6 w-full max-w-sm space-y-3">
+            <h3 className="text-sm font-semibold">Edit — {editing.name}</h3>
+            <div>
+              <label className="text-xs text-[#666] block mb-1">Content tags (empty = any video)</label>
+              <div className="flex flex-wrap gap-1.5">
+                {contentTags.map(tag => (
+                  <button key={tag} type="button"
+                    onClick={() => setEditTags(prev => prev.includes(tag) ? prev.filter(x => x !== tag) : [...prev, tag])}
+                    className={`text-[11px] px-2 py-1 rounded border transition-colors ${editTags.includes(tag) ? 'bg-violet-500/20 border-violet-500/50 text-violet-300' : 'border-[#2a2a2a] text-[#555] hover:text-white'}`}>
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-[#666] block mb-1">
+                Template text — one line per row, [placeholder] gets swapped per model. Empty = no text.
+              </label>
+              <textarea value={editLines} onChange={e => setEditLines(e.target.value)} rows={4}
+                placeholder={'e.g. POV: when [placeholder] happens'}
+                className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2.5 text-xs text-white placeholder-[#444] focus:outline-none focus:border-[#444] font-mono" />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button onClick={saveEdit} disabled={saving}
+                className="flex-1 bg-white text-black text-xs font-medium py-2.5 rounded-lg hover:bg-[#e5e5e5] disabled:opacity-50 transition-colors">
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button onClick={() => setEditing(null)}
+                className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] text-[#888] text-xs py-2.5 rounded-lg hover:text-white transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex justify-center py-16">
           <div className="w-5 h-5 border-2 border-[#333] border-t-white rounded-full animate-spin" />
@@ -177,10 +245,16 @@ export default function VideoTemplates({ contentTags }: { contentTags: string[] 
                 </div>
                 <div className="flex items-center justify-between">
                   <p className="text-[10px] text-[#555]">{t.kind} · {t.content_tags.length ? t.content_tags.join(', ') : 'any video'}</p>
-                  <button onClick={() => deleteTemplate(t.id)} disabled={deletingId === t.id}
-                    className="text-[10px] text-[#333] hover:text-red-400 disabled:opacity-40 transition-colors">
-                    {deletingId === t.id ? '…' : '×'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => openEdit(t)}
+                      className="text-[10px] text-[#555] hover:text-white transition-colors">
+                      Edit
+                    </button>
+                    <button onClick={() => deleteTemplate(t.id)} disabled={deletingId === t.id}
+                      className="text-[10px] text-[#333] hover:text-red-400 disabled:opacity-40 transition-colors">
+                      {deletingId === t.id ? '…' : '×'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

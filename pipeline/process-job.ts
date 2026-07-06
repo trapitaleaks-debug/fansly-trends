@@ -277,7 +277,18 @@ export async function processVideoJob(jobId: string): Promise<void> {
       return { text: l.text, startSec }
     })
 
-    console.log(`  Rendering with Remotion: ${captionLines.length} caption line(s), font="${brandConfig?.font_primary ?? 'default'}"${manifest ? `, template layout=${manifest.layout}` : ''}`)
+    // Apple emoji artwork for any emojis in the captions (user requirement: iOS look, and the
+    // Linux render host has no Apple emoji font).
+    let emojiImages: Record<string, string> | undefined
+    try {
+      const { appleEmojiDataUris } = await import('../lib/apple-emoji')
+      const map = appleEmojiDataUris(overlayText)
+      if (Object.keys(map).length > 0) emojiImages = map
+    } catch (e) {
+      console.log(`  Apple emoji map failed (font fallback): ${(e as Error).message.slice(0, 80)}`)
+    }
+
+    console.log(`  Rendering with Remotion: ${captionLines.length} caption line(s), font="${brandConfig?.font_primary ?? 'default'}"${manifest ? `, template layout=${manifest.layout}` : ''}${emojiImages ? `, ${Object.keys(emojiImages).length} apple emoji(s)` : ''}`)
     await renderWithRemotion({
       videoPath: scaledPath,
       audioPath: hasAudio ? audioPath : undefined,
@@ -287,6 +298,7 @@ export async function processVideoJob(jobId: string): Promise<void> {
       clipDurationSec: Math.min(clipDuration, duration),
       outputPath: finalPath,
       template: manifest ? { manifest, assetPaths: templateAssetPaths, stickerPath } : undefined,
+      emojiImages,
     })
 
     // 7. Thumbnail — first frame, no seek (avoids ENOENT on clips shorter than 1s)

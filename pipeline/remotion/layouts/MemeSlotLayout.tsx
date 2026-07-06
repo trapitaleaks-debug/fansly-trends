@@ -5,7 +5,7 @@
 import React from 'react'
 import { AbsoluteFill, Audio, Img, Loop, OffthreadVideo, useCurrentFrame, useVideoConfig } from 'remotion'
 import type { CaptionLine, TemplateInputProps, VideoBrandConfig } from '../types'
-import { buildWordStyle } from './shared'
+import { buildWordStyle, EmojiText } from './shared'
 import { OverlayStack } from './overlays'
 
 export function MemeSlotLayout({
@@ -16,6 +16,7 @@ export function MemeSlotLayout({
   durationSec,
   clipDurationSec,
   template,
+  emojiImages,
 }: {
   videoSrc: string
   audioSrc?: string
@@ -24,6 +25,7 @@ export function MemeSlotLayout({
   durationSec: number
   clipDurationSec?: number
   template: TemplateInputProps
+  emojiImages?: Record<string, string>
 }) {
   const { fps } = useVideoConfig()
   const m = template.manifest
@@ -73,7 +75,7 @@ export function MemeSlotLayout({
 
       {/* Meme text — ALL lines visible simultaneously as a static block (list-meme style),
           quick fade-in. Unlike captions, meme lines never replace each other. */}
-      <MemeTextBlock captionLines={captionLines} brandConfig={brandConfig} textSpec={{ zone: 'top', ...m.text }} />
+      <MemeTextBlock captionLines={captionLines} brandConfig={brandConfig} textSpec={{ zone: 'top', ...m.text }} emojiImages={emojiImages} />
 
       {m.overlays && <OverlayStack overlays={m.overlays} assetUrls={template.assetUrls} stickerUrl={template.stickerUrl} accent={accent} />}
 
@@ -86,10 +88,12 @@ function MemeTextBlock({
   captionLines,
   brandConfig,
   textSpec,
+  emojiImages,
 }: {
   captionLines: CaptionLine[]
   brandConfig: VideoBrandConfig | null
   textSpec: NonNullable<TemplateInputProps['manifest']['text']>
+  emojiImages?: Record<string, string>
 }) {
   const frame = useCurrentFrame()
   const style = buildWordStyle(brandConfig, textSpec)
@@ -112,7 +116,7 @@ function MemeTextBlock({
     >
       {captionLines.map((line, i) => (
         <div key={i} style={{ ...style, whiteSpace: 'pre-line', textAlign: textSpec.align === 'left' ? 'left' : 'center' }}>
-          {line.text}
+          <EmojiText text={line.text} emojiImages={emojiImages} />
         </div>
       ))}
     </AbsoluteFill>

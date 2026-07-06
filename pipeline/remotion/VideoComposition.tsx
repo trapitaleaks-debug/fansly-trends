@@ -24,6 +24,7 @@ export interface VideoCompositionProps {
   durationSec: number
   clipDurationSec?: number
   template?: TemplateInputProps
+  emojiImages?: Record<string, string> // emoji char → Apple-emoji PNG data URI
 }
 
 export const calculateMetadata: CalculateMetadataFunction<VideoCompositionProps> = ({ props }) => ({
@@ -41,6 +42,7 @@ function CaptionLayout({
   brandConfig,
   durationSec,
   template,
+  emojiImages,
 }: VideoCompositionProps) {
   const accent = brandConfig?.color_accent || '#f472b6'
   return (
@@ -64,6 +66,7 @@ function CaptionLayout({
         brandConfig={brandConfig}
         textSpec={template?.manifest.text}
         stagger
+        emojiImages={emojiImages}
       />
 
       {/* Optional decorative overlays on caption templates (hearts, sparkles, glitch, sticker) */}
