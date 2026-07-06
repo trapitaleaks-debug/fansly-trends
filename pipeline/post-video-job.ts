@@ -216,7 +216,28 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
       .eq('id', jobId)
       .in('status', ['approved', 'done'])
       .select('id')
-    if (!error) { claimedPost = data as { id: string }[] | null; break }
+    if (!error) {
+      claimedPost = data as { id: string }[] | null
+      if (!claimedPost || claimedPost.length === 0) break
+      // The slot unique index is PARTIAL (excludes 'posted'/'error') — a job that flipped to
+      // 'posted' between our getNextSlot snapshot and this claim no longer guards its slot, so
+      // the claim can silently land on an already-posted slot (observed ~1% in the Jul 5 batch).
+      // Re-check against posted rows and re-slot if we collided.
+      const { count } = await supabaseAdmin.from('video_jobs')
+        .select('id', { count: 'exact', head: true })
+        .eq('model_id', job.model_id)
+        .eq('scheduled_for', scheduledFor.toISOString())
+        .eq('status', 'posted')
+        .neq('id', jobId)
+      if ((count ?? 0) === 0) break
+      console.log(`[post] ${jobId} slot ${scheduledFor.toISOString()} already posted by another job — re-slotting`)
+      scheduledFor = await getNextSlot(job.model_id)
+      const { error: reslotErr } = await supabaseAdmin.from('video_jobs')
+        .update({ scheduled_for: scheduledFor.toISOString() })
+        .eq('id', jobId)
+      if (reslotErr) { console.error(`[post] ${jobId} re-slot error:`, reslotErr.message); return }
+      break
+    }
     const detail = `${error.message} ${(error as { details?: string }).details ?? ''}`
     if (error.code === '23505' && detail.includes(SLOT_INDEX)) {
       scheduledFor = await getNextSlot(job.model_id)
