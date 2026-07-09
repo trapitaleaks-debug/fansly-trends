@@ -30,9 +30,10 @@ export async function GET() {
     `)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   // Sort by model_number ascending (nulls last) — consistent with the models list
+  type TrendsModelJoin = { fansly_username: string; model_number: number | null }
   const sorted = (data ?? []).sort((a, b) => {
-    const na = (a.trends_models as { model_number: number | null }).model_number ?? 9999
-    const nb = (b.trends_models as { model_number: number | null }).model_number ?? 9999
+    const na = (a.trends_models as unknown as TrendsModelJoin).model_number ?? 9999
+    const nb = (b.trends_models as unknown as TrendsModelJoin).model_number ?? 9999
     return na - nb
   })
   return NextResponse.json({ snapshots: sorted })

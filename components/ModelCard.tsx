@@ -31,7 +31,8 @@ function ScheduleBadge({
   expanded: boolean
   onToggle: (e: React.MouseEvent) => void
 }) {
-  const { count, error } = snap
+  const count = snap.scheduled_count
+  const error = snap.error
 
   let color = ''
   let label = ''
