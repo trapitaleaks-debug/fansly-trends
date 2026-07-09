@@ -1,8 +1,8 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import ModelCard, { type ModelSummary } from '@/components/ModelCard'
+import ModelCard, { type ModelSummary, type ScheduleSnapshot } from '@/components/ModelCard'
 
 export default function ModelsPage() {
   const [models, setModels] = useState<ModelSummary[]>([])
@@ -12,10 +12,18 @@ export default function ModelsPage() {
   const [showForm, setShowForm] = useState(false)
   const [generatingAll, setGeneratingAll] = useState(false)
   const [generateAllResult, setGenerateAllResult] = useState<{ triggered: number; failed: number } | null>(null)
+  const [scheduleData, setScheduleData] = useState<Record<string, ScheduleSnapshot>>({})
+  const [scheduleLoading, setScheduleLoading] = useState(false)
+  const [sortByUrgency, setSortByUrgency] = useState(false)
+  const [scheduleLastUpdated, setScheduleLastUpdated] = useState<Date | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const router = useRouter()
 
   useEffect(() => {
     fetchModels()
+    // Load any existing snapshots on mount (from a previous sweep)
+    fetchSnapshots()
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
   async function fetchModels() {
@@ -25,6 +33,20 @@ export default function ModelsPage() {
     setModels(data.models ?? [])
     setLoading(false)
   }
+
+  const fetchSnapshots = useCallback(async (): Promise<ScheduleSnapshot[]> => {
+    try {
+      const res = await fetch('/api/schedule-check')
+      const data = await res.json()
+      const snaps: ScheduleSnapshot[] = data.snapshots ?? []
+      const map: Record<string, ScheduleSnapshot> = {}
+      for (const s of snaps) map[s.model_id] = s
+      setScheduleData(map)
+      return snaps
+    } catch {
+      return []
+    }
+  }, [])
 
   async function handleGenerateAll() {
     setGeneratingAll(true)
@@ -42,6 +64,29 @@ export default function ModelsPage() {
     } finally {
       setGeneratingAll(false)
     }
+  }
+
+  async function handleRefreshSchedules() {
+    if (scheduleLoading) return
+    setScheduleLoading(true)
+    // Fire the scrape
+    await fetch('/api/schedule-check', { method: 'POST' }).catch(() => {})
+    const startedAt = Date.now()
+    // Poll every 5s until all models (that we have) have a scraped_at within the last 5 minutes
+    if (pollRef.current) clearInterval(pollRef.current)
+    pollRef.current = setInterval(async () => {
+      const snaps = await fetchSnapshots()
+      const freshCutoff = Date.now() - 5 * 60 * 1000
+      // Stop polling after 8 min or when all models have a fresh snapshot
+      const modelCount = models.length
+      const freshCount = snaps.filter(s => new Date(s.scraped_at).getTime() > startedAt).length
+      const timedOut = Date.now() - startedAt > 8 * 60 * 1000
+      if (timedOut || (modelCount > 0 && freshCount >= modelCount)) {
+        clearInterval(pollRef.current!)
+        setScheduleLoading(false)
+        setScheduleLastUpdated(new Date())
+      }
+    }, 5_000)
   }
 
   async function handleCreate(e: React.FormEvent) {
@@ -62,6 +107,16 @@ export default function ModelsPage() {
     }
   }
 
+  const hasScheduleData = Object.keys(scheduleData).length > 0
+
+  const sortedModels = sortByUrgency && hasScheduleData
+    ? [...models].sort((a, b) => {
+        const ca = scheduleData[a.id]?.scheduled_count ?? 99
+        const cb = scheduleData[b.id]?.scheduled_count ?? 99
+        return ca - cb
+      })
+    : models
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <nav className="bg-[#0f0f0f] border-b border-[#1e1e1e] px-4 py-3 flex items-center justify-between sticky top-0 z-10">
@@ -81,7 +136,7 @@ export default function ModelsPage() {
             <h2 className="text-lg font-semibold">Model Profiles</h2>
             <p className="text-xs text-[#555] mt-0.5">{models.length} models</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             {generateAllResult && (
               <span className="text-xs text-[#666]">
                 {generateAllResult.failed === -1
@@ -99,6 +154,25 @@ export default function ModelsPage() {
               {generatingAll ? 'Generating...' : 'Generate All'}
             </button>
             <button
+              onClick={handleRefreshSchedules}
+              disabled={scheduleLoading}
+              className="bg-[#1a1a1a] border border-[#2a2a2a] hover:bg-[#222] disabled:opacity-50 text-[#aaa] hover:text-white text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+            >
+              {scheduleLoading ? 'Checking...' : '📅 Check Schedules'}
+            </button>
+            {hasScheduleData && (
+              <button
+                onClick={() => setSortByUrgency(v => !v)}
+                className={`text-xs px-2 py-1.5 rounded border transition-colors ${
+                  sortByUrgency
+                    ? 'border-amber-500/40 text-amber-400 bg-amber-500/10'
+                    : 'border-[#2a2a2a] text-[#555] hover:text-[#888]'
+                }`}
+              >
+                {sortByUrgency ? '↑ Urgency' : 'Sort by urgency'}
+              </button>
+            )}
+            <button
               onClick={() => setShowForm(true)}
               className="bg-white text-black text-xs font-medium px-4 py-2 rounded-lg hover:bg-[#e5e5e5] transition-colors"
             >
@@ -106,6 +180,19 @@ export default function ModelsPage() {
             </button>
           </div>
         </div>
+
+        {scheduleLoading && (
+          <div className="mb-4 px-3 py-2 bg-[#0f0f0f] border border-[#1e1e1e] rounded-lg flex items-center gap-2 text-xs text-[#555]">
+            <div className="w-3 h-3 border border-[#333] border-t-[#666] rounded-full animate-spin shrink-0" />
+            Scraping Fansly scheduled posts for all {models.length} models… this takes a few minutes.
+          </div>
+        )}
+
+        {!scheduleLoading && scheduleLastUpdated && (
+          <div className="mb-4 text-xs text-[#444]">
+            Schedule data from {scheduleLastUpdated.toLocaleTimeString()}
+          </div>
+        )}
 
         {/* Create form */}
         {showForm && (
@@ -155,8 +242,12 @@ export default function ModelsPage() {
           </div>
         ) : (
           <div className="border border-[#1e1e1e] rounded-xl overflow-hidden">
-            {models.map(model => (
-              <ModelCard key={model.id} model={model} />
+            {sortedModels.map(model => (
+              <ModelCard
+                key={model.id}
+                model={model}
+                scheduleSnap={scheduleData[model.id]}
+              />
             ))}
           </div>
         )}

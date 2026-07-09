@@ -586,6 +586,27 @@ cron.schedule('0 18 * * 0', async () => {
   }
 })
 
+// ─── Fansly scheduled-posts monitor ──────────────────────────────────────────
+
+let scheduleCheckRunning = false
+app.post('/schedule-check', (req, res) => {
+  const handle = typeof req.query.handle === 'string' ? req.query.handle : undefined
+  res.json({ status: 'running', message: `schedule check started${handle ? ` for @${handle}` : ''}` })
+  if (scheduleCheckRunning) return
+  scheduleCheckRunning = true
+  ;(async () => {
+    try {
+      const { runScheduleCheck } = await import('./fansly-scheduler-check')
+      await runScheduleCheck(handle)
+    } catch (e) {
+      console.error('[schedule] check fatal:', (e as Error).message)
+      await sendTelegram(`🔴 <b>FanslyTrends</b> schedule-check fatal: ${(e as Error).message.slice(0, 150)}`).catch(() => {})
+    } finally {
+      scheduleCheckRunning = false
+    }
+  })()
+})
+
 // ─── Template preview renders (Templates page "how does it look") ─────────────
 
 const previewsRunning = new Set<string>()
