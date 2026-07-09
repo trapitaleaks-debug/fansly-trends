@@ -145,7 +145,7 @@ async function saveStorageStateToR2(page: Page, key: string): Promise<void> {
 
 async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
   await page.goto(`${FANSLY_URL}/Login/posts`, { waitUntil: 'networkidle', timeout: 60_000 })
-  await page.waitForTimeout(3_000)
+  await page.waitForTimeout(2_000)
 
   // Dismiss age-gate / cookie popups ("Enter", "Accept All", "Maybe Later")
   for (const text of ['Enter', 'Accept All', 'Maybe Later']) {
@@ -157,6 +157,15 @@ async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
     }, text).catch(() => {})
     await page.waitForTimeout(300)
   }
+
+  // Wait for the Angular SPA to mount the login form — don't rely on a fixed timer.
+  // If not found in 30s, capture URL + body snippet for debugging.
+  await page.waitForSelector('#fansly_login', { timeout: 30_000 }).catch(async () => {
+    const url = page.url()
+    const title = await page.title().catch(() => '?')
+    const body = await page.evaluate(() => document.body.innerText.slice(0, 250).replace(/\n/g, ' ')).catch(() => '')
+    throw new Error(`Login form not found (30s) — url=${url} title="${title}" body="${body}"`)
+  })
 
   // Fill credentials using React's property setter so React state updates correctly
   const filled = await page.evaluate(({ email, password }: { email: string; password: string }) => {
@@ -171,7 +180,7 @@ async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
     return true
   }, { email: creds.email, password: creds.password })
 
-  if (!filled) throw new Error(`Fansly login form not found — page may not have loaded correctly`)
+  if (!filled) throw new Error(`Login inputs disappeared after selector found — unexpected`)
 
   await page.waitForTimeout(500)
   await page.click('app-button.auth-submit').catch(() => page.keyboard.press('Enter'))
@@ -188,11 +197,10 @@ async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
     await page.waitForTimeout(5_000)
   }
 
-  const session = await page.evaluate(
-    () => localStorage.getItem('session_active_session'),
-  ).catch(() => null) as string | null
-  if (!session || session === 'null') {
-    throw new Error(`Fansly login failed for ${creds.email} — no session token after login`)
+  // Check success by URL — localStorage check is unreliable (can return stale data)
+  const finalUrl = page.url()
+  if (finalUrl.toLowerCase().includes('/login')) {
+    throw new Error(`Login failed for ${creds.email} — still on login page after submit`)
   }
 }
 
@@ -205,16 +213,18 @@ async function withFanslyScheduledPage<T>(
   const sessionKey = schedSessionKey(handle)
   const browser: Browser = await chromium.launch({
     headless: true,
-    args: ['--no-zygote', '--disable-gpu'],
+    args: ['--no-sandbox', '--no-zygote', '--disable-gpu', '--disable-blink-features=AutomationControlled'],
   })
   try {
     const savedState = await loadStorageStateFromR2(sessionKey)
+    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
     const context = savedState
       ? await browser.newContext({
           timezoneId: 'UTC',
+          userAgent: UA,
           storageState: savedState as import('playwright').BrowserContextOptions['storageState'],
         })
-      : await browser.newContext({ timezoneId: 'UTC' })
+      : await browser.newContext({ timezoneId: 'UTC', userAgent: UA })
 
     const page = await context.newPage()
     page.setDefaultTimeout(30_000)
