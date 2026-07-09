@@ -30,8 +30,10 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 
 const SCHEDULED_URL = 'https://apiv3.fansly.com/api/v1/post/scheduled?ngsw-bypass=true'
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
-const BATCH_SIZE = 8
-const BATCH_DELAY_MS = 400
+// Strictly sequential with a gap — 8 concurrent fetches tripped Fansly's per-IP rate
+// limit (HTTP 429 on 30/32 models, 09.07). One call per model ≈ 40s for the fleet.
+const MODEL_DELAY_MS = 800
+const RATE_LIMIT_RETRIES = [10_000, 20_000, 40_000]
 const WINDOW_MS = 48 * 60 * 60 * 1000  // 48 h
 const THRESHOLD = 8
 
@@ -96,7 +98,12 @@ export interface ScheduledPost {
 //   aggregationData: {...} } }
 // One request returns the FULL queue (78 posts / 19 days verified) — no pagination.
 async function fetchScheduledPosts(hs: SchedHeaderSet): Promise<ScheduledPost[]> {
-  const res = await fetch(hs.endpoint || SCHEDULED_URL, { headers: freshHeaders(hs.headers) })
+  let res = await fetch(hs.endpoint || SCHEDULED_URL, { headers: freshHeaders(hs.headers) })
+  for (const backoff of RATE_LIMIT_RETRIES) {
+    if (res.status !== 429) break
+    await new Promise(resolve => setTimeout(resolve, backoff))
+    res = await fetch(hs.endpoint || SCHEDULED_URL, { headers: freshHeaders(hs.headers) })
+  }
   if (res.status === 401 || res.status === 403) {
     throw new SessionExpiredError(`HTTP ${res.status} from /post/scheduled`)
   }
@@ -176,18 +183,9 @@ export async function runScheduleCheck(onlyHandle?: string): Promise<string> {
 
   const results: ModelScheduleResult[] = []
 
-  // Batches keep concurrent apiv3 requests polite (one HTTP call per model now)
-  for (let i = 0; i < targets.length; i += BATCH_SIZE) {
-    const batch = targets.slice(i, i + BATCH_SIZE)
-    const batchResults = await Promise.allSettled(
-      batch.map(m => checkModelSchedule(m.fansly_username, m.id)),
-    )
-    for (const r of batchResults) {
-      if (r.status === 'fulfilled') results.push(r.value)
-    }
-    if (i + BATCH_SIZE < targets.length) {
-      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS))
-    }
+  for (const m of targets) {
+    results.push(await checkModelSchedule(m.fansly_username, m.id))
+    await new Promise(resolve => setTimeout(resolve, MODEL_DELAY_MS))
   }
 
   // Upsert all results to schedule_snapshots
