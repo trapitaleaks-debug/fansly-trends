@@ -1,125 +1,57 @@
 /**
  * On-demand Fansly native scheduled-posts monitor (Wave C+).
  *
- * Logs into each model's own Fansly account, navigates to fansly.com/scheduled,
+ * Fetches each model's scheduled posts from the Fansly API (apiv3 /post/scheduled)
  * and counts posts that:
  *   (a) contain at least one #hashtag in the caption  → real content post (not SFS)
  *   (b) are scheduled within the next 48 h             → the 2-day window (4/day × 2 = 8 target)
+ *
+ * NO browser runs here. Fansly blocks headless-Chrome login on datacenter IPs, so
+ * per-model API header sets (authorization + fansly-client-* anti-bot headers) are
+ * minted LOCALLY on the Mac with scripts/mint-sched-headers.mjs and uploaded to R2 at
+ * sessions/fansly-sched-headers-<handle>.json. This module replays them with a
+ * refreshed fansly-client-ts — the same proven pattern as scraper/fansly.ts scrapeFYP.
+ *
+ * When a header set dies (Fansly session invalidated), the model's snapshot gets a
+ * "session expired — re-run mint" error and the Telegram digest carries a 🔑 line with
+ * the exact re-mint command.
  *
  * Results are upserted into `schedule_snapshots` (one row per model). The UI reads
  * from there and shows three severity bands:
  *   🔴 <4 — critical (less than 1 day's worth)
  *   🟠 4–7 — low (1 day but not 2)
  *   🟢 ≥8  — good
- *
- * Sessions are cached in R2 at sessions/fansly-sched-<handle>.json to avoid
- * full re-login on every sweep. Credentials come from the CRM `models` table
- * (intake_data.fansly_email / fansly_password / 2fa_key) — same data as
- * secrets.json, already in the shared Supabase project.
  */
 
-import crypto from 'crypto'
-import { chromium, type Browser, type Page } from 'playwright'
 import { supabaseAdmin } from '../lib/supabase'
 import { sendTelegram } from '../lib/telegram'
-import { uploadToR2, r2 } from '../lib/r2'
+import { r2 } from '../lib/r2'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 
-const FANSLY_URL = 'https://fansly.com'
+const SCHEDULED_URL = 'https://apiv3.fansly.com/api/v1/post/scheduled?ngsw-bypass=true'
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const BATCH_SIZE = 8
+const BATCH_DELAY_MS = 400
 const WINDOW_MS = 48 * 60 * 60 * 1000  // 48 h
 const THRESHOLD = 8
 
-// ─── TOTP (inline — same algorithm as scraper/totp.ts, no cross-module import) ──
+// ─── Minted header sets (R2) ──────────────────────────────────────────────────
 
-function base32Decode(secret: string): Buffer {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-  let bits = ''
-  for (const c of secret.toUpperCase().replace(/=+$/, '').replace(/\s/g, '')) {
-    const v = chars.indexOf(c)
-    if (v >= 0) bits += v.toString(2).padStart(5, '0')
-  }
-  const bytes = bits.match(/.{1,8}/g)!.filter(b => b.length === 8).map(b => parseInt(b, 2))
-  return Buffer.from(bytes)
+interface SchedHeaderSet {
+  handle: string
+  accountId: string | null
+  capturedAt: string
+  endpoint: string
+  headers: Record<string, string>
 }
 
-function generateTOTP(secret: string): string {
-  const key = base32Decode(secret)
-  const counter = Math.floor(Date.now() / 1000 / 30)
-  const buf = Buffer.alloc(8)
-  buf.writeUInt32BE(Math.floor(counter / 0x100000000), 0)
-  buf.writeUInt32BE(counter >>> 0, 4)
-  const hmac = crypto.createHmac('sha1', key)
-  hmac.update(buf)
-  const hash = hmac.digest()
-  const offset = hash[hash.length - 1] & 0x0f
-  const code =
-    ((hash[offset] & 0x7f) << 24) |
-    ((hash[offset + 1] & 0xff) << 16) |
-    ((hash[offset + 2] & 0xff) << 8) |
-    hash[offset + 3]
-  return (code % 1_000_000).toString().padStart(6, '0')
+function schedHeadersKey(handle: string): string {
+  return `sessions/fansly-sched-headers-${handle.toLowerCase()}.json`
 }
 
-function parseTotpSecret(raw: string): string {
-  if (!raw) return ''
-  const s = raw.trim()
-  if (s.startsWith('otpauth://')) {
-    try { return new URL(s).searchParams.get('secret') ?? '' } catch { return '' }
-  }
-  return s.replace(/\s/g, '')
-}
-
-function secondsUntilNextWindow(): number {
-  return 30 - (Math.floor(Date.now() / 1000) % 30)
-}
-
-// ─── Credentials ──────────────────────────────────────────────────────────────
-
-interface FanslyModelCreds {
-  email: string
-  password: string
-  totpSecret: string
-}
-
-// In-process cache of the credentials file (loaded once per sweep from R2).
-let credsCache: Record<string, { email?: string; password?: string; totp?: string }> | null = null
-
-async function loadCredsFromR2(): Promise<typeof credsCache> {
-  if (credsCache) return credsCache
+async function loadSchedHeaders(handle: string): Promise<SchedHeaderSet | null> {
   try {
-    const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: 'secrets/model-creds.json' }))
-    const chunks: Uint8Array[] = []
-    for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk)
-    const parsed = JSON.parse(Buffer.concat(chunks).toString()) as { models: typeof credsCache }
-    credsCache = parsed.models ?? {}
-    return credsCache
-  } catch (e) {
-    throw new Error(`Failed to load model credentials from R2: ${(e as Error).message}`)
-  }
-}
-
-export async function resolveFanslyModelCreds(handle: string): Promise<FanslyModelCreds> {
-  const creds = await loadCredsFromR2()
-  // Match case-insensitively (secrets.json keys may differ in case from trends_models)
-  const key = Object.keys(creds ?? {}).find(k => k.toLowerCase() === handle.toLowerCase())
-  const m = key ? creds![key] : null
-  const email = m?.email
-  const password = m?.password
-  if (!email || !password) throw new Error(`Missing Fansly credentials in R2 secrets for @${handle}`)
-  return { email, password, totpSecret: parseTotpSecret(m?.totp ?? '') }
-}
-
-// ─── R2 session cache ─────────────────────────────────────────────────────────
-
-function schedSessionKey(handle: string): string {
-  return `sessions/fansly-sched-${handle.toLowerCase()}.json`
-}
-
-async function loadStorageStateFromR2(key: string): Promise<object | null> {
-  try {
-    const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
+    const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: schedHeadersKey(handle) }))
     const chunks: Uint8Array[] = []
     for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk)
     return JSON.parse(Buffer.concat(chunks).toString())
@@ -128,143 +60,68 @@ async function loadStorageStateFromR2(key: string): Promise<object | null> {
   }
 }
 
-async function saveStorageStateToR2(page: Page, key: string): Promise<void> {
-  try {
-    const state = await page.context().storageState()
-    await uploadToR2(key, Buffer.from(JSON.stringify(state)), 'application/json')
-  } catch (e) {
-    console.warn(`  ⚠ fansly-sched: saveSession failed: ${(e as Error).message}`)
+// Same 13-key whitelist as scraper/fansly.ts buildFanslyHeaders. fansly-client-ts is
+// refreshed per request — the server validates it, but accepts it paired with the
+// originally captured fansly-client-check (proven by fix-kendi-desktop + scrapeFYP).
+function freshHeaders(h: Record<string, string>): Record<string, string> {
+  return {
+    'authorization': h['authorization'] ?? '',
+    'fansly-client-id': h['fansly-client-id'] ?? '',
+    'fansly-client-ts': Date.now().toString(),
+    'fansly-client-check': h['fansly-client-check'] ?? '',
+    'fansly-session-id': h['fansly-session-id'] ?? '',
+    'accept': 'application/json, text/plain, */*',
+    'origin': 'https://fansly.com',
+    'referer': 'https://fansly.com/',
+    'user-agent': h['user-agent'] ?? 'Mozilla/5.0',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-site',
+    'cookie': h['cookie'] ?? '',
   }
 }
 
-// ─── Fansly login ─────────────────────────────────────────────────────────────
-// Matches the proven sfs/fansly-login.mjs pattern:
-//   - /Login/posts URL + networkidle (not /login + domcontentloaded)
-//   - React property setter for inputs (not .fill() which bypasses React state)
-//   - app-button.auth-submit click (not Enter key)
+class SessionExpiredError extends Error {}
 
-async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
-  await page.goto(`${FANSLY_URL}/Login/posts`, { waitUntil: 'networkidle', timeout: 60_000 })
-  await page.waitForTimeout(2_000)
-
-  // Dismiss age-gate / cookie popups ("Enter", "Accept All", "Maybe Later")
-  for (const text of ['Enter', 'Accept All', 'Maybe Later']) {
-    await page.evaluate((t: string) => {
-      const el = Array.from(document.querySelectorAll('button,[role="button"]')).find(
-        e => (e as HTMLElement).textContent?.trim() === t,
-      ) as HTMLElement | undefined
-      if (el) el.click()
-    }, text).catch(() => {})
-    await page.waitForTimeout(300)
-  }
-
-  // Wait for the Angular SPA to mount the login form — don't rely on a fixed timer.
-  // If not found in 30s, capture URL + body snippet for debugging.
-  await page.waitForSelector('#fansly_login', { timeout: 30_000 }).catch(async () => {
-    const url = page.url()
-    const title = await page.title().catch(() => '?')
-    const body = await page.evaluate(() => document.body.innerText.slice(0, 250).replace(/\n/g, ' ')).catch(() => '')
-    throw new Error(`Login form not found (30s) — url=${url} title="${title}" body="${body}"`)
-  })
-
-  // Fill credentials using React's property setter so React state updates correctly
-  const filled = await page.evaluate(({ email, password }: { email: string; password: string }) => {
-    const emailEl = document.querySelector('#fansly_login') as HTMLInputElement | null
-    const passEl = document.querySelector('#fansly_password') as HTMLInputElement | null
-    if (!emailEl || !passEl) return false
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
-    setter.call(emailEl, email)
-    emailEl.dispatchEvent(new Event('input', { bubbles: true }))
-    setter.call(passEl, password)
-    passEl.dispatchEvent(new Event('input', { bubbles: true }))
-    return true
-  }, { email: creds.email, password: creds.password })
-
-  if (!filled) throw new Error(`Login inputs disappeared after selector found — unexpected`)
-
-  await page.waitForTimeout(500)
-  await page.click('app-button.auth-submit').catch(() => page.keyboard.press('Enter'))
-  await page.waitForTimeout(4_000)
-
-  // Handle 2FA if present
-  const twofa = await page.$('input[placeholder*="2FA" i], input[placeholder*="code" i], input[maxlength="6"]')
-  if (twofa) {
-    if (!creds.totpSecret) throw new Error('2FA required but no TOTP secret in R2 secrets')
-    const remaining = secondsUntilNextWindow()
-    if (remaining < 5) await page.waitForTimeout((remaining + 2) * 1_000)
-    await twofa.fill(generateTOTP(creds.totpSecret))
-    await page.click('app-button.auth-submit').catch(() => page.keyboard.press('Enter'))
-    await page.waitForTimeout(5_000)
-  }
-
-  // Check success by URL — localStorage check is unreliable (can return stale data)
-  const finalUrl = page.url()
-  if (finalUrl.toLowerCase().includes('/login')) {
-    throw new Error(`Login failed for ${creds.email} — still on login page after submit`)
-  }
-}
-
-// ─── Per-model session helper ─────────────────────────────────────────────────
-
-async function withFanslyScheduledPage<T>(
-  handle: string,
-  fn: (page: Page) => Promise<T>,
-): Promise<T> {
-  const sessionKey = schedSessionKey(handle)
-  const browser: Browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--no-zygote', '--disable-gpu', '--disable-blink-features=AutomationControlled'],
-  })
-  try {
-    const savedState = await loadStorageStateFromR2(sessionKey)
-    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-    const context = savedState
-      ? await browser.newContext({
-          timezoneId: 'UTC',
-          userAgent: UA,
-          storageState: savedState as import('playwright').BrowserContextOptions['storageState'],
-        })
-      : await browser.newContext({ timezoneId: 'UTC', userAgent: UA })
-
-    const page = await context.newPage()
-    page.setDefaultTimeout(30_000)
-
-    // Navigate to /scheduled and check if we're actually logged in (not redirected to login page)
-    if (savedState) {
-      await page.goto(`${FANSLY_URL}/scheduled`, { waitUntil: 'domcontentloaded' })
-      await page.waitForTimeout(3_000)
-      const currentUrl = page.url()
-      const isOnLoginPage = currentUrl.toLowerCase().includes('/login')
-      if (isOnLoginPage) {
-        console.log(`  ℹ @${handle}: session expired (redirected to login), re-logging in`)
-        const creds = await resolveFanslyModelCreds(handle)
-        await loginFansly(page, creds)
-        await saveStorageStateToR2(page, sessionKey)
-        await page.goto(`${FANSLY_URL}/scheduled`, { waitUntil: 'domcontentloaded' })
-        await page.waitForTimeout(2_000)
-      }
-    } else {
-      // No saved session — fresh login then navigate
-      console.log(`  ℹ @${handle}: no saved session, logging in fresh`)
-      const creds = await resolveFanslyModelCreds(handle)
-      await loginFansly(page, creds)
-      await saveStorageStateToR2(page, sessionKey)
-      await page.goto(`${FANSLY_URL}/scheduled`, { waitUntil: 'domcontentloaded' })
-      await page.waitForTimeout(2_000)
-    }
-
-    return await fn(page)
-  } finally {
-    await browser.close().catch(() => {})
-  }
-}
-
-// ─── Scheduled page scraper ───────────────────────────────────────────────────
+// ─── Scheduled-posts fetch ────────────────────────────────────────────────────
 
 export interface ScheduledPost {
   scheduledAt: string  // ISO 8601 UTC
   caption: string
 }
+
+// Response shape (discovered 09.07.2026 by sniffing fansly.com/scheduled):
+// { success: true, response: { scheduledPosts: [{ postId, accountId, status,
+//   postTemplate: "<JSON string with .content caption>", scheduledFor: <epoch MS> }],
+//   aggregationData: {...} } }
+// One request returns the FULL queue (78 posts / 19 days verified) — no pagination.
+async function fetchScheduledPosts(hs: SchedHeaderSet): Promise<ScheduledPost[]> {
+  const res = await fetch(hs.endpoint || SCHEDULED_URL, { headers: freshHeaders(hs.headers) })
+  if (res.status === 401 || res.status === 403) {
+    throw new SessionExpiredError(`HTTP ${res.status} from /post/scheduled`)
+  }
+  if (res.status !== 200) throw new Error(`HTTP ${res.status} from /post/scheduled`)
+  const json = await res.json().catch(() => null) as {
+    success?: boolean
+    response?: { scheduledPosts?: Array<{ postTemplate?: string; scheduledFor?: number }> }
+  } | null
+  // Missing envelope = silently unauthenticated (Fansly returns success:true + empty
+  // structures for bad auth instead of 401 — same trap as scraper/fansly.ts scrapeFYP).
+  // A genuinely empty schedule still has scheduledPosts: [].
+  if (json?.success !== true || !Array.isArray(json?.response?.scheduledPosts)) {
+    throw new SessionExpiredError('invalid response envelope — auth headers no longer accepted')
+  }
+  const posts: ScheduledPost[] = []
+  for (const p of json.response.scheduledPosts) {
+    if (!p.scheduledFor) continue
+    let caption = ''
+    try { caption = (JSON.parse(p.postTemplate ?? '{}')?.content ?? '') as string } catch {}
+    posts.push({ scheduledAt: new Date(p.scheduledFor).toISOString(), caption })
+  }
+  return posts
+}
+
+// ─── Per-model check ─────────────────────────────────────────────────────────
 
 export interface ModelScheduleResult {
   modelId: string
@@ -278,90 +135,25 @@ export async function checkModelSchedule(
   handle: string,
   modelId: string,
 ): Promise<ModelScheduleResult> {
-  const deadline = new Date(Date.now() + WINDOW_MS)
   try {
-    return await withFanslyScheduledPage(handle, async page => {
-      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
-
-      // Lazy-scroll to load all cards (max 30 iterations; stop when DOM stops growing)
-      let prevLen = -1
-      for (let s = 0; s < 30; s++) {
-        const len = await page.evaluate(() => {
-          window.scrollTo(0, document.body.scrollHeight)
-          document.querySelectorAll('main, [class*="overflow-y"], [class*="scroll"]').forEach(
-            el => el.scrollTo(0, (el as HTMLElement).scrollHeight),
-          )
-          return document.body.innerHTML.length
-        })
-        if (len === prevLen) break
-        prevLen = len
-        await page.waitForTimeout(600)
-      }
-
-      // Extract all scheduled post cards.
-      // Fansly renders each scheduled post as a card with:
-      //   • a datetime line: "Will send on {Weekday}, {Month} {D}, {Year} at {H}:{MM} {AM/PM}"
-      //   • a text body with the caption
-      // We read the full card text and parse both fields from it.
-      const datePattern = /Will send on \w+, \w+ \d{1,2}, \d{4} at \d{1,2}:\d{2} (?:AM|PM)/g
-
-      const rawCards = await page.evaluate(() => {
-        // Each scheduled post lives inside a container that has the "Will send on …" label.
-        const results: Array<{ datetime: string; text: string }> = []
-        const walker = document.createTreeWalker(document.body, 4 /* SHOW_TEXT */)
-        let node: Node | null
-        const seen = new Set<string>()
-
-        while ((node = walker.nextNode())) {
-          const t = (node as Text).textContent ?? ''
-          if (!t.includes('Will send on ')) continue
-
-          // Walk up to find the card container
-          let el: Element | null = (node as Text).parentElement
-          for (let d = 0; d < 12 && el; d++, el = el.parentElement) {
-            const text = (el as HTMLElement).innerText ?? ''
-            if (text.includes('Will send on ') && text.length > 50 && !seen.has(text.slice(0, 80))) {
-              seen.add(text.slice(0, 80))
-              const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-              const dtLine = lines.find(l => l.startsWith('Will send on '))
-              if (dtLine) {
-                results.push({ datetime: dtLine, text })
-              }
-              break
-            }
-          }
-        }
-        return results
-      })
-
-      const posts: ScheduledPost[] = []
-      for (const card of rawCards) {
-        // Parse the datetime string: "Will send on Friday, Jul 11, 2026 at 12:00 AM"
-        const dtStr = card.datetime.replace('Will send on ', '').replace(' at ', ' ')
-        const parsed = new Date(dtStr)
-        if (isNaN(parsed.getTime())) continue
-
-        // Skip posts beyond the 48h window
-        if (parsed > deadline) continue
-
-        // Extract caption: everything after the datetime line, excluding UI chrome (Edit Post, Hide Attachments etc.)
-        const lines = card.text.split('\n').map(l => l.trim()).filter(Boolean)
-        const dtIdx = lines.findIndex(l => l.startsWith('Will send on '))
-        const captionLines = dtIdx >= 0 ? lines.slice(dtIdx + 1) : lines
-        const uiWords = new Set(['Edit Post', 'Hide Attachments', 'Show Attachments'])
-        const caption = captionLines.filter(l => !uiWords.has(l)).join(' ').trim()
-
-        // Must contain at least one hashtag — SFS posts have only @mentions
-        if (!/#\w+/.test(caption)) continue
-
-        posts.push({ scheduledAt: parsed.toISOString(), caption })
-      }
-
-      console.log(`[schedule] ✓ @${handle}: ${posts.length} hashtagged posts in 48h`)
-      return { modelId, handle, count: posts.length, posts }
+    const hs = await loadSchedHeaders(handle)
+    if (!hs) {
+      throw new SessionExpiredError('no minted headers in R2 — run mint')
+    }
+    const all = await fetchScheduledPosts(hs)
+    const now = Date.now()
+    const deadline = now + WINDOW_MS
+    const posts = all.filter(p => {
+      const t = Date.parse(p.scheduledAt)
+      // pending posts inside the 48h window, with at least one #hashtag (SFS posts have only @mentions)
+      return t > now && t <= deadline && /#\w+/.test(p.caption)
     })
+    console.log(`[schedule] ✓ @${handle}: ${posts.length} hashtagged posts in 48h (${all.length} total scheduled)`)
+    return { modelId, handle, count: posts.length, posts }
   } catch (e) {
-    const msg = (e as Error).message.slice(0, 120)
+    const msg = e instanceof SessionExpiredError && !e.message.startsWith('no minted headers')
+      ? `session expired — re-run mint (${e.message})`.slice(0, 120)
+      : (e as Error).message.slice(0, 120)
     console.error(`[schedule] ✗ @${handle}: ${msg}`)
     return { modelId, handle, count: 0, posts: [], error: msg }
   }
@@ -370,7 +162,6 @@ export async function checkModelSchedule(
 // ─── Fleet sweep ─────────────────────────────────────────────────────────────
 
 export async function runScheduleCheck(onlyHandle?: string): Promise<string> {
-  credsCache = null  // reset per-sweep so a re-uploaded secrets file takes effect
   const { data: models } = await supabaseAdmin
     .from('trends_models')
     .select('id, fansly_username, model_number')
@@ -385,7 +176,7 @@ export async function runScheduleCheck(onlyHandle?: string): Promise<string> {
 
   const results: ModelScheduleResult[] = []
 
-  // Process in batches of BATCH_SIZE to limit concurrent Playwright instances
+  // Batches keep concurrent apiv3 requests polite (one HTTP call per model now)
   for (let i = 0; i < targets.length; i += BATCH_SIZE) {
     const batch = targets.slice(i, i + BATCH_SIZE)
     const batchResults = await Promise.allSettled(
@@ -393,6 +184,9 @@ export async function runScheduleCheck(onlyHandle?: string): Promise<string> {
     )
     for (const r of batchResults) {
       if (r.status === 'fulfilled') results.push(r.value)
+    }
+    if (i + BATCH_SIZE < targets.length) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS))
     }
   }
 
@@ -411,8 +205,10 @@ export async function runScheduleCheck(onlyHandle?: string): Promise<string> {
   const critical = results.filter(r => !r.error && r.count < 4)
   const low = results.filter(r => !r.error && r.count >= 4 && r.count < THRESHOLD)
   const errors = results.filter(r => !!r.error)
+  const remint = errors.filter(r =>
+    r.error!.startsWith('session expired') || r.error!.startsWith('no minted headers'))
 
-  if (critical.length > 0 || low.length > 0) {
+  if (critical.length > 0 || low.length > 0 || remint.length > 0) {
     const lines: string[] = [`📅 <b>Scheduled posts check (${targets.length} models)</b>`]
     if (critical.length > 0) {
       lines.push(`\n🔴 <b>Critical (&lt;4):</b> ` + critical.map(r => `@${r.handle} (${r.count})`).join(', '))
@@ -420,8 +216,14 @@ export async function runScheduleCheck(onlyHandle?: string): Promise<string> {
     if (low.length > 0) {
       lines.push(`🟠 <b>Low (4–7):</b> ` + low.map(r => `@${r.handle} (${r.count})`).join(', '))
     }
-    if (errors.length > 0) {
-      lines.push(`⚠️ ${errors.length} model(s) failed to scrape`)
+    if (remint.length > 0) {
+      lines.push(
+        `🔑 <b>Re-mint needed:</b> ` + remint.map(r => `@${r.handle}`).join(', ') +
+        `\n<code>cd fansly-trends && node scripts/mint-sched-headers.mjs --only &lt;handle&gt;</code>`,
+      )
+    }
+    if (errors.length > remint.length) {
+      lines.push(`⚠️ ${errors.length - remint.length} model(s) failed with other errors`)
     }
     await sendTelegram(lines.join('\n')).catch(() => {})
   }
