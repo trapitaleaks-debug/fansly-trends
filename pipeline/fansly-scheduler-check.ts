@@ -138,12 +138,16 @@ async function saveStorageStateToR2(page: Page, key: string): Promise<void> {
 }
 
 // ─── Fansly login ─────────────────────────────────────────────────────────────
+// Matches the proven sfs/fansly-login.mjs pattern:
+//   - /Login/posts URL + networkidle (not /login + domcontentloaded)
+//   - React property setter for inputs (not .fill() which bypasses React state)
+//   - app-button.auth-submit click (not Enter key)
 
 async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
-  await page.goto(`${FANSLY_URL}/login`, { waitUntil: 'domcontentloaded' })
-  await page.waitForTimeout(2_000)
+  await page.goto(`${FANSLY_URL}/Login/posts`, { waitUntil: 'networkidle', timeout: 60_000 })
+  await page.waitForTimeout(3_000)
 
-  // Dismiss cookie / age-gate popups
+  // Dismiss age-gate / cookie popups ("Enter", "Accept All", "Maybe Later")
   for (const text of ['Enter', 'Accept All', 'Maybe Later']) {
     await page.evaluate((t: string) => {
       const el = Array.from(document.querySelectorAll('button,[role="button"]')).find(
@@ -151,38 +155,37 @@ async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
       ) as HTMLElement | undefined
       if (el) el.click()
     }, text).catch(() => {})
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(300)
   }
 
-  // Click the Login button in the top nav if present
-  await page.evaluate(() => {
-    const b = Array.from(document.querySelectorAll('button,a,[role="button"]')).find(
-      e => (e as HTMLElement).innerText?.trim() === 'Login',
-    ) as HTMLElement | undefined
-    if (b) b.click()
-  }).catch(() => {})
-  await page.waitForTimeout(1_000)
+  // Fill credentials using React's property setter so React state updates correctly
+  const filled = await page.evaluate(({ email, password }: { email: string; password: string }) => {
+    const emailEl = document.querySelector('#fansly_login') as HTMLInputElement | null
+    const passEl = document.querySelector('#fansly_password') as HTMLInputElement | null
+    if (!emailEl || !passEl) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
+    setter.call(emailEl, email)
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }))
+    setter.call(passEl, password)
+    passEl.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  }, { email: creds.email, password: creds.password })
 
-  await page.waitForSelector('#fansly_login', { timeout: 15_000 })
-  await page.locator('#fansly_login').fill(creds.email)
-  await page.waitForTimeout(300)
-  await page.locator('#fansly_password').fill(creds.password)
-  await page.waitForTimeout(400)
-  await page.keyboard.press('Enter')
+  if (!filled) throw new Error(`Fansly login form not found — page may not have loaded correctly`)
+
+  await page.waitForTimeout(500)
+  await page.click('app-button.auth-submit').catch(() => page.keyboard.press('Enter'))
   await page.waitForTimeout(4_000)
 
   // Handle 2FA if present
-  const twofa = await page.$('input[maxlength="6"], input[placeholder*="code" i], input[placeholder*="2fa" i]')
+  const twofa = await page.$('input[placeholder*="2FA" i], input[placeholder*="code" i], input[maxlength="6"]')
   if (twofa) {
-    if (creds.totpSecret) {
-      const remaining = secondsUntilNextWindow()
-      if (remaining < 5) await page.waitForTimeout((remaining + 2) * 1_000)
-      await twofa.fill(generateTOTP(creds.totpSecret))
-      await page.keyboard.press('Enter')
-      await page.waitForTimeout(5_000)
-    } else {
-      throw new Error('2FA required but no TOTP secret in CRM')
-    }
+    if (!creds.totpSecret) throw new Error('2FA required but no TOTP secret in R2 secrets')
+    const remaining = secondsUntilNextWindow()
+    if (remaining < 5) await page.waitForTimeout((remaining + 2) * 1_000)
+    await twofa.fill(generateTOTP(creds.totpSecret))
+    await page.click('app-button.auth-submit').catch(() => page.keyboard.press('Enter'))
+    await page.waitForTimeout(5_000)
   }
 
   const session = await page.evaluate(
@@ -216,16 +219,14 @@ async function withFanslyScheduledPage<T>(
     const page = await context.newPage()
     page.setDefaultTimeout(30_000)
 
-    // Check if session is still valid (a logged-in user has session_active_session in localStorage)
+    // Navigate to /scheduled and check if we're actually logged in (not redirected to login page)
     if (savedState) {
       await page.goto(`${FANSLY_URL}/scheduled`, { waitUntil: 'domcontentloaded' })
-      await page.waitForTimeout(2_000)
-      const hasSession = await page.evaluate(
-        () => !!localStorage.getItem('session_active_session'),
-      ).catch(() => false)
-      if (!hasSession) {
-        // Session expired — do a fresh login
-        console.log(`  ℹ @${handle}: session expired, re-logging in`)
+      await page.waitForTimeout(3_000)
+      const currentUrl = page.url()
+      const isOnLoginPage = currentUrl.toLowerCase().includes('/login')
+      if (isOnLoginPage) {
+        console.log(`  ℹ @${handle}: session expired (redirected to login), re-logging in`)
         const creds = await resolveFanslyModelCreds(handle)
         await loginFansly(page, creds)
         await saveStorageStateToR2(page, sessionKey)
