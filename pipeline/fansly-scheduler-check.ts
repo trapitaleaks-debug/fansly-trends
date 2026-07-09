@@ -83,20 +83,32 @@ interface FanslyModelCreds {
   totpSecret: string
 }
 
+// In-process cache of the credentials file (loaded once per sweep from R2).
+let credsCache: Record<string, { email?: string; password?: string; totp?: string }> | null = null
+
+async function loadCredsFromR2(): Promise<typeof credsCache> {
+  if (credsCache) return credsCache
+  try {
+    const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: 'secrets/model-creds.json' }))
+    const chunks: Uint8Array[] = []
+    for await (const chunk of res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk)
+    const parsed = JSON.parse(Buffer.concat(chunks).toString()) as { models: typeof credsCache }
+    credsCache = parsed.models ?? {}
+    return credsCache
+  } catch (e) {
+    throw new Error(`Failed to load model credentials from R2: ${(e as Error).message}`)
+  }
+}
+
 export async function resolveFanslyModelCreds(handle: string): Promise<FanslyModelCreds> {
-  const { data, error } = await supabaseAdmin
-    .from('models')
-    .select('intake_data')
-    .ilike('username', handle)
-    .limit(1)
-    .maybeSingle()
-  if (error) throw new Error(`CRM lookup failed for @${handle}: ${error.message}`)
-  const intake = (data as { intake_data?: Record<string, unknown> } | null)?.intake_data ?? {}
-  const email = intake['fansly_email'] as string | undefined
-  const password = intake['fansly_password'] as string | undefined
-  const rawTotp = (intake['2fa_key'] ?? intake['twofa_key'] ?? intake['totp'] ?? '') as string
-  if (!email || !password) throw new Error(`Missing Fansly credentials in CRM for @${handle}`)
-  return { email, password, totpSecret: parseTotpSecret(rawTotp) }
+  const creds = await loadCredsFromR2()
+  // Match case-insensitively (secrets.json keys may differ in case from trends_models)
+  const key = Object.keys(creds ?? {}).find(k => k.toLowerCase() === handle.toLowerCase())
+  const m = key ? creds![key] : null
+  const email = m?.email
+  const password = m?.password
+  if (!email || !password) throw new Error(`Missing Fansly credentials in R2 secrets for @${handle}`)
+  return { email, password, totpSecret: parseTotpSecret(m?.totp ?? '') }
 }
 
 // ─── R2 session cache ─────────────────────────────────────────────────────────
@@ -134,7 +146,7 @@ async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
   // Dismiss cookie / age-gate popups
   for (const text of ['Enter', 'Accept All', 'Maybe Later']) {
     await page.evaluate((t: string) => {
-      const el = [...document.querySelectorAll('button,[role="button"]')].find(
+      const el = Array.from(document.querySelectorAll('button,[role="button"]')).find(
         e => (e as HTMLElement).textContent?.trim() === t,
       ) as HTMLElement | undefined
       if (el) el.click()
@@ -144,7 +156,7 @@ async function loginFansly(page: Page, creds: FanslyModelCreds): Promise<void> {
 
   // Click the Login button in the top nav if present
   await page.evaluate(() => {
-    const b = [...document.querySelectorAll('button,a,[role="button"]')].find(
+    const b = Array.from(document.querySelectorAll('button,a,[role="button"]')).find(
       e => (e as HTMLElement).innerText?.trim() === 'Login',
     ) as HTMLElement | undefined
     if (b) b.click()
@@ -347,6 +359,7 @@ export async function checkModelSchedule(
 // ─── Fleet sweep ─────────────────────────────────────────────────────────────
 
 export async function runScheduleCheck(onlyHandle?: string): Promise<string> {
+  credsCache = null  // reset per-sweep so a re-uploaded secrets file takes effect
   const { data: models } = await supabaseAdmin
     .from('trends_models')
     .select('id, fansly_username, model_number')
