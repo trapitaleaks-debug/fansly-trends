@@ -83,14 +83,17 @@ export async function runEmergencyFill(): Promise<void> {
     if (needed === 0) continue
     modelsBelow++
 
-    // Content bank footage (the fresh-clip pool) — same source as fill-gaps.
-    const { data: pm } = await supabaseAdmin
-      .from('pipeline_models').select('id').ilike('handle', model.fansly_username).maybeSingle()
-    if (!pm) { perModel.push({ handle: model.fansly_username, needed, filled: 0, nearDupes: 0, note: 'no content bank' }); totalShortfall += needed; continue }
+    // Content bank footage (the fresh-clip pool) — same source as fill-gaps. A model can have MORE
+    // THAN ONE pipeline_models row (dup onboarding); gather footage across all of them (a single()
+    // here silently dropped DumbBlondeBimbo, which had 2 rows → "no content bank").
+    const { data: pms } = await supabaseAdmin
+      .from('pipeline_models').select('id').ilike('handle', model.fansly_username)
+    const pmIds = ((pms ?? []) as Array<{ id: string }>).map(p => p.id)
+    if (pmIds.length === 0) { perModel.push({ handle: model.fansly_username, needed, filled: 0, nearDupes: 0, note: 'no content bank' }); totalShortfall += needed; continue }
 
     type FootageRow = { id: string; r2_key: string; label: string | null; trim_end: number | null; tags: string[] }
     const [{ data: bank }, { data: clips }] = await Promise.all([
-      supabaseAdmin.from('pipeline_content_bank').select('id, r2_key, label, trim_end, tags').eq('model_id', (pm as { id: string }).id).order('created_at'),
+      supabaseAdmin.from('pipeline_content_bank').select('id, r2_key, label, trim_end, tags').in('model_id', pmIds).order('created_at'),
       supabaseAdmin.from('model_clips').select('id, r2_key').eq('model_id', model.id),
     ])
     const footage = (bank ?? []) as FootageRow[]
