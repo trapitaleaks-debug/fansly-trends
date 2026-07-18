@@ -607,6 +607,32 @@ app.post('/schedule-check', (req, res) => {
   })()
 })
 
+// Emergency "Fill to 8" — live sweep, then recycle produced ideas (fresh clip) to top every
+// under-scheduled model up to 8. Single-flight; progress/result live in emergency_fill_runs.
+let emergencyFillRunning = false
+app.post('/emergency-fill', (_req, res) => {
+  res.json({ status: emergencyFillRunning ? 'already_running' : 'running' })
+  if (emergencyFillRunning) return
+  emergencyFillRunning = true
+  ;(async () => {
+    try {
+      const { runEmergencyFill } = await import('./emergency-fill')
+      await runEmergencyFill()
+    } catch (e) {
+      console.error('[emergency-fill] fatal:', (e as Error).message)
+      try {
+        await supabaseAdmin.from('emergency_fill_runs').upsert(
+          { id: 'singleton', running: false, phase: 'error', error: (e as Error).message.slice(0, 300), finished_at: new Date().toISOString() },
+          { onConflict: 'id' },
+        )
+      } catch { /* status write best-effort */ }
+      await sendTelegram(`🔴 <b>FanslyTrends</b> emergency-fill fatal: ${(e as Error).message.slice(0, 150)}`).catch(() => {})
+    } finally {
+      emergencyFillRunning = false
+    }
+  })()
+})
+
 // ─── Template preview renders (Templates page "how does it look") ─────────────
 
 const previewsRunning = new Set<string>()

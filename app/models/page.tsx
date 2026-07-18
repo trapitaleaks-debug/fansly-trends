@@ -4,6 +4,16 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import ModelCard, { type ModelSummary, type ScheduleSnapshot } from '@/components/ModelCard'
 
+interface EmergencyRun {
+  running: boolean
+  phase: 'sweeping' | 'filling' | 'done' | 'error' | null
+  started_at: string | null
+  finished_at: string | null
+  totals: { modelsBelow?: number; filled?: number; shortfall?: number; nearDupes?: number }
+  per_model: Array<{ handle: string; needed: number; filled: number; nearDupes: number; note: string | null }>
+  error?: string | null
+}
+
 export default function ModelsPage() {
   const [models, setModels] = useState<ModelSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -16,14 +26,20 @@ export default function ModelsPage() {
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [sortByUrgency, setSortByUrgency] = useState(false)
   const [scheduleLastUpdated, setScheduleLastUpdated] = useState<Date | null>(null)
+  const [emergencyRunning, setEmergencyRunning] = useState(false)
+  const [emergencyRun, setEmergencyRun] = useState<EmergencyRun | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const emergencyPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const router = useRouter()
 
   useEffect(() => {
     fetchModels()
     // Load any existing snapshots on mount (from a previous sweep)
     fetchSnapshots()
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+      if (emergencyPollRef.current) clearInterval(emergencyPollRef.current)
+    }
   }, [])
 
   async function fetchModels() {
@@ -87,6 +103,38 @@ export default function ModelsPage() {
         setScheduleLastUpdated(new Date())
       }
     }, 5_000)
+  }
+
+  async function handleEmergencyFill() {
+    if (emergencyRunning) return
+    if (!confirm('Emergency fill: re-scrape every model’s live schedule (~90s), then recycle already-posted ideas with a fresh clip to top each under-8 model up to 8. Videos render + post automatically. Continue?')) return
+    setEmergencyRunning(true)
+    setEmergencyRun(null)
+    const startedAt = Date.now()
+    await fetch('/api/emergency-fill', { method: 'POST' }).catch(() => {})
+    if (emergencyPollRef.current) clearInterval(emergencyPollRef.current)
+    emergencyPollRef.current = setInterval(async () => {
+      let run: EmergencyRun | null = null
+      try {
+        const res = await fetch('/api/emergency-fill')
+        run = (await res.json()).run
+      } catch { /* keep polling */ }
+      if (run) {
+        setEmergencyRun(run)
+        const runStart = run.started_at ? new Date(run.started_at).getTime() : 0
+        const isThisRun = runStart >= startedAt - 10_000  // tolerate small clock skew
+        const finished = isThisRun && !run.running && (run.phase === 'done' || run.phase === 'error')
+        if (finished) {
+          clearInterval(emergencyPollRef.current!)
+          setEmergencyRunning(false)
+          fetchSnapshots()  // badges reflect the live sweep the fill just ran
+        }
+      }
+      if (Date.now() - startedAt > 10 * 60 * 1000) {  // safety timeout
+        if (emergencyPollRef.current) clearInterval(emergencyPollRef.current)
+        setEmergencyRunning(false)
+      }
+    }, 4_000)
   }
 
   async function handleCreate(e: React.FormEvent) {
@@ -160,6 +208,16 @@ export default function ModelsPage() {
             >
               {scheduleLoading ? 'Checking...' : '📅 Check Schedules'}
             </button>
+            <button
+              onClick={handleEmergencyFill}
+              disabled={emergencyRunning}
+              title="Re-scrape live schedules, then recycle already-posted ideas with a fresh clip to top every under-8 model up to 8."
+              className="bg-amber-500/15 border border-amber-500/40 hover:bg-amber-500/25 disabled:opacity-50 text-amber-300 hover:text-amber-200 text-xs font-medium px-4 py-2 rounded-lg transition-colors"
+            >
+              {emergencyRunning
+                ? (emergencyRun?.phase === 'filling' ? 'Filling…' : 'Checking schedules…')
+                : '🚨 Fill to 8'}
+            </button>
             {hasScheduleData && (
               <button
                 onClick={() => setSortByUrgency(v => !v)}
@@ -191,6 +249,42 @@ export default function ModelsPage() {
         {!scheduleLoading && scheduleLastUpdated && (
           <div className="mb-4 text-xs text-[#444]">
             Schedule data from {scheduleLastUpdated.toLocaleTimeString()}
+          </div>
+        )}
+
+        {emergencyRunning && (
+          <div className="mb-4 px-3 py-2 bg-amber-500/5 border border-amber-500/25 rounded-lg flex items-center gap-2 text-xs text-amber-300/90">
+            <div className="w-3 h-3 border border-amber-500/40 border-t-amber-300 rounded-full animate-spin shrink-0" />
+            {emergencyRun?.phase === 'filling'
+              ? 'Recycling ideas to fill empty slots…'
+              : 'Re-scraping live schedules for all models… (~90s)'}
+          </div>
+        )}
+
+        {!emergencyRunning && emergencyRun && (emergencyRun.phase === 'done' || emergencyRun.phase === 'error') && (
+          <div className="mb-4 px-3 py-2 bg-amber-500/5 border border-amber-500/25 rounded-lg text-xs text-amber-200/90">
+            {emergencyRun.phase === 'error' ? (
+              <span className="text-red-400">Emergency fill failed: {emergencyRun.error}</span>
+            ) : (emergencyRun.totals.modelsBelow ?? 0) === 0 ? (
+              <span>🚨 Every model already projects to 8+ — nothing to fill.</span>
+            ) : (
+              <div className="space-y-1">
+                <div>
+                  🚨 Topped up <b>{emergencyRun.totals.modelsBelow}</b> model(s) — queued{' '}
+                  <b>+{emergencyRun.totals.filled}</b> videos.
+                  {(emergencyRun.totals.nearDupes ?? 0) > 0 && ` · ${emergencyRun.totals.nearDupes} reused-clip near-dupe(s)`}
+                  {(emergencyRun.totals.shortfall ?? 0) > 0 && ` · ${emergencyRun.totals.shortfall} slot(s) couldn’t be filled`}
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-amber-200/70">
+                  {emergencyRun.per_model.filter(m => m.filled > 0 || m.note).map(m => (
+                    <span key={m.handle}>
+                      @{m.handle} +{m.filled}/{m.needed}{m.note ? ` (${m.note})` : ''}
+                    </span>
+                  ))}
+                </div>
+                <div className="text-[10px] text-amber-200/40 pt-0.5">Videos render + post automatically; badges update as they land on Fansly.</div>
+              </div>
+            )}
           </div>
         )}
 

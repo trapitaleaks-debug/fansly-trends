@@ -41,13 +41,12 @@ const supabaseAdmin = supabase
 const REELS_BASE = '/Users/leonardoguizzo/Documents/Obsidian/reels-to-organize'
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.m4v'])
 
-// Number → handle mapping (from Personal Branding Files)
+// Number → handle mapping. Canonical roster = the CRM `models` table (Supabase krkezzuuyxfsihumbgut, status='Active'); this local map is intentionally not rewired — keep it synced + watched.
 const MODEL_MAP: Record<number, string> = {
   1: 'XiaohongshuShawty',
   2: 'MissFortuneMILF',
   3: 'DariaFlorescu',
   4: 'DumbBlondeBimbo',
-  5: 'tiffanyloves',
   6: 'yourfavyasmin',
   7: 'LilaHanal',
   8: 'mollylovescuddles',
@@ -56,7 +55,6 @@ const MODEL_MAP: Record<number, string> = {
   11: 'MintControl',
   12: 'EmilyBossetti',
   13: 'SurfersParadise',
-  14: 'DimSumShawty',
   15: 'candecakes',
   16: 'lilybrookss',
   17: 'lunaviola',
