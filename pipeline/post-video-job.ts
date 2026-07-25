@@ -605,39 +605,15 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
       }
     }
 
-    // 5. Hashtags — run AFTER the upload starts so FanCore's server-side video upload completes
-    //    during the ~20s tag generation (this is the fix for "0 media / Upload timed out": the file
-    //    now has all this time to finish uploading before submit, instead of being uploaded last).
-    await captionInput.fill('hey')
-    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
-    await page.waitForTimeout(200)
-    // HARD REQUIREMENT (emily2008 incident 24.07.2026): tag generation used to be best-effort —
-    // when /api/regenerate-post-tags failed (502/timeout), posts were scheduled with ZERO tags and
-    // went out bare. Tags are now mandatory: retry the generate button up to 3×, and if the tags
-    // input still never populates, THROW so the job retries later instead of scheduling a bare post.
-    let tagsPopulated = false
-    let generatedTags = ''
-    for (let tagAttempt = 1; tagAttempt <= 3 && !tagsPopulated; tagAttempt++) {
-      await slotForm.locator('button.bulk-regen-tags').click()
-      console.log(`[post] hashtags: generate button clicked (attempt ${tagAttempt}/3)`)
-      tagsPopulated = await page.waitForFunction(
-        () => (document.querySelectorAll('input[name="tags"]')[0] as HTMLInputElement)?.value?.trim().length > 0,
-        { timeout: 20000 }
-      ).then(() => true).catch(() => false)
-      generatedTags = await slotForm.locator('input[name="tags"]').inputValue().catch(() => '')
-      console.log(`[post] hashtags: populated=${tagsPopulated} tags="${generatedTags}"`)
-      if (!tagsPopulated && tagAttempt < 3) await page.waitForTimeout(3000)
-    }
-    if (!tagsPopulated || !generatedTags.trim()) {
-      throw new Error('TAGS_EMPTY: hashtag generation failed after 3 attempts — refusing to schedule a bare post (job will retry)')
-    }
-    await captionInput.fill('')
-    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
-
-    // Wait for FanCore to ACTUALLY ATTACH the media before continuing. The upload is async; the old
-    // fixed 5s wait submitted before it finished for anything slower → posts created with "0 media"
-    // that FanCore then fails. Poll until a visible "1 media" shows for the slot (up to 90s). If it
-    // never attaches, throw so the job retries instead of submitting an empty, media-less post.
+    // 5. Wait for FanCore to ACTUALLY ATTACH the media before continuing. The upload is async; the old
+    //    fixed 5s wait submitted before it finished for anything slower → posts created with "0 media"
+    //    that FanCore then fails. Poll until a visible "1 media" shows for the slot (up to 90s). If it
+    //    never attaches, throw so the job retries instead of submitting an empty, media-less post.
+    //
+    //    ORDERING (TAGS_EMPTY incident 25.07.2026): this used to run AFTER tag generation, so the
+    //    upload could finish during the ~20s generation. That optimisation broke when FanCore's
+    //    generator started no-opping on slots still showing "0 media" — 80 jobs across 12 models died
+    //    on TAGS_EMPTY. Media now attaches FIRST and tags are generated against a fully-attached slot.
     const mediaStart = Date.now()
     const mediaDeadline = mediaStart + 90_000
     let mediaAttached = false
@@ -663,6 +639,41 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
         uploadToR2(`debug/post-${jobId}-media-failed.png`, buf, 'image/png')).catch(() => {})
       throw new Error(`media never attached after 90s (${videoSizeMB}MB) — not submitting an empty post`)
     }
+
+    // 6. Hashtags — generated against the attached media (see ORDERING note above).
+    await captionInput.fill('hey')
+    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
+    await page.waitForTimeout(200)
+    // HARD REQUIREMENT (emily2008 incident 24.07.2026): tag generation used to be best-effort —
+    // when tag generation failed, posts were scheduled with ZERO tags and went out bare. Tags are now
+    // mandatory: retry the generate button up to 3×, and if the tags input still never populates,
+    // THROW so the job retries later instead of scheduling a bare post.
+    let tagsPopulated = false
+    let generatedTags = ''
+    // Scope the readiness check to THIS slot's tags input. The old check read
+    // document.querySelectorAll('input[name="tags"]')[0] — the first input on a page that carries one
+    // per slot — so on any slot but the first it watched the wrong element.
+    const tagInput = slotForm.locator('input[name="tags"]').first()
+    for (let tagAttempt = 1; tagAttempt <= 3 && !tagsPopulated; tagAttempt++) {
+      await slotForm.locator('button.bulk-regen-tags').click()
+      console.log(`[post] hashtags: generate button clicked (attempt ${tagAttempt}/3)`)
+      const tagHandle = await tagInput.elementHandle().catch(() => null)
+      tagsPopulated = tagHandle
+        ? await page.waitForFunction(
+            (el: Element | null) => ((el as HTMLInputElement | null)?.value ?? '').trim().length > 0,
+            tagHandle,
+            { timeout: 20000 }
+          ).then(() => true).catch(() => false)
+        : false
+      generatedTags = await tagInput.inputValue().catch(() => '')
+      console.log(`[post] hashtags: populated=${tagsPopulated} tags="${generatedTags}"`)
+      if (!tagsPopulated && tagAttempt < 3) await page.waitForTimeout(3000)
+    }
+    if (!tagsPopulated || !generatedTags.trim()) {
+      throw new Error('TAGS_EMPTY: hashtag generation failed after 3 attempts — refusing to schedule a bare post (job will retry)')
+    }
+    await captionInput.fill('')
+    await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
 
     // Screenshots for debugging
     await page.screenshot({ type: 'png' }).then(buf =>
