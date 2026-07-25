@@ -611,14 +611,26 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
     await captionInput.fill('hey')
     await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
     await page.waitForTimeout(200)
-    await slotForm.locator('button.bulk-regen-tags').click()
-    console.log('[post] hashtags: generate button clicked')
-    const tagsPopulated = await page.waitForFunction(
-      () => (document.querySelectorAll('input[name="tags"]')[0] as HTMLInputElement)?.value?.trim().length > 0,
-      { timeout: 20000 }
-    ).then(() => true).catch(() => false)
-    const generatedTags = await slotForm.locator('input[name="tags"]').inputValue().catch(() => '')
-    console.log(`[post] hashtags: populated=${tagsPopulated} tags="${generatedTags}"`)
+    // HARD REQUIREMENT (emily2008 incident 24.07.2026): tag generation used to be best-effort —
+    // when /api/regenerate-post-tags failed (502/timeout), posts were scheduled with ZERO tags and
+    // went out bare. Tags are now mandatory: retry the generate button up to 3×, and if the tags
+    // input still never populates, THROW so the job retries later instead of scheduling a bare post.
+    let tagsPopulated = false
+    let generatedTags = ''
+    for (let tagAttempt = 1; tagAttempt <= 3 && !tagsPopulated; tagAttempt++) {
+      await slotForm.locator('button.bulk-regen-tags').click()
+      console.log(`[post] hashtags: generate button clicked (attempt ${tagAttempt}/3)`)
+      tagsPopulated = await page.waitForFunction(
+        () => (document.querySelectorAll('input[name="tags"]')[0] as HTMLInputElement)?.value?.trim().length > 0,
+        { timeout: 20000 }
+      ).then(() => true).catch(() => false)
+      generatedTags = await slotForm.locator('input[name="tags"]').inputValue().catch(() => '')
+      console.log(`[post] hashtags: populated=${tagsPopulated} tags="${generatedTags}"`)
+      if (!tagsPopulated && tagAttempt < 3) await page.waitForTimeout(3000)
+    }
+    if (!tagsPopulated || !generatedTags.trim()) {
+      throw new Error('TAGS_EMPTY: hashtag generation failed after 3 attempts — refusing to schedule a bare post (job will retry)')
+    }
     await captionInput.fill('')
     await captionInput.evaluate((el: Element) => el.dispatchEvent(new Event('input', { bubbles: true })))
 
