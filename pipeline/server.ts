@@ -1031,6 +1031,58 @@ cron.schedule('*/2 * * * *', async () => {
   }
 })
 
+// Every 10 min: alert on a FAILURE SPIKE.
+//
+// The queue-drained notice above only fires when in-flight hits zero, which is the opposite signal:
+// during the TAGS_EMPTY outage on 25.07.2026 jobs kept flowing, 80 of them failed inside one hour
+// across 11 models, and nothing paged anyone for a day. This watches the rate instead of the
+// drain, grouped by failure_kind so the message says WHAT broke, not just that something did.
+const SPIKE_THRESHOLD = Number(process.env.FAILURE_SPIKE_THRESHOLD ?? 8)   // errors of one kind, per hour
+const SPIKE_MUTE_MS = 6 * 60 * 60_000                                     // don't renotify the same kind for 6h
+const lastSpikeAlert = new Map<string, number>()
+const SPIKE_BOOT_AT = Date.now()
+
+cron.schedule('*/10 * * * *', async () => {
+  try {
+    // Never look further back than this process has been running. Any bulk touch of old error rows
+    // — a backfill, a migration, a re-classification — moves updated_at to now and would otherwise
+    // read as a spike on the next restart. Only failures this process has actually seen count.
+    const since = new Date(Math.max(Date.now() - 60 * 60_000, SPIKE_BOOT_AT)).toISOString()
+    const { data: recent } = await supabaseAdmin
+      .from('video_jobs')
+      .select('failure_kind, model_id, error_message')
+      .eq('status', 'error')
+      .gte('updated_at', since)
+    const rows = (recent ?? []) as Array<{ failure_kind: string | null; model_id: string; error_message: string | null }>
+    if (!rows.length) return
+
+    const byKind = new Map<string, { n: number; models: Set<string>; sample: string }>()
+    for (const r of rows) {
+      const k = r.failure_kind ?? 'unknown'
+      const e = byKind.get(k) ?? { n: 0, models: new Set<string>(), sample: '' }
+      e.n++; e.models.add(r.model_id)
+      if (!e.sample && r.error_message) e.sample = r.error_message.replace(/\s+/g, ' ').slice(0, 140)
+      byKind.set(k, e)
+    }
+
+    const now = Date.now()
+    for (const [kind, e] of byKind) {
+      if (e.n < SPIKE_THRESHOLD) continue
+      if (now - (lastSpikeAlert.get(kind) ?? 0) < SPIKE_MUTE_MS) continue
+      lastSpikeAlert.set(kind, now)
+      await sendTelegram(
+        `🚨 <b>FanslyTrends — failure spike</b>\n\n` +
+        `<b>${e.n}×</b> <code>${kind}</code> in the last hour, across <b>${e.models.size}</b> model(s).\n` +
+        (e.sample ? `\n<i>${e.sample}</i>\n` : '') +
+        `\nThe queue is still moving, so the drain notice will not fire for this.`
+      ).catch(() => {})
+      console.warn(`[cron:spike] ${e.n}× ${kind} in 1h across ${e.models.size} model(s) — alerted`)
+    }
+  } catch (e) {
+    console.error('[cron:spike] Error:', (e as Error).message)
+  }
+})
+
 // Every 2 min: pick up any queued runs dropped by a restart/deploy
 cron.schedule('*/2 * * * *', async () => {
   try {
