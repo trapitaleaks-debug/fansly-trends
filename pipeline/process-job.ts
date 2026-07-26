@@ -14,6 +14,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { supabaseAdmin } from '../lib/supabase'
 import { type BrandConfig } from './compose'
 import { renderWithRemotion } from './remotion-renderer'
+import { classifyRenderFailure, NON_RETRYABLE } from './failure-kind'
 
 const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 
@@ -332,11 +333,15 @@ export async function processVideoJob(jobId: string): Promise<void> {
     const attempts = ((cur as unknown as { render_attempts: number } | null)?.render_attempts ?? 0) + 1
     const giveUp = attempts >= 3
     console.error(`[job] ✗ Failed ${jobId} [attempt ${attempts}/3]${giveUp ? ' — giving up (error)' : ' — re-queueing'}:`, msg)
+    // Record WHY it failed, not just that it did — otherwise the only possible response is a blind
+    // retry, and a missing R2 asset can never be fixed by retrying.
+    const kind = classifyRenderFailure(msg)
     await supabaseAdmin.from('video_jobs').update({
       status: giveUp ? 'error' : 'pending',
       render_attempts: attempts,
       started_at: null,
       error_message: msg,
+      ...(giveUp ? { failure_kind: kind, needs_review: NON_RETRYABLE.has(kind) } : {}),
     }).eq('id', jobId)
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true })

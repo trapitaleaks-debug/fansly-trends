@@ -43,15 +43,17 @@ const ffmpegBin = () => (process.platform === 'darwin' ? '/opt/homebrew/bin/ffmp
 // Kill-switch for the failure-remediation layer (classify → remediate → retry → flag).
 const REMEDIATION_ON = process.env.FAILURE_REMEDIATION !== '0'
 
-export type FailureKind =
-  | 'capacity_full' | 'session_expired' | 'media_upload_timeout' | 'subscription_past_due'
-  | 'model_not_found' | 'verify_timeout' | 'unknown'
+export type { FailureKind } from './failure-kind'
+import type { FailureKind } from './failure-kind'
 
 // Classify a posting failure. capacity_full vs verify_timeout is disambiguated via the latest
 // fancore_capacity snapshot (populated by the daily watchdog + every cleanup): a model pinned at
 // the ~1000-record window silently swallows submits — FanCore returns 200 and nothing lands.
 // Dynamic import avoids a circular dependency (fancore-hygiene imports our browser helpers).
 async function classifyPostFailure(msg: string, modelNumber: number | null): Promise<FailureKind> {
+  // Our own hard-fail guard: FanCore's tag generator returned nothing, so we refused to schedule a
+  // bare post. Its own kind because the fix is FanCore-side, not a retry of this job.
+  if (/TAGS_EMPTY/.test(msg)) return 'tags_empty'
   if (/past due/i.test(msg)) return 'subscription_past_due'
   if (/active model is|expected @|refusing wrong-model|member re-verify|Sidebar: @/i.test(msg)) return 'model_not_found'
   if (/media never attached/i.test(msg)) return 'media_upload_timeout'

@@ -929,6 +929,7 @@ cron.schedule('*/2 * * * *', async () => {
         render_attempts: attempts,
         started_at: null,
         error_message: giveUp ? 'watchdog: render hung — attempts exhausted' : 'watchdog: render hung — re-queued',
+        ...(giveUp ? { failure_kind: 'render_hung' as const } : {}),
       }).eq('id', j.id)
       console.warn(`[cron:watchdog] processing ${j.id} stale → ${giveUp ? 'error' : 'pending'} [${attempts}/3]`)
     }
