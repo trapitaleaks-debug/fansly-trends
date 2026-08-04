@@ -1,13 +1,24 @@
 import { supabaseAdmin } from './supabase'
 
 // Fixed daily posting slots per model (UTC). All models share the same schedule.
-// Exactly 4 slots/day → at most 4 videos/day/model (one video per slot, enforced by the
-// video_jobs_one_per_slot partial unique index + the taken-slot scan below).
+// One video per slot, enforced by the video_jobs_one_per_slot partial unique index + the
+// taken-slot scan below. Every slot sits on a DISTINCT minute — the repost system identifies our
+// posts by timestamp, so two slots must never share a minute.
+//
+// 04.08.2026 — VOLUME TEST (Vito): 4/day → 10/day, spread across the day (his pick over the old
+// 21:00–21:30 block), running until 17.08 and scored on followers gained/day (follower_snapshots).
+// Reverting to 4/day = restore the old 4-slot list (21:00/21:10/21:20/21:30).
 export const FIXED_SLOTS: Array<{ hour: number; minute: number }> = [
-  { hour: 21, minute: 0 },
-  { hour: 21, minute: 10 },
-  { hour: 21, minute: 20 },
+  { hour: 10, minute: 0 },
+  { hour: 11, minute: 30 },
+  { hour: 13, minute: 0 },
+  { hour: 14, minute: 30 },
+  { hour: 16, minute: 0 },
+  { hour: 17, minute: 30 },
+  { hour: 19, minute: 0 },
+  { hour: 20, minute: 30 },
   { hour: 21, minute: 30 },
+  { hour: 23, minute: 0 },
 ]
 
 // FanCore rejects posts scheduled too close to current time.

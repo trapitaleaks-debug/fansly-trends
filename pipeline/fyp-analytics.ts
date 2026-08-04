@@ -63,6 +63,24 @@ export async function fetchFypMedia(page: Page, limit = 100): Promise<FypMedia[]
 
 export async function scrapeFypStats(handle: string, modelNumber: number): Promise<number> {
   return withFanCorePage(handle, async page => {
+    // Piggyback (04.08): daily follower snapshot for the 10/day volume test (scored 17.08).
+    // Same page, one extra fetch — endpoint mapped 02.08 (Wave 2 audience sweep).
+    try {
+      const aud = await page.evaluate(async () => {
+        const r = await fetch('/api/audience/summary', { credentials: 'include' })
+        return r.ok ? r.json() : null
+      }) as { followers_total?: number; active_subs?: number; expired_subs?: number } | null
+      if (aud && aud.followers_total != null) {
+        await supabaseAdmin.from('follower_snapshots').upsert({
+          model_number: modelNumber,
+          captured_at: new Date().toISOString().slice(0, 10),
+          followers: aud.followers_total,
+          active_subs: aud.active_subs ?? null,
+          expired_subs: aud.expired_subs ?? null,
+        }, { onConflict: 'model_number,captured_at' })
+      }
+    } catch { /* snapshot is best-effort — never blocks the FYP sweep */ }
+
     const media = await fetchFypMedia(page)
     if (media.length === 0) return 0
     const rows = media.map(m => {

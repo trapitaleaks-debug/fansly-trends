@@ -546,8 +546,8 @@ app.post('/reposts/pick', (req, res) => {
   res.json({ message: `repost pick started${dry ? ' (dry)' : ''}${handle ? ` for @${handle}` : ''}` })
   ;(async () => {
     try {
-      const { runWeeklyRepostPick } = await import('./reposter')
-      await runWeeklyRepostPick({ dry, onlyHandle: handle })
+      const { runDailyRepostSchedule } = await import('./reposter')
+      await runDailyRepostSchedule({ dry, onlyHandle: handle })
     } catch (e) {
       console.error('[repost] pick fatal:', (e as Error).message)
       await sendTelegram(`🔴 <b>FanslyTrends</b> repost pick fatal: ${(e as Error).message.slice(0, 150)}`).catch(() => {})
@@ -571,19 +571,60 @@ cron.schedule('0 9 * * *', async () => {
   }
 })
 
-// Weekly repost pick: Sunday 18:00 UTC → queues Mon–Fri reposts for the coming week
-cron.schedule('0 18 * * 0', async () => {
+// Daily repost scheduler (08:00 UTC, before the first 10:00 slot): books today's reposts from the
+// fingerprint-deduped library. Replaces the old Sunday weekly pick (04.08).
+cron.schedule('0 8 * * *', async () => {
   if (repostPickRunning) return
   repostPickRunning = true
   try {
-    const { runWeeklyRepostPick } = await import('./reposter')
-    await runWeeklyRepostPick()
+    const { runDailyRepostSchedule } = await import('./reposter')
+    await runDailyRepostSchedule()
   } catch (e) {
     console.error('[cron:repost] Fatal:', (e as Error).message)
     await sendTelegram(`🚨 <b>FanslyTrends repost cron failed</b>\n<code>${(e as Error).message.slice(0, 300)}</code>`).catch(() => {})
   } finally {
     repostPickRunning = false
   }
+})
+
+// Fortnightly back-catalogue scan (1st + 15th, 02:00 UTC): refreshes the repost library —
+// new qualifiers, airing recognition by fingerprint, retirements, review pages.
+let repostScanRunning = false
+cron.schedule('0 2 1,15 * *', async () => {
+  if (repostScanRunning) return
+  repostScanRunning = true
+  try {
+    const { runRepostScan } = await import('./repost-scan')
+    await runRepostScan()
+    const { publishRepostPages } = await import('./repost-report')
+    await publishRepostPages()
+  } catch (e) {
+    console.error('[cron:repost-scan] Fatal:', (e as Error).message)
+    await sendTelegram(`🚨 <b>FanslyTrends repost scan failed</b>\n<code>${(e as Error).message.slice(0, 300)}</code>`).catch(() => {})
+  } finally {
+    repostScanRunning = false
+  }
+})
+
+// Manual triggers: POST /repost-scan?handle=  ·  POST /repost-pages
+app.post('/repost-scan', async (req, res) => {
+  if (repostScanRunning) { res.json({ message: 'scan already running' }); return }
+  repostScanRunning = true
+  const handle = typeof req.query.handle === 'string' ? req.query.handle : undefined
+  res.json({ message: `repost scan started${handle ? ` for @${handle}` : ''}` })
+  ;(async () => {
+    try {
+      const { runRepostScan } = await import('./repost-scan')
+      await runRepostScan(handle)
+      const { publishRepostPages } = await import('./repost-report')
+      await publishRepostPages()
+    } catch (e) {
+      console.error('[repost-scan] fatal:', (e as Error).message)
+      await sendTelegram(`🔴 <b>FanslyTrends</b> repost scan fatal: ${(e as Error).message.slice(0, 150)}`).catch(() => {})
+    } finally {
+      repostScanRunning = false
+    }
+  })()
 })
 
 // ─── Fansly scheduled-posts monitor ──────────────────────────────────────────

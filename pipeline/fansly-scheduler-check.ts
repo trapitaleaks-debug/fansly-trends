@@ -35,11 +35,14 @@ const BUCKET = process.env.R2_BUCKET_NAME ?? 'fansly-trends'
 const MODEL_DELAY_MS = 800
 const RATE_LIMIT_RETRIES = [10_000, 20_000, 40_000]
 const WINDOW_MS = 48 * 60 * 60 * 1000  // 48 h
-const THRESHOLD = 8
+// Bands derive from the slot count so the 4/day→10/day volume test (04.08) reflows them:
+// critical = under one day's slots in 48h, good = two days' worth.
+import { FIXED_SLOTS } from '../lib/scheduling'
+const THRESHOLD = FIXED_SLOTS.length * 2
 
 // ─── Minted header sets (R2) ──────────────────────────────────────────────────
 
-interface SchedHeaderSet {
+export interface SchedHeaderSet {
   handle: string
   accountId: string | null
   capturedAt: string
@@ -51,7 +54,7 @@ function schedHeadersKey(handle: string): string {
   return `sessions/fansly-sched-headers-${handle.toLowerCase()}.json`
 }
 
-async function loadSchedHeaders(handle: string): Promise<SchedHeaderSet | null> {
+export async function loadSchedHeaders(handle: string): Promise<SchedHeaderSet | null> {
   try {
     const res = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: schedHeadersKey(handle) }))
     const chunks: Uint8Array[] = []
@@ -65,7 +68,7 @@ async function loadSchedHeaders(handle: string): Promise<SchedHeaderSet | null> 
 // Same 13-key whitelist as scraper/fansly.ts buildFanslyHeaders. fansly-client-ts is
 // refreshed per request — the server validates it, but accepts it paired with the
 // originally captured fansly-client-check (proven by fix-kendi-desktop + scrapeFYP).
-function freshHeaders(h: Record<string, string>): Record<string, string> {
+export function freshHeaders(h: Record<string, string>): Record<string, string> {
   return {
     'authorization': h['authorization'] ?? '',
     'fansly-client-id': h['fansly-client-id'] ?? '',
@@ -200,8 +203,8 @@ export async function runScheduleCheck(onlyHandle?: string): Promise<string> {
   }
 
   // Build Telegram alert for models below threshold (grouped by severity)
-  const critical = results.filter(r => !r.error && r.count < 4)
-  const low = results.filter(r => !r.error && r.count >= 4 && r.count < THRESHOLD)
+  const critical = results.filter(r => !r.error && r.count < FIXED_SLOTS.length)
+  const low = results.filter(r => !r.error && r.count >= FIXED_SLOTS.length && r.count < THRESHOLD)
   const errors = results.filter(r => !!r.error)
   const remint = errors.filter(r =>
     r.error!.startsWith('session expired') || r.error!.startsWith('no minted headers'))
