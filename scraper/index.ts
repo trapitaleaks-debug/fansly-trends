@@ -4,7 +4,7 @@ dotenv.config({ path: path.join(__dirname, '../.env.local') })
 import { scrapeFYP, type AccountConfig, type FanslyPost } from './fansly'
 import { fetchTopHashtags, scrapeHashtagList } from './hashtag'
 import { uploadBuffer, downloadUrl } from './storage'
-import { upsertPost, getBlacklist, getExistingPostIds, getExistingMediaIds, batchUpdateLikes, getClient, enforceCreatorCap } from './db'
+import { upsertPost, getBlacklist, getExistingPostIds, getExistingMediaIds, batchUpdateLikes, getClient, enforceCreatorCap, isAttributed } from './db'
 import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
 
 const MIN_LIKES = 150
@@ -144,9 +144,16 @@ async function main() {
     }
 
     // Phase 3: Process and save qualifying posts
-    const qualifying = Array.from(postMap.values())
+    const scraped = Array.from(postMap.values())
+    // Surfaced separately: a nonzero count means Fansly served a degraded payload
+    // (missing aggregationData.accounts), which also blanks captions/hashtags.
+    const unattributed = scraped.filter(p => !isAttributed(p.creator_username)).length
+    const qualifying = scraped
       .filter(p => {
         if (!p.id || !p.is_video || !p.video_url || p.likes < MIN_LIKES) return false
+        // Must come first: an unattributed post has no handle and usually no tags,
+        // so both checks below would pass it through (see isAttributed in db.ts).
+        if (!isAttributed(p.creator_username)) return false
         if (blacklist.includes(p.creator_username.toLowerCase())) return false
         if (p.hashtags.some(h => BANNED_HASHTAGS.has(h.toLowerCase()))) return false
         return true
@@ -164,7 +171,10 @@ async function main() {
     })
     const inBatchDupes = qualifying.length - allPosts.length
 
-    console.log(`\n--- Phase 3: Processing ${allPosts.length} qualifying posts (≥${MIN_LIKES} likes, videos only; collapsed ${inBatchDupes} in-batch dupes) ---`)
+    console.log(`\n--- Phase 3: Processing ${allPosts.length} qualifying posts (≥${MIN_LIKES} likes, videos only; collapsed ${inBatchDupes} in-batch dupes; dropped ${unattributed} unattributed) ---`)
+    if (unattributed > 0) {
+      console.warn(`  ⚠️  ${unattributed} post(s) had no resolvable creator — degraded Fansly payload, dropped before ingest`)
+    }
 
     const existingIds = await getExistingPostIds(allPosts.map(p => p.id))
     const existingMediaIds = await getExistingMediaIds(allPosts.map(p => p.media_id ?? '').filter(Boolean))

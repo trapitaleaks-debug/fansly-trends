@@ -8,7 +8,7 @@ dotenv.config({ path: path.join(__dirname, '../.env.local') })
 import { scrapeFYP, type AccountConfig, type FanslyPost } from './fansly'
 import { scrapeHashtagList } from './hashtag'
 import { uploadBuffer, downloadUrl } from './storage'
-import { upsertPost, getBlacklist, getExistingPostIds, getExistingMediaIds, batchUpdateLikes, enforceCreatorCap } from './db'
+import { upsertPost, getBlacklist, getExistingPostIds, getExistingMediaIds, batchUpdateLikes, enforceCreatorCap, isAttributed } from './db'
 import { sendTelegram, scraperSuccess, scraperError } from '../lib/telegram'
 
 const MIN_LIKES = 100
@@ -86,7 +86,7 @@ async function main() {
 
     // Phase 3: filter + save
     const qualifying = Array.from(postMap.values())
-      .filter(p => p.id && p.is_video && p.video_url && p.likes >= MIN_LIKES && !blacklist.includes(p.creator_username.toLowerCase()))
+      .filter(p => p.id && p.is_video && p.video_url && p.likes >= MIN_LIKES && isAttributed(p.creator_username) && !blacklist.includes(p.creator_username.toLowerCase()))
       .sort((a, b) => b.likes - a.likes)
 
     const seenMedia = new Set<string>()

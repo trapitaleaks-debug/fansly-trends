@@ -24,7 +24,11 @@ export async function GET(request: NextRequest) {
     .gte('likes_current', 150)
     .not('video_r2_key', 'is', null)
     .neq('video_r2_key', '')
-    .not('hashtags', 'ov', '{deepthroat,porn,creampie,hotwife,bigdick,breeding,analcreampie,sex,bbc,bwc,bigcock,hugecock,hugedick,swingers,couple,couples,wifesharing,wifeswap,blacked,monstercock,gangbang,cumslut,analsex,cumeating,fuck,bg,sextape,standingfuck}') as any
+    .not('hashtags', 'ov', '{deepthroat,porn,creampie,hotwife,bigdick,breeding,analcreampie,sex,bbc,bwc,bigcock,hugecock,hugedick,swingers,couple,couples,wifesharing,wifeswap,blacked,monstercock,gangbang,cumslut,analsex,cumeating,fuck,bg,sextape,standingfuck}')
+    // Backstop: unattributed posts have no handle and no tags, so neither ban filter
+    // above can match them. The scraper now drops these at ingest (scraper/db.ts
+    // isAttributed) — this keeps any legacy rows off the feed.
+    .neq('creator_username', 'unknown') as any
 
   if (bannedUsernames.length > 0) {
     query = query.not('creator_username', 'ilike', `{${bannedUsernames.join(',')}}` as any)

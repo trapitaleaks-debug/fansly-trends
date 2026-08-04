@@ -51,6 +51,21 @@ export async function upsertPost(post: PostRecord): Promise<'inserted' | 'update
   return 'inserted'
 }
 
+// Sentinel written by the parsers when a post's accountId can't be resolved to a
+// handle (Fansly sometimes returns media with an empty aggregationData.accounts).
+export const UNATTRIBUTED = 'unknown'
+
+/**
+ * A post whose author couldn't be resolved carries no key the ban filters can match
+ * on — the creator blacklist keys on the handle and the hashtag ban keys on tags,
+ * and a degraded payload blanks both. Such posts sailed through both filters on
+ * 03.08.2026, so we drop them at ingest instead of storing a fake identity.
+ */
+export function isAttributed(username: string | null | undefined): boolean {
+  const u = (username ?? '').trim().toLowerCase()
+  return u !== '' && u !== UNATTRIBUTED
+}
+
 export async function getBlacklist(): Promise<string[]> {
   const { data } = await getClient().from('trends_blacklist').select('username')
   return (data ?? []).map((r: { username: string }) => r.username.toLowerCase())
