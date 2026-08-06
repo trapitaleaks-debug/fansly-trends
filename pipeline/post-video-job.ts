@@ -90,39 +90,43 @@ export async function getActiveModel(page: Page): Promise<string | null> {
 // model. The UTC browser context makes new Date(label).toISOString() line up with slot ISO
 // strings (both at :00.000). Scrolls BOTH the window and inner scroll containers — window-only
 // scrolling missed lazy-loaded cards, producing verify false-negatives → duplicate re-posts.
+// Landed ⇔ FanCore's OWN bulk-posts API holds a row at our exact slot minute. REWRITTEN 06.08:
+// the old implementation walked the rendered "Already Scheduled" DOM matching a hard-coded date
+// format (`M/D/YYYY, h:mm:ss AM/PM`); FanCore's 02.08 release changed the rendering and every
+// healthy post was filed as an error for four days ("posting is dead" false alarm, 307 poisoned
+// jobs). Lesson, permanently: verify against data, never against how a UI paints a date.
 async function slotLandedOnFanCore(page: Page, targetIso: string, budgetMs: number): Promise<boolean> {
+  const targetMinute = targetIso.slice(0, 16)   // YYYY-MM-DDTHH:MM — slots are unique per minute
   const pollDeadline = Date.now() + budgetMs
   while (Date.now() < pollDeadline) {
     try {
-      await page.locator('text=Already Scheduled').first().click({ timeout: 3_000 })
-      await page.waitForTimeout(1_500)
-      // Narrow to the "Scheduled (N)" filter — the default "All" list holds the model's ENTIRE
-      // posting history (1000+ cards for older models) and the target card may never lazy-load.
-      // Scanning All was the false-negative that caused phantom retries → duplicate posts.
-      await page.locator('button').filter({ hasText: /^Scheduled \(\d+\)$/ }).first()
-        .click({ timeout: 3_000 }).catch(() => {})
-      await page.waitForTimeout(1_000)
-      let prevLen = -1
-      for (let s = 0; s < 25; s++) {
-        const landed = await page.evaluate((target: string) => {
-          const datePattern = /\d{1,2}\/\d{1,2}\/\d{4},\s*\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)/
-          const walker = document.createTreeWalker(document.body, 4 /* SHOW_TEXT */)
-          let node: Node | null
-          while ((node = walker.nextNode())) {
-            const m = ((node as Text).textContent ?? '').match(datePattern)
-            if (m) { const d = new Date(m[0]); if (!isNaN(d.getTime()) && d.toISOString() === target) return true }
+      const rows = await page.evaluate(async () => {
+        const out: Array<{ scheduled: string | null; status: string | null }> = []
+        for (let off = 0; off < 400; off += 100) {
+          const r = await fetch(`/api/bulk-posts?limit=100&offset=${off}`, { credentials: 'include' })
+          if (!r.ok) break
+          const j = await r.json()
+          const page = (j?.posts || j?.data || (Array.isArray(j) ? j : [])) as Array<Record<string, unknown>>
+          if (!page.length) break
+          for (const p of page) {
+            out.push({
+              // Row shape verified live 06.08 (tmp/diag-fc3.mjs): the schedule field is
+              // `scheduled_at`; `fansly_post_id` appears once Fansly accepted the post.
+              scheduled: String(p.scheduled_at ?? p.scheduled_for ?? p.scheduledFor ?? '') || null,
+              status: String(p.status ?? '') || null,
+            })
           }
-          return false
-        }, targetIso)
-        if (landed) return true
-        const len = await page.evaluate(() => {
-          window.scrollTo(0, document.body.scrollHeight)
-          document.querySelectorAll('main, [class*="overflow-y"], [class*="scroll"]').forEach(el => el.scrollTo(0, el.scrollHeight))
-          return document.body.innerHTML.length
-        })
-        if (len === prevLen) break // no more cards lazy-loaded
-        prevLen = len
-        await page.waitForTimeout(500)
+          if (page.length < 100) break
+        }
+        return out
+      })
+      for (const row of rows) {
+        if (!row.scheduled) continue
+        const d = new Date(row.scheduled)
+        if (isNaN(d.getTime())) continue
+        if (d.toISOString().slice(0, 16) !== targetMinute) continue
+        if (String(row.status).toUpperCase().includes('FAIL')) continue
+        return true
       }
     } catch { /* keep polling */ }
     await page.waitForTimeout(3_000)
@@ -883,9 +887,18 @@ export async function postVideoJob(jobId: string, sharedBrowser?: Browser): Prom
           break
         }
         case 'verify_timeout': {
-          // The existing pre-flight already-landed check covers the async-landing case on the
-          // next attempt (it scans the Scheduled filter before re-submitting). Just label it.
-          diagnosis = 'verify_timeout: post may land late — pre-flight will detect it on retry'
+          if (process.env.VERIFY_TIMEOUT_RETRY !== '1') {
+            // 02–06.08 lesson: a broken verifier makes "didn't land" mean "landed fine", and a
+            // retry then posts the SAME video at a new slot. Until the verifier is trusted again
+            // (flip VERIFY_TIMEOUT_RETRY=1 after canarying it), park these for review instead.
+            status = 'error'
+            failCount = Math.max(failCount, 3)
+            needsReview = true
+            diagnosis = 'verify_timeout: parked, NOT retried — reconcile against the wall (retry gate: VERIFY_TIMEOUT_RETRY)'
+          } else {
+            // The pre-flight already-landed check covers the async-landing case on the next attempt.
+            diagnosis = 'verify_timeout: post may land late — pre-flight will detect it on retry'
+          }
           break
         }
         default: break

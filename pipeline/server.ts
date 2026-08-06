@@ -606,6 +606,21 @@ cron.schedule('0 2 1,15 * *', async () => {
   }
 })
 
+// One-shot repair of the verifier-poisoned week (03–06.08). Dry by default; ?apply=1 to write.
+app.post('/reconcile-postweek', async (req, res) => {
+  const apply = req.query.apply === '1'
+  res.json({ message: `reconcile started${apply ? ' (APPLY)' : ' (dry)'}` })
+  ;(async () => {
+    try {
+      const { reconcilePostWeek } = await import('./reconcile-postweek')
+      await reconcilePostWeek(apply)
+    } catch (e) {
+      console.error('[reconcile] fatal:', (e as Error).message)
+      await sendTelegram(`🔴 <b>FanslyTrends</b> reconcile fatal: ${(e as Error).message.slice(0, 150)}`).catch(() => {})
+    }
+  })()
+})
+
 // Manual triggers: POST /repost-scan?handle=  ·  POST /repost-pages
 app.post('/repost-scan', async (req, res) => {
   if (repostScanRunning) { res.json({ message: 'scan already running' }); return }

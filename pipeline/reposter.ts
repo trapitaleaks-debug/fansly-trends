@@ -66,6 +66,35 @@ export async function runDailyRepostSchedule(opts: { dry?: boolean; onlyHandle?:
       .lt('updated_at', monthStart.toISOString())
   }
 
+  // Self-heal before picking: an airing is only real if the post actually landed. We write the
+  // gates at BOOKING time so a same-day re-run can't double-book — but if that job then FAILS, the
+  // video is sitting on a 14-day cooldown for an airing that never happened.
+  // ⚠️ Gated by REPOST_SELFHEAL: while the landing-verifier was broken (02–06.08), status='error'
+  // mostly meant "landed fine" — releasing on that poisoned signal is what CREATES duplicates.
+  // Only re-enable once errors are verified failures again.
+  if (!dry && process.env.REPOST_SELFHEAL === '1') {
+    const { data: dead } = await supabaseAdmin
+      .from('repost_airings')
+      .select('id, video_id, job_id, video_jobs!inner(status)')
+      .eq('source', 'scheduler')
+      .eq('video_jobs.status', 'error') as unknown as { data: Array<{ id: string; video_id: string }> | null }
+    for (const d of dead ?? []) {
+      const { data: rv } = await supabaseAdmin.from('repost_videos')
+        .select('airings_total, airings_this_month').eq('id', d.video_id).single()
+      const cur = rv as { airings_total: number; airings_this_month: number } | null
+      await supabaseAdmin.from('repost_airings').delete().eq('id', d.id)
+      const { data: rest } = await supabaseAdmin.from('repost_airings')
+        .select('posted_at').eq('video_id', d.video_id).order('posted_at', { ascending: false }).limit(1)
+      await supabaseAdmin.from('repost_videos').update({
+        airings_total: Math.max(1, (cur?.airings_total ?? 1) - 1),
+        airings_this_month: Math.max(0, (cur?.airings_this_month ?? 0) - 1),
+        last_aired_at: ((rest ?? [])[0] as { posted_at: string } | undefined)?.posted_at ?? null,
+        updated_at: new Date().toISOString(),
+      }).eq('id', d.video_id)
+    }
+    if ((dead ?? []).length) console.log(`[reposter] released ${(dead ?? []).length} videos whose booked post never landed`)
+  }
+
   const { data: models } = await supabaseAdmin
     .from('trends_models')
     .select('id, fansly_username, model_number')
